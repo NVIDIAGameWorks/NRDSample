@@ -1,0 +1,8 @@
+<project toolsVersion="5.0">
+  <dependency name="nri_data" linkPath="_Data">
+    <package name="nri_data" version="${nri_data_version}" platforms="windows-x86_64 linux-x86_64 linux-aarch64" />
+  </dependency>
+  <dependency name="dxc" linkPath="External/DXC">
+    <package name="dxc" version="1.6.2106_glibc2.27_linux-aarch64" platforms="linux-aarch64" />
+  </dependency>
+</project>

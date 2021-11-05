@@ -1,0 +1,15 @@
+[submodule "External/NRIFramework"]
+	path = External/NRIFramework
+	url = https://github.com/NVIDIAGameWorks/NRIFramework.git
+	branch = main
+	update = merge
+[submodule "External/NRD"]
+	path = External/NRD
+	url = https://github.com/NVIDIAGameWorks/RayTracingDenoiser.git
+	branch = master
+	update = merge
+[submodule "External/NGX"]
+	path = External/NGX
+	url = https://github.com/NVIDIA/DLSS.git
+	branch = main
+	update = merge

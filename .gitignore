@@ -1,0 +1,62 @@
+# cmake
+CMakeFiles/
+.cmake/
+*.dir/
+*.tlog/
+CMakeCache.txt
+cmake_install.cmake
+*.recipe
+
+# make
+Makefile
+
+# VS
+*.vcxproj*
+*.sln
+.vs/
+*.args.json
+*.manifest
+
+# VS Code
+.vscode/
+
+# Shaders
+*.dxbc
+*.dxil
+*.spirv
+*.dxbc.h
+*.dxil.h
+*.spirv.h
+
+# Library
+*.lib
+*.exp
+*.dll
+*.pdb
+*.so
+*.so.*
+*.a
+*.exe
+
+# ninja
+.ninja_deps
+.ninja_log
+build.ninja
+compile_commands.json
+*.log
+*.ninja
+
+# external packages
+External/Assimp
+External/Detex
+External/Glfw
+External/ImGui
+External/vulkansdk
+External/DXC
+
+_Data/
+_Build/
+
+# on Linux, _Data is symbolic link
+_Data
+*/Output/*
