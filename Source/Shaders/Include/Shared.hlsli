@@ -31,6 +31,8 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float gMipBias;
     float3 gTrimmingParams;
     float gEmissionIntensity;
+    float3 gViewDirection;
+    float gIsOrtho;
     float2 gOutputSize;
     float2 gInvOutputSize;
     float2 gScreenSize;
@@ -52,7 +54,6 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float gTanSunAngularRadius;
     float gPixelAngularRadius;
     float gUseMipmapping;
-    float gIsOrtho;
     float gDebug;
     float gDiffSecondBounce;
     float gTransparent;
@@ -136,6 +137,11 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 //=============================================================================================
 // MISC
 //=============================================================================================
+
+float3 GetViewVector( float3 X )
+{
+    return gIsOrtho == 0.0 ? normalize( -X ) : gViewDirection;
+}
 
 float4 PackNormalAndRoughness( float3 N, float linearRoughness )
 {

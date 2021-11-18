@@ -298,7 +298,7 @@ void ENTRYPOINT( )
     }
 
     // G-buffer
-    gOut_ObjectMotion[ pixelPos ] = geometryProps0.motion;
+    gOut_ObjectMotion[ pixelPos ] = geometryProps0.motion * STL::Math::LinearStep( 0.0, 0.0000005, abs( geometryProps0.motion ) ); // fix imprecision problems
     gOut_ViewZ[ pixelPos ] = geometryProps0.viewZ;
     gOut_DirectLighting[ pixelPos ] = materialProps0.Lsum;
     gOut_Normal_Roughness[ pixelPos ] = geometryProps0.IsSky( ) ? SKY_MARK : PackNormalAndRoughness( materialProps0.N, materialProps0.roughness );
@@ -502,7 +502,12 @@ void ENTRYPOINT( )
         }
 
         float3 Clight1 = materialProps1.Lsum;
-        float pathLength = NRD_GetCorrectedHitDist( geometryProps1.tmin );
+
+        // Our sampling is not just random, it follow diffuse / specular lobe, paths separation here is mostly for clarity
+        // because for the 1st bounce roughness will be canceled out in any case inside "NRD_GetCorrectedHitDist"
+        float2 pathLength;
+        pathLength.x = NRD_GetCorrectedHitDist( geometryProps1.tmin, 1 );
+        pathLength.y = NRD_GetCorrectedHitDist( geometryProps1.tmin, 1, materialProps0.roughness );
 
         if( !materialProps1.isEmissive )
         {
@@ -575,7 +580,7 @@ void ENTRYPOINT( )
                     float l2 = STL::Color::Luminance( Clight2 * brdf1 );
                     float importance2 = saturate( l2 / ( l1 + l2 + 0.01 ) );
 
-                    pathLength += NRD_GetCorrectedHitDist( geometryProps2.tmin, importance2 );
+                    pathLength.y += NRD_GetCorrectedHitDist( geometryProps2.tmin, 2, materialProps0.roughness, importance2 );
                 }
             #endif
 
@@ -718,11 +723,11 @@ void ENTRYPOINT( )
 
         if( isDiffuse )
         {
-            float normDist = REBLUR_FrontEnd_GetNormHitDist( pathLength, viewZ, gDiffHitDistParams, gMeterToUnitsMultiplier );
+            float normDist = REBLUR_FrontEnd_GetNormHitDist( pathLength.x, viewZ, gDiffHitDistParams, gMeterToUnitsMultiplier );
 
             float4 Clight1Nrd = REBLUR_FrontEnd_PackRadianceAndHitDist( Clight1, normDist, USE_SANITIZATION );
             if( gDenoiserType != REBLUR )
-                Clight1Nrd = RELAX_FrontEnd_PackRadianceAndHitDist( Clight1, pathLength, USE_SANITIZATION );
+                Clight1Nrd = RELAX_FrontEnd_PackRadianceAndHitDist( Clight1, pathLength.x, USE_SANITIZATION );
 
             diffIndirect += Clight1Nrd * sampleWeight;
             diffDirectionPdf += float4( rayDirection1, pdf ) * sampleWeight;
@@ -738,11 +743,11 @@ void ENTRYPOINT( )
                 Clight1 = STL::Color::ColorizeZucconi( mipNorm );
             }
 
-            float normDist = REBLUR_FrontEnd_GetNormHitDist( pathLength, viewZ, gSpecHitDistParams, gMeterToUnitsMultiplier, materialProps0.roughness );
+            float normDist = REBLUR_FrontEnd_GetNormHitDist( pathLength.y, viewZ, gSpecHitDistParams, gMeterToUnitsMultiplier, materialProps0.roughness );
 
             float4 Clight1Nrd = REBLUR_FrontEnd_PackRadianceAndHitDist( Clight1, normDist, USE_SANITIZATION );
             if( gDenoiserType != REBLUR )
-                Clight1Nrd = RELAX_FrontEnd_PackRadianceAndHitDist( Clight1, pathLength, USE_SANITIZATION );
+                Clight1Nrd = RELAX_FrontEnd_PackRadianceAndHitDist( Clight1, pathLength.y, USE_SANITIZATION );
 
             specIndirect += Clight1Nrd * sampleWeight;
             specDirectionPdf += float4( rayDirection1, pdf ) * sampleWeight;

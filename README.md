@@ -7,8 +7,8 @@
 - Generate and build project using **cmake**
 
 Or by running scripts only:
-- Run ``1-Deploy.bat``
-- Run ``2-Build.bat``
+- Run `1-Deploy.bat`
+- Run `2-Build.bat`
 
 ### Linux (x86-64)
 - Install **VulkanSDK**, **libx11-dev**, **libxrandr-dev**
@@ -21,17 +21,14 @@ Or by running scripts only:
 - Generate and build project using **cmake**
 
 ### CMake options
-`-DUSE_MINIMAL_DATA=ON` - download minimal resource package (90MB)
-
-`-DDISABLE_SHADER_COMPILATION=ON` - disable compilation of shaders (shaders can be built on other platform)
-
-`-DDXC_CUSTOM_PATH=my/path/to/dxc` - custom path to **dxc**
-
-`-DUSE_DXC_FROM_PACKMAN_ON_AARCH64=OFF` - use default path for **dxc**
+- `-DUSE_MINIMAL_DATA=ON` - download minimal resource package (90MB)
+- `-DDISABLE_SHADER_COMPILATION=ON` - disable compilation of shaders (shaders can be built on other platform)
+- `-DDXC_CUSTOM_PATH=my/path/to/dxc` - custom path to **dxc**
+- `-DUSE_DXC_FROM_PACKMAN_ON_AARCH64=OFF` - use default path for **dxc**
 
 ## How to run
-The executable loads resources from `_Data`, therefore please run the samples with working directory set to
-the project root folder. The executables can be found in `_Build`.
+- Run `3-Run NRD sample.bat` script and answer the cmdline questions to set the runtime parameters
+- The executables can be found in `_Build`. The executable loads resources from `_Data`, therefore please run the samples with working directory set to the project root folder (needed pieces of the command line can be found in `3-Run NRD sample.bat` script)
 
 ## Minimum Requirements
 Any Ray Tracing compatible GPU:
@@ -50,6 +47,4 @@ Any Ray Tracing compatible GPU:
 - SPACE - pause animation toggle
 
 Notes:
-- RELAX doesn't support AO / SO denoising. If RELAX is the current denoiser, ambient term will be automatically
-ignored, bypassing settings in the UI In such cases the default behavior can be returned by pressing the
-``Default settings`` button or choosing a new test, if ``--testMode`` is set in the command line.
+- RELAX doesn't support AO / SO denoising. If RELAX is the current denoiser, ambient term will be automatically ignored, bypassing settings in the UI In such cases the default behavior can be returned by pressing the `Default settings` button or choosing a new test, if `--testMode` is set in the command line.

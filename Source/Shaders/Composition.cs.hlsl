@@ -75,8 +75,9 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     // Environment (pre-integrated) specular term
     float viewZ = gIn_ViewZ[ pixelPos ];
-    float3 Vv = STL::Geometry::ReconstructViewPosition( pixelUv, gCameraFrustum, viewZ, gIsOrtho );
-    float3 V = -STL::Geometry::RotateVector( gViewToWorld, normalize( Vv ) );
+    float3 Xv = STL::Geometry::ReconstructViewPosition( pixelUv, gCameraFrustum, viewZ, gIsOrtho );
+    float3 X = STL::Geometry::RotateVector( gViewToWorld, Xv );
+    float3 V = GetViewVector( X );
     float NoV = abs( dot( N, V ) );
     float3 F = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, roughness );
 

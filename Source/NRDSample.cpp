@@ -25,7 +25,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 constexpr auto BUILD_FLAGS = nri::AccelerationStructureBuildBits::PREFER_FAST_TRACE;
 constexpr uint32_t TEXTURES_PER_MATERIAL = 4;
 constexpr uint32_t FG_TEX_SIZE = 256;
-constexpr float NEAR_Z = 0.01f; // m
+constexpr float NEAR_Z = 0.001f; // m
 constexpr bool CAMERA_RELATIVE = true;
 constexpr bool CAMERA_LEFT_HANDED = true;
 constexpr uint32_t ANIMATED_INSTANCE_MAX_NUM = 512;
@@ -216,6 +216,7 @@ struct GlobalConstantBufferData
     float4 gSunDirection_gExposure;
     float4 gWorldOrigin_gMipBias;
     float4 gTrimmingParams_gEmissionIntensity;
+    float4 gViewDirection_gIsOrtho;
     float2 gOutputSize;
     float2 gInvOutputSize;
     float2 gScreenSize;
@@ -237,7 +238,6 @@ struct GlobalConstantBufferData
     float gTanSunAngularRadius;
     float gPixelAngularRadius;
     float gUseMipmapping;
-    float gIsOrtho;
     float gDebug;
     float gDiffSecondBounce;
     float gTransparent;
@@ -332,6 +332,7 @@ struct Settings
     bool importanceSampling                 = true;
     bool specularLobeTrimming               = true;
     bool blueNoise                          = true;
+    bool ortho                              = false;
 };
 
 struct DescriptorDesc
@@ -518,6 +519,9 @@ private:
         antilagHitDistanceSettings.thresholdMax = Lerp(0.06f, 0.10f, f) * scale;
         antilagHitDistanceSettings.sigmaScale = 1.0f;
         antilagHitDistanceSettings.enable = m_Settings.nrdSettings.antilagHitDistance;
+
+        antilagIntensitySettings.thresholdMin *= 0.25f;
+        antilagHitDistanceSettings.thresholdMin *= 0.25f;
     }
 
 private:
@@ -908,7 +912,9 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     }
                     ImGui::Checkbox("3D MVs", &m_Settings.isMotionVectorInWorldSpace);
                     ImGui::SameLine();
-                    ImGui::Checkbox("FPS limit", &m_Settings.limitFps);
+                    ImGui::Checkbox("Ortho", &m_Settings.ortho);
+                    ImGui::SameLine();
+                    ImGui::Checkbox("FPS cap", &m_Settings.limitFps);
                     ImGui::SameLine();
                     ImGui::PushStyleColor(ImGuiCol_Text, m_Settings.motionStartTime > 0.0 ? UI_YELLOW : ImGui::GetStyleColorVec4(ImGuiCol_Text));
                     bool isPressed = ImGui::Button("Emulate motion");
@@ -1090,15 +1096,21 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
                         float rppNormalized = Saturate(m_Settings.rpp / 8.0f);
                         float f = rppNormalized + rppNormalized * rppNormalized * (1.0f - rppNormalized);
-                        int32_t recommendedMaxFastAccumulatedFrameNum = int32_t( Lerp(8.0f, 3.0f, f) - 1.0f + 0.5f );
-                        int32_t recommendedMaxAccumulatedFrameNum = int32_t( Lerp(32.0f, 8.0f, f) - 1.0f + 0.5f );
-                        bool cmp = recommendedMaxAccumulatedFrameNum != m_Settings.nrdSettings.maxAccumulatedFrameNum || recommendedMaxFastAccumulatedFrameNum != m_Settings.nrdSettings.maxFastAccumulatedFrameNum;
+                        int32_t recommendedMaxFastAccumulatedFrameNum = int32_t( Lerp(8.0f, 3.0f, f) - 1.0f + 0.5f ); // It's an estimate, just to provide some insights
+                        int32_t recommendedMaxAccumulatedFrameNum = int32_t( Lerp(32.0f, 8.0f, f) - 1.0f + 0.5f ); // It's an estimate, just to provide some insights
+                        bool cmp = recommendedMaxAccumulatedFrameNum != m_Settings.nrdSettings.maxAccumulatedFrameNum || (recommendedMaxFastAccumulatedFrameNum != m_Settings.nrdSettings.maxFastAccumulatedFrameNum && m_Settings.denoiser != REBLUR);
                         if (cmp)
                             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.0f, 1.0f));
-                        ImGui::Text("Recommended values: %d (main) / %d (fast)", recommendedMaxAccumulatedFrameNum, recommendedMaxFastAccumulatedFrameNum); // It's an estimate, just to provide some insights
+                        if (m_Settings.denoiser == REBLUR)
+                            ImGui::Text("Recommended values: %d", recommendedMaxAccumulatedFrameNum);
+                        else
+                            ImGui::Text("Recommended values: %d (main) / %d (fast)", recommendedMaxAccumulatedFrameNum, recommendedMaxFastAccumulatedFrameNum);
                         if (cmp)
                             ImGui::PopStyleColor();
-                        ImGui::SliderInt2("History length (frames)", &m_Settings.nrdSettings.maxAccumulatedFrameNum, 0, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+                        if (m_Settings.denoiser == REBLUR)
+                            ImGui::SliderInt("History length (frames)", &m_Settings.nrdSettings.maxAccumulatedFrameNum, 0, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+                        else
+                            ImGui::SliderInt2("History length (frames)", &m_Settings.nrdSettings.maxAccumulatedFrameNum, 0, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
 
                         static const char* prePassMode[] =
                         {
@@ -1374,9 +1386,10 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     desc.aspectRatio = float( GetWindowWidth() ) / float( GetWindowHeight() );
     desc.horizontalFov = RadToDeg( Atan( Tan( DegToRad( m_Settings.camFov ) * 0.5f ) *  desc.aspectRatio * 9.0f / 16.0f ) * 2.0f ); // recalculate to ultra-wide if needed
     desc.nearZ = NEAR_Z * m_Settings.meterToUnitsMultiplier;
-    desc.farZ = 1000.0f * m_Settings.meterToUnitsMultiplier;
+    desc.farZ = 10000.0f * m_Settings.meterToUnitsMultiplier;
     desc.isCustomMatrixSet = m_Settings.animateCamera;
     desc.isLeftHanded = CAMERA_LEFT_HANDED;
+    desc.orthoRange = m_Settings.ortho ? Tan( DegToRad( m_Settings.camFov ) * 0.5f ) * 3.0f * m_Settings.meterToUnitsMultiplier : 0.0f;
     GetCameraDescFromInputDevices(desc);
 
     const float animationSpeed = m_Settings.pauseAnimation ? 0.0f : (m_Settings.animationSpeed < 0.0f ? 1.0f / (1.0f + Abs(m_Settings.animationSpeed)) : (1.0f + m_Settings.animationSpeed));
@@ -2626,8 +2639,10 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
         float4x4 mObjectToWorldPrev = instance.rotationPrev;
         mObjectToWorldPrev.AddTranslation( m_Camera.GetRelative( instance.positionPrev ) );
 
-        float4x4 mWorldToObject = mObjectToWorld;
-        mWorldToObject.Invert();
+        // Use fp64 to avoid imprecision problems on close up views (InvertOrtho can't be used due to scaling factors)
+        double4x4 mWorldToObjectd = ToDouble( mObjectToWorld );
+        mWorldToObjectd.Invert();
+        float4x4 mWorldToObject = ToFloat( mWorldToObjectd );
 
         float4x4 mWorldToWorldPrev = mObjectToWorldPrev * mWorldToObject;
         mWorldToWorldPrev.Transpose3x4();
@@ -2749,7 +2764,8 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex)
     if (m_Settings.animateSun)
     {
         const float animationSpeed = m_Settings.pauseAnimation ? 0.0f : (m_Settings.animationSpeed < 0.0f ? 1.0f / (1.0f + Abs(m_Settings.animationSpeed)) : (1.0f + m_Settings.animationSpeed));
-        m_Settings.sunAzimuth = Mod(m_Settings.sunAzimuth + 0.1f * animationSpeed, 360.0f);
+        float period = float( animationSpeed * 0.0001 * m_Timer.GetTimeStamp() );
+        m_Settings.sunElevation = WaveTriangle(period) * 30.0f;
     }
 
     const float3& sunDirection = GetSunDirection();
@@ -2766,6 +2782,8 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex)
     float2 rectSize = float2( float(rectW), float(rectH) );
     float2 jitter = (m_Settings.TAA ? m_Camera.state.viewportJitter : 0.0f) / rectSize;
     float baseMipBias = -0.5f + log2f(m_ResolutionScale);
+
+    float3 viewDir = m_Camera.state.mViewToWorld * float3(0.0f, 0.0f, 1.0f);
 
     nrd::HitDistanceParameters diffHitDistanceParameters = {};
     diffHitDistanceParameters.A = m_Settings.diffHitDistScale;
@@ -2792,6 +2810,7 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex)
         data->gWorldOrigin_gMipBias.w = m_DLSS.IsInitialized() ? (baseMipBias + log2f(float(m_ScreenResolution.x) / float(m_OutputResolution.x))) : (m_Settings.TAA ? baseMipBias : 0.0f);
         data->gTrimmingParams_gEmissionIntensity = GetTrimmingParams();
         data->gTrimmingParams_gEmissionIntensity.w = emissionIntensity;
+        data->gViewDirection_gIsOrtho = float4( viewDir.x, viewDir.y, viewDir.z, m_Camera.m_IsOrtho );
         data->gOutputSize = outputSize;
         data->gInvOutputSize = float2(1.0f, 1.0f) / outputSize;
         data->gScreenSize = screenSize;
@@ -2813,7 +2832,6 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex)
         data->gTanSunAngularRadius = Tan( DegToRad( m_Settings.sunAngularDiameter * 0.5f ) );
         data->gPixelAngularRadius = 0.5f * DegToRad(m_Settings.camFov) / m_OutputResolution.x;
         data->gUseMipmapping = m_Settings.mip ? 1.0f : 0.0f;
-        data->gIsOrtho = m_Camera.m_IsOrtho;
         data->gDebug = m_Settings.debug;
         data->gDiffSecondBounce = m_Settings.diffSecondBounce ? 1.0f : 0.0f;
         data->gTransparent = m_HasTransparentObjects ? 1.0f : 0.0f;
@@ -3030,6 +3048,8 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
     if (m_PrevSettings.denoiser != m_Settings.denoiser)
         resetHistoryFactor = 0.0f;
+    if (m_PrevSettings.ortho != m_Settings.ortho)
+        resetHistoryFactor = 0.0f;
     if (m_PrevSettings.nrdSettings.referenceAccumulation != m_Settings.nrdSettings.referenceAccumulation)
         resetHistoryFactor = 0.0f;
     if ( (m_PrevSettings.onScreen >= 13 && m_Settings.onScreen <= 6) || (m_PrevSettings.onScreen <= 6 && m_Settings.onScreen >= 13) ) // FIXME: for mip visualization
@@ -3146,7 +3166,6 @@ void Sample::RenderFrame(uint32_t frameIndex)
             reblurSettings.diffuseSettings.antilagIntensitySettings = antilagIntensitySettings;
             reblurSettings.diffuseSettings.antilagHitDistanceSettings = antilagHitDistanceSettings;
             reblurSettings.diffuseSettings.maxAccumulatedFrameNum = maxAccumulatedFrameNum;
-            reblurSettings.diffuseSettings.maxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
             reblurSettings.diffuseSettings.blurRadius = m_Settings.nrdSettings.blurRadius;
             reblurSettings.diffuseSettings.maxAdaptiveRadiusScale = m_Settings.nrdSettings.adaptiveRadiusScale;
             reblurSettings.diffuseSettings.normalWeightStrictness = m_Settings.nrdSettings.normalWeightStrictness * (1.0f + (1 - m_Settings.nrdSettings.prePassMode) * 0.33f);
@@ -3162,7 +3181,6 @@ void Sample::RenderFrame(uint32_t frameIndex)
             reblurSettings.specularSettings.antilagIntensitySettings = antilagIntensitySettings;
             reblurSettings.specularSettings.antilagHitDistanceSettings = antilagHitDistanceSettings;
             reblurSettings.specularSettings.maxAccumulatedFrameNum = reblurSettings.diffuseSettings.maxAccumulatedFrameNum;
-            reblurSettings.specularSettings.maxFastAccumulatedFrameNum = reblurSettings.diffuseSettings.maxFastAccumulatedFrameNum;
             reblurSettings.specularSettings.blurRadius = m_Settings.nrdSettings.blurRadius;
             reblurSettings.specularSettings.maxAdaptiveRadiusScale = m_Settings.nrdSettings.adaptiveRadiusScale;
             reblurSettings.specularSettings.normalWeightStrictness = m_Settings.nrdSettings.normalWeightStrictness * (1.0f + (1 - m_Settings.nrdSettings.prePassMode) * 0.33f);
