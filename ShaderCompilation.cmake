@@ -55,45 +55,45 @@ endif()
 function(get_shader_profile_from_name FILE_NAME DXC_PROFILE FXC_PROFILE ENTRY_POINT)
     get_filename_component(EXTENSION ${FILE_NAME} EXT)
     if ("${EXTENSION}" STREQUAL ".cs.hlsl")
-        set(DXC_PROFILE "cs_6_3" PARENT_SCOPE)
+        set(DXC_PROFILE "cs_6_5" PARENT_SCOPE)
         set(FXC_PROFILE "cs_5_0" PARENT_SCOPE)
         set(ENTRY_POINT "-E main")
     endif()
     if ("${EXTENSION}" STREQUAL ".vs.hlsl")
-        set(DXC_PROFILE "vs_6_3" PARENT_SCOPE)
+        set(DXC_PROFILE "vs_6_5" PARENT_SCOPE)
         set(FXC_PROFILE "vs_5_0" PARENT_SCOPE)
         set(ENTRY_POINT "-E main")
     endif()
     if ("${EXTENSION}" STREQUAL ".hs.hlsl")
-        set(DXC_PROFILE "hs_6_3" PARENT_SCOPE)
+        set(DXC_PROFILE "hs_6_5" PARENT_SCOPE)
         set(FXC_PROFILE "hs_5_0" PARENT_SCOPE)
         set(ENTRY_POINT "-E main")
     endif()
     if ("${EXTENSION}" STREQUAL ".ds.hlsl")
-        set(DXC_PROFILE "ds_6_3" PARENT_SCOPE)
+        set(DXC_PROFILE "ds_6_5" PARENT_SCOPE)
         set(FXC_PROFILE "ds_5_0" PARENT_SCOPE)
     endif()
     if ("${EXTENSION}" STREQUAL ".gs.hlsl")
-        set(DXC_PROFILE "gs_6_3" PARENT_SCOPE)
+        set(DXC_PROFILE "gs_6_5" PARENT_SCOPE)
         set(FXC_PROFILE "gs_5_0" PARENT_SCOPE)
         set(ENTRY_POINT "-E main")
     endif()
     if ("${EXTENSION}" STREQUAL ".fs.hlsl")
-        set(DXC_PROFILE "ps_6_3" PARENT_SCOPE)
+        set(DXC_PROFILE "ps_6_5" PARENT_SCOPE)
         set(FXC_PROFILE "ps_5_0" PARENT_SCOPE)
         set(ENTRY_POINT "-E main")
     endif()
     if ("${EXTENSION}" STREQUAL ".rgen.hlsl")
-        set(DXC_PROFILE "lib_6_3" PARENT_SCOPE)
+        set(DXC_PROFILE "lib_6_5" PARENT_SCOPE)
     endif()
     if ("${EXTENSION}" STREQUAL ".rchit.hlsl")
-        set(DXC_PROFILE "lib_6_3" PARENT_SCOPE)
+        set(DXC_PROFILE "lib_6_5" PARENT_SCOPE)
     endif()
     if ("${EXTENSION}" STREQUAL ".rahit.hlsl")
-        set(DXC_PROFILE "lib_6_3" PARENT_SCOPE)
+        set(DXC_PROFILE "lib_6_5" PARENT_SCOPE)
     endif()
     if ("${EXTENSION}" STREQUAL ".rmiss.hlsl")
-        set(DXC_PROFILE "lib_6_3" PARENT_SCOPE)
+        set(DXC_PROFILE "lib_6_5" PARENT_SCOPE)
     endif()
 endfunction()
 
@@ -132,13 +132,15 @@ macro(list_hlsl_shaders HLSL_FILES HEADER_FILES SHADER_FILES)
         set(OUTPUT_PATH_DXIL "${SHADER_OUTPUT_PATH}/${NAME_ONLY}.dxil")
         set(OUTPUT_PATH_SPIRV "${SHADER_OUTPUT_PATH}/${NAME_ONLY}.spirv")
         get_shader_profile_from_name(${FILE_NAME} DXC_PROFILE FXC_PROFILE ENTRY_POINT)
+
         # add FXC compilation step (DXBC)
         if (NOT "${FXC_PROFILE}" STREQUAL "" AND NOT "${FXC_PATH}" STREQUAL "")
             add_custom_command(
-                    OUTPUT ${OUTPUT_PATH_DXBC}
+                    OUTPUT ${OUTPUT_PATH_DXBC} ${OUTPUT_PATH_DXBC}.h
                     COMMAND ${FXC_PATH} /nologo ${ENTRY_POINT} /DCOMPILER_FXC=1 /T ${FXC_PROFILE}
                         /I "${EXTERNAL_INCLUDE_PATH}" /I "${SHADER_INCLUDE_PATH}" /I "${MATHLIB_INCLUDE_PATH}" /I "Include"
-                        ${FILE_NAME} /Fo ${OUTPUT_PATH_DXBC} /WX /O3
+                        ${FILE_NAME} /Vn g_${BYTECODE_ARRAY_NAME}_dxbc /Fh ${OUTPUT_PATH_DXBC}.h /Fo ${OUTPUT_PATH_DXBC}
+                        /WX /O3
                     MAIN_DEPENDENCY ${FILE_NAME}
                     DEPENDS ${HEADER_FILES}
                     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Source/Shaders"
@@ -149,10 +151,11 @@ macro(list_hlsl_shaders HLSL_FILES HEADER_FILES SHADER_FILES)
         # add DXC compilation step (DXIL)
         if (NOT "${DXC_PROFILE}" STREQUAL "" AND NOT "${DXC_PATH}" STREQUAL "")
             add_custom_command(
-                    OUTPUT ${OUTPUT_PATH_DXIL}
+                    OUTPUT ${OUTPUT_PATH_DXIL} ${OUTPUT_PATH_DXIL}.h
                     COMMAND ${DXC_PATH} ${ENTRY_POINT} -DCOMPILER_DXC=1 -T ${DXC_PROFILE}
-                        -I "${EXTERNAL_INCLUDE_PATH}" -I "${SHADER_INCLUDE_PATH}" -I "${MATHLIB_INCLUDE_PATH}" /I "Include"
-                        ${FILE_NAME} -Fo ${OUTPUT_PATH_DXIL} -WX -O3
+                        -I "${EXTERNAL_INCLUDE_PATH}" -I "${SHADER_INCLUDE_PATH}" -I "${MATHLIB_INCLUDE_PATH}" -I "Include"
+                        ${FILE_NAME} -Vn g_${BYTECODE_ARRAY_NAME}_dxil -Fh ${OUTPUT_PATH_DXIL}.h -Fo ${OUTPUT_PATH_DXIL}
+                        -WX -O3 -enable-16bit-types
                     MAIN_DEPENDENCY ${FILE_NAME}
                     DEPENDS ${HEADER_FILES}
                     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Source/Shaders"
@@ -163,11 +166,12 @@ macro(list_hlsl_shaders HLSL_FILES HEADER_FILES SHADER_FILES)
         # add one more DXC compilation step (SPIR-V)
         if (NOT "${DXC_PROFILE}" STREQUAL "" AND NOT "${DXC_SPIRV_PATH}" STREQUAL "")
             add_custom_command(
-                    OUTPUT ${OUTPUT_PATH_SPIRV}
+                    OUTPUT ${OUTPUT_PATH_SPIRV} ${OUTPUT_PATH_SPIRV}.h
                     COMMAND ${DXC_SPIRV_PATH} ${ENTRY_POINT} -DCOMPILER_DXC=1 -DVULKAN=1 -T ${DXC_PROFILE}
-                        -fspv-target-env=vulkan1.2 -fspv-extension=SPV_EXT_descriptor_indexing -fspv-extension=SPV_KHR_ray_tracing -spirv
-                        -I "${EXTERNAL_INCLUDE_PATH}" -I "${SHADER_INCLUDE_PATH}" -I "${MATHLIB_INCLUDE_PATH}" /I "Include"
-                        ${FILE_NAME} -Fo ${OUTPUT_PATH_SPIRV} ${DXC_VK_SHIFTS} -WX -O3
+                        -I "${EXTERNAL_INCLUDE_PATH}" -I "${SHADER_INCLUDE_PATH}" -I "${MATHLIB_INCLUDE_PATH}" -I "Include"
+                        ${FILE_NAME} -spirv -Vn g_${BYTECODE_ARRAY_NAME}_spirv -Fh ${OUTPUT_PATH_SPIRV}.h -Fo ${OUTPUT_PATH_SPIRV} ${DXC_VK_SHIFTS}
+                        -WX -O3 -enable-16bit-types
+                        -spirv -fspv-target-env=vulkan1.2 -fspv-extension=SPV_EXT_descriptor_indexing -fspv-extension=KHR
                     MAIN_DEPENDENCY ${FILE_NAME}
                     DEPENDS ${HEADER_FILES}
                     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Source/Shaders"

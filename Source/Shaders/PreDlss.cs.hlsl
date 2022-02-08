@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 NVIDIA CORPORATION and its licensors retain all intellectual property
 and proprietary rights in and to this software, related documentation
@@ -11,7 +11,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #include "Shared.hlsli"
 
 NRI_RESOURCE( Texture2D<float3>, gIn_ObjectMotion, t, 0, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_TransparentLighting, t, 1, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_TransparentLayer, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_ComposedLighting_ViewZ, t, 2, 1 );
 
 NRI_RESOURCE( RWTexture2D<float>, gOut_ViewZ, u, 3, 1 );
@@ -38,7 +38,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     // Post lighting composition
     float3 Lsum = gIn_ComposedLighting_ViewZ[ pixelPos ].xyz;
-    Lsum = ApplyPostLightingComposition( pixelPos, Lsum, gIn_TransparentLighting, false );
+    Lsum = ApplyPostLightingComposition( pixelPos, Lsum, gIn_TransparentLayer, false );
 
     // Dithering
     STL::Rng::Initialize( pixelPos, gFrameIndex );

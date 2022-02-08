@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 NVIDIA CORPORATION and its licensors retain all intellectual property
 and proprietary rights in and to this software, related documentation
@@ -12,7 +12,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 NRI_RESOURCE( Texture2D<float3>, gIn_Image, t, 0, 1 );
 
-NRI_RESOURCE( RWTexture2D<unorm float3>, gOut_Image, u, 1, 1 );
+NRI_RESOURCE( RWTexture2D<float3>, gOut_Image, u, 1, 1 );
 
 [numthreads( 16, 16, 1 )]
 void main( uint2 pixelPos : SV_DispatchThreadId )

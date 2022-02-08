@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 NVIDIA CORPORATION and its licensors retain all intellectual property
 and proprietary rights in and to this software, related documentation
@@ -12,58 +12,62 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 NRI_RESOURCE( Texture2D<float3>, gIn_ObjectMotion, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_ComposedLighting_ViewZ, t, 1, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_TransparentLighting, t, 2, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_History, t, 3, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_TransparentLayer, t, 2, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_History, t, 3, 1 );
 
 NRI_RESOURCE( RWTexture2D<float3>, gOut_History, u, 4, 1 );
 
-#define BORDER 1
-#define GROUP_X 16
-#define GROUP_Y 16
-#define BUFFER_X ( GROUP_X + BORDER * 2 )
-#define BUFFER_Y ( GROUP_Y + BORDER * 2 )
-#define RENAMED_GROUP_Y ( ( GROUP_X * GROUP_Y ) / BUFFER_X )
+#define BORDER          1
+#define GROUP_X         16
+#define GROUP_Y         16
+#define BUFFER_X        ( GROUP_X + BORDER * 2 )
+#define BUFFER_Y        ( GROUP_Y + BORDER * 2 )
+
+#define PRELOAD_INTO_SMEM \
+    int2 groupBase = pixelPos - threadPos - BORDER; \
+    uint stageNum = ( BUFFER_X * BUFFER_Y + GROUP_X * GROUP_Y - 1 ) / ( GROUP_X * GROUP_Y ); \
+    [unroll] \
+    for( uint stage = 0; stage < stageNum; stage++ ) \
+    { \
+        uint virtualIndex = threadIndex + stage * GROUP_X * GROUP_Y; \
+        uint2 newId = uint2( virtualIndex % BUFFER_X, virtualIndex / BUFFER_Y ); \
+        if( stage == 0 || virtualIndex < BUFFER_X * BUFFER_Y ) \
+            Preload( newId, groupBase + newId ); \
+    } \
+    GroupMemoryBarrierWithGroupSync( )
 
 groupshared float4 s_Data[ BUFFER_Y ][ BUFFER_X ];
 
-void Preload( int2 sharedId, int2 globalId )
+void Preload( uint2 sharedPos, int2 globalPos )
 {
-    float4 color_viewZ = gIn_ComposedLighting_ViewZ[ globalId ];
-    color_viewZ.xyz = ApplyPostLightingComposition( globalId, color_viewZ.xyz, gIn_TransparentLighting );
+    globalPos = clamp( globalPos, 0, gRectSize - 1.0 );
+
+    float4 color_viewZ = gIn_ComposedLighting_ViewZ[ globalPos ];
+    color_viewZ.xyz = ApplyPostLightingComposition( globalPos, color_viewZ.xyz, gIn_TransparentLayer );
     color_viewZ.w = abs( color_viewZ.w ) * STL::Math::Sign( gNearZ ) / NRD_FP16_VIEWZ_SCALE;
 
-    s_Data[ sharedId.y ][ sharedId.x ] = color_viewZ;
+    s_Data[ sharedPos.y ][ sharedPos.x ] = color_viewZ;
 }
 
 #define MOTION_LENGTH_SCALE 16.0
 
 [numthreads( GROUP_X, GROUP_Y, 1 )]
-void main( int2 threadId : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadId, uint threadIndex : SV_GroupIndex )
+void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadId, uint threadIndex : SV_GroupIndex )
 {
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
 
-    // Rename the 16x16 group into a 18x14 group + some idle threads in the end
-    float linearId = ( threadIndex + 0.5 ) / BUFFER_X;
-    int2 newId = int2( frac( linearId ) * BUFFER_X, linearId );
-    int2 groupBase = pixelPos - threadId - BORDER;
+    PRELOAD_INTO_SMEM;
 
-    // Preload into shared memory
-    if( newId.y < RENAMED_GROUP_Y )
-        Preload( newId, groupBase + newId );
-
-    newId.y += RENAMED_GROUP_Y;
-
-    if( newId.y < BUFFER_Y )
-        Preload( newId, groupBase + newId );
-
-    GroupMemoryBarrierWithGroupSync( );
+    // Do not generate NANs for unused threads
+    if( pixelPos.x >= gRectSize.x || pixelPos.y >= gRectSize.y )
+        return;
 
     // Neighborhood
     float3 m1 = 0;
     float3 m2 = 0;
     float3 input = 0;
 
-    float viewZ = s_Data[ threadId.y + BORDER ][threadId.x + BORDER ].w;
+    float viewZ = s_Data[ threadPos.y + BORDER ][threadPos.x + BORDER ].w;
     float viewZnearest = viewZ;
     int2 offseti = int2( BORDER, BORDER );
 
@@ -74,7 +78,7 @@ void main( int2 threadId : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadId
         for( int dx = 0; dx <= BORDER * 2; dx++ )
         {
             int2 t = int2( dx, dy );
-            int2 smemPos = threadId + t;
+            int2 smemPos = threadPos + t;
             float4 data = s_Data[ smemPos.y ][ smemPos.x ];
 
             if( dx == BORDER && dy == BORDER )
@@ -120,14 +124,7 @@ void main( int2 threadId : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadId
     float motionAmount = saturate( length( pixelMotion ) / TAA_MOTION_MAX_REUSE );
     float historyWeight = lerp( TAA_MAX_HISTORY_WEIGHT, TAA_MIN_HISTORY_WEIGHT, motionAmount );
     historyWeight *= float( gMipBias != 0.0 && isInScreen );
-
-    // Dithering
-    STL::Rng::Initialize( pixelPos, gFrameIndex );
-    float2 rnd = STL::Rng::GetFloat2( );
-    float luma = STL::Color::Luminance( m1, STL_LUMINANCE_BT709 );
-    float amplitude = lerp( 0.1, 0.0025, STL::Math::Sqrt01( luma ) );
-    float2 dither = 1.0 + ( rnd - 0.5 ) * amplitude;
-    historyClamped *= dither.x;
+    historyWeight *= 1.0 - gReference;
 
     // Final mix
     float3 result = lerp( input, historyClamped, historyWeight );

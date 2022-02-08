@@ -127,7 +127,6 @@ bool DlssIntegration::GetOptimalSettings(const NVSDK_NGX_Dimensions& outputResol
 {
     NVSDK_NGX_PerfQuality_Value dlssQuality = DLSS_ConvertQuality(quality);
 
-    float sharpness = 0.0f;
     NVSDK_NGX_Result result = NGX_DLSS_GET_OPTIMAL_SETTINGS(
         m_NgxParameters,
         outputResolution.Width, outputResolution.Height,
@@ -135,7 +134,7 @@ bool DlssIntegration::GetOptimalSettings(const NVSDK_NGX_Dimensions& outputResol
         &outSettings.renderResolution.Width, &outSettings.renderResolution.Height,
         &outSettings.maxRenderResolution.Width, &outSettings.maxRenderResolution.Height,
         &outSettings.minRenderResolution.Width, &outSettings.minRenderResolution.Height,
-        &sharpness);
+        &outSettings.sharpness);
 
     return NVSDK_NGX_SUCCEED(result) && outSettings.renderResolution.Width != 0 && outSettings.renderResolution.Height != 0;
 }
@@ -153,7 +152,7 @@ bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInit
     nri::DeviceSemaphore* semaphore;
     NRI.CreateDeviceSemaphore(*m_Device, false, semaphore);
 
-    int32_t flags = NVSDK_NGX_DLSS_Feature_Flags_None;
+    int32_t flags = NVSDK_NGX_DLSS_Feature_Flags_DoSharpening;
     flags |= desc.isMotionVectorAtLowRes ? NVSDK_NGX_DLSS_Feature_Flags_MVLowRes : 0;
     flags |= desc.isContentHDR ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR : 0;
     flags |= desc.isDepthInverted ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0;
@@ -228,6 +227,7 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
         NVSDK_NGX_D3D12_DLSS_Eval_Params d3d12DlssEvalParams = {};
         d3d12DlssEvalParams.Feature.pInColor = resourceInput;
         d3d12DlssEvalParams.Feature.pInOutput = resourceOutput;
+        d3d12DlssEvalParams.Feature.InSharpness = desc.sharpness;
         d3d12DlssEvalParams.pInDepth = resourceDepth;
         d3d12DlssEvalParams.pInMotionVectors = resourceMv;
         d3d12DlssEvalParams.pInExposureTexture = resourceExposure;
@@ -251,6 +251,7 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
         NVSDK_NGX_VK_DLSS_Eval_Params vkDlssEvalParams = {};
         vkDlssEvalParams.Feature.pInColor = &resourceInput;
         vkDlssEvalParams.Feature.pInOutput = &resourceOutput;
+        vkDlssEvalParams.Feature.InSharpness = desc.sharpness;
         vkDlssEvalParams.pInDepth = &resourceDepth;
         vkDlssEvalParams.pInMotionVectors = &resourceMv;
         vkDlssEvalParams.InRenderSubrectDimensions = desc.renderOrScaledResolution;
@@ -280,6 +281,7 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
         NVSDK_NGX_D3D11_DLSS_Eval_Params d3d11DlssEvalParams = {};
         d3d11DlssEvalParams.Feature.pInColor = resourceInput;
         d3d11DlssEvalParams.Feature.pInOutput = resourceOutput;
+        d3d11DlssEvalParams.Feature.InSharpness = desc.sharpness;
         d3d11DlssEvalParams.pInDepth = resourceDepth;
         d3d11DlssEvalParams.pInMotionVectors = resourceMv;
         d3d11DlssEvalParams.pInExposureTexture = resourceExposure;

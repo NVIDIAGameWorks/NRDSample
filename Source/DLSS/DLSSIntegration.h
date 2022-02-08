@@ -15,9 +15,9 @@
 #include "NGX/include/nvsdk_ngx_helpers_vk.h"
 
 #define DLSS_INTEGRATION 1
-#define DLSS_INTEGRATION_MAJOR 1
+#define DLSS_INTEGRATION_MAJOR 2
 #define DLSS_INTEGRATION_MINOR 0
-#define DLSS_INTEGRATION_DATE "28 July 2021"
+#define DLSS_INTEGRATION_DATE "14 January 2022"
 
 enum class DlssQuality
 {
@@ -34,6 +34,7 @@ struct DlssSettings
     NVSDK_NGX_Dimensions renderResolution = {};
     NVSDK_NGX_Dimensions maxRenderResolution = {};
     NVSDK_NGX_Dimensions minRenderResolution = {};
+    float sharpness = 0.0f;
 };
 
 struct DlssInitDesc
@@ -67,6 +68,7 @@ struct DlssDispatchDesc
     NVSDK_NGX_Dimensions renderOrScaledResolution = {};
     float jitter[2] = {0.0f, 0.0f};
     float motionVectorScale[2] = {1.0f, 1.0f};
+    float sharpness = 0.0f;
     uint32_t physicalDeviceIndex = 0;
     bool reset = false;
 };

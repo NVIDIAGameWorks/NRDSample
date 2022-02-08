@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 
 NVIDIA CORPORATION and its licensors retain all intellectual property
 and proprietary rights in and to this software, related documentation
@@ -10,6 +10,20 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 #include "BindingBridge.hlsli"
 #include "STL.hlsli"
+
+//===============================================================
+// GLOSSARY
+//===============================================================
+/*
+Names:
+- V - view vector
+- N - normal
+- X - point position
+
+Modifiers:
+- v - view space
+- 0..N - hit index ( 0 - primary ray )
+*/
 
 //===============================================================
 // RESOURCES
@@ -27,7 +41,7 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float4 gCameraFrustum;
     float3 gSunDirection;
     float gExposure;
-    float3 gWorldOrigin;
+    float3 gCameraOrigin;
     float gMipBias;
     float3 gTrimmingParams;
     float gEmissionIntensity;
@@ -42,32 +56,31 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float2 gRectSizePrev;
     float2 gJitter;
     float gNearZ;
+    float gAmbientAccumSpeed;
     float gAmbient;
     float gAmbientInComposition;
     float gSeparator;
     float gRoughnessOverride;
     float gMetalnessOverride;
-    float gMeterToUnitsMultiplier;
+    float gUnitToMetersMultiplier;
     float gIndirectDiffuse;
     float gIndirectSpecular;
-    float gSunAngularRadius;
+    float gSunAngularRadius; // TODO: use gTanSunAngularRadius or fix the code where used
     float gTanSunAngularRadius;
-    float gPixelAngularRadius;
-    float gUseMipmapping;
+    float gTanPixelAngularRadius;
     float gDebug;
-    float gDiffSecondBounce;
-    float gTransparent;
+    float gTransparent; // TODO: try to remove, casting a ray in an empty TLAS should be for free
+    float gReference;
     uint gDenoiserType;
-    uint gDisableShadowsAndEnableImportanceSampling;
+    uint gDisableShadowsAndEnableImportanceSampling; // TODO: remove - modify GetSunIntensity to return 0 if sun is below horizon
     uint gOnScreen;
     uint gFrameIndex;
     uint gForcedMaterial;
-    uint gPrimaryFullBrdf;
-    uint gIndirectFullBrdf;
     uint gUseNormalMap;
     uint gWorldSpaceMotion;
-    uint gBlueNoise;
+    uint gTracingMode;
     uint gSampleNum;
+    uint gBounceNum;
     uint gOcclusionOnly;
 };
 
@@ -89,21 +102,24 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 #define REBLUR                              0
 #define RELAX                               1
 
+#define RESOLUTION_FULL                     0
+#define RESOLUTION_HALF                     1
+#define RESOLUTION_QUARTER                  2
+
 #define SHOW_FINAL                          0
-#define SHOW_AMBIENT_OCCLUSION              1
-#define SHOW_SPECULAR_OCCLUSION             2
-#define SHOW_DENOISED_DIFFUSE               3
-#define SHOW_DENOISED_SPECULAR              4
+#define SHOW_DENOISED_DIFFUSE               1
+#define SHOW_DENOISED_SPECULAR              2
+#define SHOW_AMBIENT_OCCLUSION              3
+#define SHOW_SPECULAR_OCCLUSION             4
 #define SHOW_SHADOW                         5
 #define SHOW_BASE_COLOR                     6
 #define SHOW_NORMAL                         7
 #define SHOW_ROUGHNESS                      8
 #define SHOW_METALNESS                      9
 #define SHOW_WORLD_UNITS                    10
-#define SHOW_BARY                           11
-#define SHOW_MESH                           12
-#define SHOW_MIP_PRIMARY                    13
-#define SHOW_MIP_SPECULAR                   14
+#define SHOW_MESH                           11
+#define SHOW_MIP_PRIMARY                    12
+#define SHOW_MIP_SPECULAR                   13 // TODO: remove of fix visualization
 
 #define FP16_MAX                            65504.0
 #define INF                                 1e5
@@ -114,23 +130,21 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 #define SKY_MARK                            0.0
 
 // Settings
-#define USE_SQRT_ROUGHNESS                  0
-#define USE_OCT_PACKED_NORMALS              0
-
-#define USE_SIMPLE_MIP_SELECTION            1
-#define USE_SIMPLIFIED_BRDF_MODEL           0
-#define USE_IMPORTANCE_SAMPLING             2 // 0 - off, 1 - ignore rays with 0 throughput, 2 - plus local lights importance sampling
-#define USE_STOCHASTIC_JITTER               0 // increases entropy a bit
+#define USE_SIMPLEX_LIGHTING_MODEL          0
+#define USE_IMPORTANCE_SAMPLING             1
 #define USE_MODULATED_IRRADIANCE            0 // an example, demonstrating how irradiance can be modulated before denoising and then de-modulated after denoising to avoid over-blurring
-#define USE_SANITIZATION                    false // NRD sample is NAN/INF free, but all relevant code is here to demonstrate usage
+#define USE_SANITIZATION                    0 // NRD sample is NAN/INF free, but all relevant code is here to demonstrate usage
 
+#define BRDF_ENERGY_THRESHOLD               0.003
+#define AMBIENT_BOUNCE_NUM                  3
+#define AMBIENT_MIP_BIAS                    2
+#define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
 #define TAA_HISTORY_SHARPNESS               0.5 // [0; 1], 0.5 matches Catmull-Rom
 #define TAA_MAX_HISTORY_WEIGHT              0.95
 #define TAA_MIN_HISTORY_WEIGHT              0.1
 #define TAA_MOTION_MAX_REUSE                0.1
 #define MAX_MIP_LEVEL                       11.0
 #define EMISSION_TEXTURE_MIP_BIAS           5.0
-#define ZERO_TROUGHPUT_SAMPLE_NUM           16
 #define IMPORTANCE_SAMPLE_NUM               16
 #define GLASS_TINT                          float3( 0.9, 0.9, 1.0 )
 
@@ -140,62 +154,18 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 
 float3 GetViewVector( float3 X )
 {
-    return gIsOrtho == 0.0 ? normalize( -X ) : gViewDirection;
+    return gIsOrtho == 0.0 ? normalize( gCameraOrigin - X ) : gViewDirection;
 }
 
-float4 PackNormalAndRoughness( float3 N, float linearRoughness )
-{
-    float4 p;
-
-    #if( USE_SQRT_ROUGHNESS == 1 )
-        linearRoughness = STL::Math::Sqrt01( linearRoughness );
-    #endif
-
-    #if( USE_OCT_PACKED_NORMALS == 1 )
-        p.xy = STL::Packing::EncodeUnitVector( N, false );
-        p.z = linearRoughness;
-        p.w = 0;
-    #else
-        p.xyz = N;
-
-        // Best fit
-        float m = max( abs( N.x ), max( abs( N.y ), abs( N.z ) ) );
-        p.xyz *= STL::Math::PositiveRcp( m );
-
-        p.xyz = p.xyz * 0.5 + 0.5;
-        p.w = linearRoughness;
-    #endif
-
-    return p;
-}
-
-float4 UnpackNormalAndRoughness( float4 p )
-{
-    float4 r;
-    #if( USE_OCT_PACKED_NORMALS == 1 )
-        p.xy = p.xy * 2.0 - 1.0;
-        r.xyz = STL::Packing::DecodeUnitVector( p.xy, true, false );
-        r.w = p.z;
-    #else
-        p.xyz = p.xyz * 2.0 - 1.0;
-        r.xyz = p.xyz;
-        r.w = p.w;
-    #endif
-
-    r.xyz = normalize( r.xyz );
-
-    #if( USE_SQRT_ROUGHNESS == 1 )
-        r.w *= r.w;
-    #endif
-
-    return r;
-}
-
-float3 ApplyPostLightingComposition( uint2 pixelPos, float3 Lsum, Texture2D<float4> gIn_TransparentLighting, bool convertToLDR = true )
+float3 ApplyPostLightingComposition( uint2 pixelPos, float3 Lsum, Texture2D<float4> gIn_TransparentLayer, bool convertToLDR = true )
 {
     // Transparent layer
-    float4 transparentLayer = gIn_TransparentLighting[ pixelPos ] * gTransparent;
+    float4 transparentLayer = gTransparent ? gIn_TransparentLayer[ pixelPos ] : 0;
     Lsum = Lsum * ( 1.0 - transparentLayer.w ) * ( transparentLayer.w != 0.0 ? GLASS_TINT : 1.0 ) + transparentLayer.xyz;
+
+    // Exposure
+    if( gOnScreen <= SHOW_DENOISED_SPECULAR )
+       Lsum *= gExposure;
 
     if( convertToLDR )
     {
@@ -211,7 +181,7 @@ float3 ApplyPostLightingComposition( uint2 pixelPos, float3 Lsum, Texture2D<floa
     return Lsum;
 }
 
-float4 BicubicFilterNoCorners( Texture2D<float4> tex, SamplerState samp, float2 samplePos, float2 invTextureSize, compiletime const float sharpness )
+float3 BicubicFilterNoCorners( Texture2D<float3> tex, SamplerState samp, float2 samplePos, float2 invTextureSize, compiletime const float sharpness )
 {
     float2 centerPos = floor( samplePos - 0.5 ) + 0.5;
     float2 f = samplePos - centerPos;
@@ -227,7 +197,7 @@ float4 BicubicFilterNoCorners( Texture2D<float4> tex, SamplerState samp, float2 
     float2 tc3 = invTextureSize * ( centerPos + 2.0 );
 
     float w = wl2.x * w0.y;
-    float4 color = tex.SampleLevel( samp, float2( tc2.x, tc0.y ), 0 ) * w;
+    float3 color = tex.SampleLevel( samp, float2( tc2.x, tc0.y ), 0 ) * w;
     float sum = w;
 
     w = w0.x  * wl2.y;
@@ -255,49 +225,42 @@ float4 BicubicFilterNoCorners( Texture2D<float4> tex, SamplerState samp, float2 
 // VERY SIMPLE SKY MODEL
 //=============================================================================================
 
-float3 GetSkyColor( float3 v, float3 vSun )
+#define SKY_INTENSITY 1.0
+#define SUN_INTENSITY 8.0
+
+float3 GetSunIntensity( float3 v, float3 sunDirection, float angularRadius )
 {
-    float atmosphere = sqrt( 1.0 - saturate( v.z ) );
-
-    float scatter = pow( saturate( vSun.z ), 1.0 / 15.0 );
-    scatter = 1.0 - clamp( scatter, 0.8, 1.0 );
-
-    float3 scatterColor = lerp( float3( 1.0, 1.0, 1.0 ), float3( 1.0, 0.3, 0.0 ) * 1.5, scatter );
-    float3 skyColor = lerp( float3( 0.2, 0.4, 0.8 ), float3( scatterColor ), atmosphere / 1.3 );
-    skyColor *= saturate( 1.0 + vSun.z );
-
-    return STL::Color::GammaToLinear( saturate( skyColor ) );
-
-}
-
-float3 GetSunColor( float3 v, float3 vSun, float angularRadius )
-{
-    float b = dot( v, vSun );
-    float d = length( v - vSun * b );
+    float b = dot( v, sunDirection );
+    float d = length( v - sunDirection * b );
 
     float glow = saturate( 1.015 - d );
     glow *= b * 0.5 + 0.5;
     glow *= 0.6;
 
-    float a = sqrt( 2.0 ) * sqrt( saturate( 1.0 - b ) ); // acos approx
-    float sun = 1.0 - smoothstep( angularRadius * 0.9, angularRadius * 1.66, a );
-    sun *= 1.0 - pow( saturate( 1.0 - v.z ), 4.85 );
-    sun *= smoothstep( 0.0, 0.1, vSun.z );
+    float a = sqrt( 2.0 ) * STL::Math::Sqrt01( 1.0 - b ); // acos approx
+    float sun = 1.0 - STL::Math::SmoothStep( angularRadius * 0.9, angularRadius * 1.66, a );
+    sun *= 1.0 - STL::Math::Pow01( 1.0 - v.z, 4.85 );
+    sun *= STL::Math::SmoothStep( 0.0, 0.1, sunDirection.z );
     sun += glow;
 
-    float3 sunColor = lerp( float3( 1.0, 0.6, 0.3 ), float3( 1.0, 0.9, 0.7 ), sqrt( saturate( vSun.z ) ) );
+    float3 sunColor = lerp( float3( 1.0, 0.6, 0.3 ), float3( 1.0, 0.9, 0.7 ), STL::Math::Sqrt01( sunDirection.z ) );
     sunColor *= saturate( sun );
 
-    float fade = saturate( 1.0 + vSun.z );
-    sunColor *= fade * fade;
+    sunColor *= STL::Math::SmoothStep( -0.01, 0.05, sunDirection.z );
 
-    return STL::Color::GammaToLinear( sunColor );
+    return STL::Color::GammaToLinear( sunColor ) * SUN_INTENSITY;
 }
 
-float3 GetSkyIntensity( float3 v, float3 vSun, float angularRadius = 0.25 )
+float3 GetSkyIntensity( float3 v, float3 sunDirection, float angularRadius )
 {
-    float sunIntensity = 80000.0;
-    float skyIntensity = 10000.0;
+    float atmosphere = sqrt( 1.0 - saturate( v.z ) );
 
-    return sunIntensity * GetSunColor( v, vSun, angularRadius ) + skyIntensity * GetSkyColor( v, vSun );
+    float scatter = pow( saturate( sunDirection.z ), 1.0 / 15.0 );
+    scatter = 1.0 - clamp( scatter, 0.8, 1.0 );
+
+    float3 scatterColor = lerp( float3( 1.0, 1.0, 1.0 ), float3( 1.0, 0.3, 0.0 ) * 1.5, scatter );
+    float3 skyColor = lerp( float3( 0.2, 0.4, 0.8 ), float3( scatterColor ), atmosphere / 1.3 );
+    skyColor *= saturate( 1.0 + sunDirection.z );
+
+    return STL::Color::GammaToLinear( saturate( skyColor ) ) * SKY_INTENSITY + GetSunIntensity( v, sunDirection, angularRadius );
 }
