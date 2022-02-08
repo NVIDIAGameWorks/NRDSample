@@ -111,6 +111,7 @@ enum class Texture : uint32_t
     ComposedLighting_ViewZ,
     TaaHistory,
     TaaHistoryPrev,
+    DlssOutput,
     Final,
     MaterialTextures
 };
@@ -187,6 +188,8 @@ enum class Descriptor : uint32_t
     TaaHistory_StorageTexture,
     TaaHistoryPrev_Texture,
     TaaHistoryPrev_StorageTexture,
+    DlssOutput_Texture,
+    DlssOutput_StorageTexture,
     Final_Texture,
     Final_StorageTexture,
     MaterialTextures
@@ -1702,6 +1705,8 @@ void Sample::CreateResources(nri::Format swapChainFormat)
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::TaaHistoryPrev", nri::Format::R10_G10_B10_A2_UNORM, m_OutputResolution.x, m_OutputResolution.y, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
+    CreateTexture(descriptorDescs, "Texture::DlssOutput", nri::Format::R11_G11_B10_UFLOAT, m_OutputResolution.x, m_OutputResolution.y, 1, 1,
+        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
     CreateTexture(descriptorDescs, "Texture::Final", swapChainFormat, (uint16_t)m_OutputResolution.x, (uint16_t)m_OutputResolution.y, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::COPY_SOURCE);
 
@@ -2401,7 +2406,7 @@ void Sample::CreateDescriptorSets()
 
         const nri::Descriptor* textures[] =
         {
-            Get(Descriptor::TaaHistory_Texture),
+            Get(Descriptor::DlssOutput_Texture),
         };
 
         const nri::Descriptor* storageTextures[] =
@@ -3524,7 +3529,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                     {Texture::Unfiltered_ShadowData, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                     {Texture::Unfiltered_Diff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                     // Output
-                    {Texture::TaaHistory, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                    {Texture::DlssOutput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 };
                 transitionBarriers.textures = optimizedTransitions.data();
                 transitionBarriers.textureNum = BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions.data(), helper::GetCountOf(optimizedTransitions));
@@ -3534,12 +3539,12 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 dlssDesc.texInput = Get(Texture::Unfiltered_Diff);
                 dlssDesc.texMv = Get(Texture::Unfiltered_ShadowData);
                 dlssDesc.texDepth = Get(Texture::ViewZ);
-                dlssDesc.texOutput = Get(Texture::TaaHistory);
+                dlssDesc.texOutput = Get(Texture::DlssOutput);
 
                 dlssDesc.descriptorInput = Get(Descriptor::Unfiltered_Diff_Texture);
                 dlssDesc.descriptorMv = Get(Descriptor::Unfiltered_ShadowData_Texture);
                 dlssDesc.descriptorDepth = Get(Descriptor::ViewZ_Texture);
-                dlssDesc.descriptorOutput = Get(Descriptor::TaaHistory_StorageTexture);
+                dlssDesc.descriptorOutput = Get(Descriptor::DlssOutput_StorageTexture);
 
                 dlssDesc.sharpness = m_Sharpness;
                 dlssDesc.renderOrScaledResolution = {rectW, rectH};
@@ -3561,7 +3566,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 const TextureState transitions[] =
                 {
                     // Input
-                    {Texture::TaaHistory, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                    {Texture::DlssOutput, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                     // Output
                     {Texture::Final, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 };

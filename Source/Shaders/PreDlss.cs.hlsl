@@ -37,16 +37,10 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     gOut_SurfaceMotion[ pixelPos ] = pixelMotion;
 
     // Post lighting composition
+    STL::Rng::Initialize( pixelPos, gFrameIndex );
+
     float3 Lsum = gIn_ComposedLighting_ViewZ[ pixelPos ].xyz;
     Lsum = ApplyPostLightingComposition( pixelPos, Lsum, gIn_TransparentLayer, false );
-
-    // Dithering
-    STL::Rng::Initialize( pixelPos, gFrameIndex );
-    float rnd = STL::Rng::GetFloat2( ).x;
-    float luma = STL::Color::Luminance( Lsum );
-    float amplitude = lerp( 0.2, 0.005, STL::Math::Sqrt01( luma ) );
-    float dither = 1.0 + ( rnd - 0.5 ) * amplitude;
-    Lsum *= dither;
 
     // Output
     gOut_FinalImage[ pixelPos ] = Lsum;

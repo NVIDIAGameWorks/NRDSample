@@ -165,7 +165,17 @@ float3 ApplyPostLightingComposition( uint2 pixelPos, float3 Lsum, Texture2D<floa
 
     // Exposure
     if( gOnScreen <= SHOW_DENOISED_SPECULAR )
-       Lsum *= gExposure;
+    {
+        Lsum *= gExposure;
+
+        // Dithering
+        // IMPORTANT: requires STL::Rng::Initialize
+        float rnd = STL::Rng::GetFloat2( ).x;
+        float luma = STL::Color::Luminance( Lsum );
+        float amplitude = lerp( 0.4, 1.0 / 1024.0, STL::Math::Sqrt01( luma ) );
+        float dither = 1.0 + ( rnd - 0.5 ) * amplitude;
+        Lsum *= dither;
+    }
 
     if( convertToLDR )
     {

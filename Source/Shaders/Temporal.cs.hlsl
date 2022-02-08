@@ -56,6 +56,8 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
 {
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
 
+    STL::Rng::Initialize( pixelPos, gFrameIndex );
+
     PRELOAD_INTO_SMEM;
 
     // Do not generate NANs for unused threads
