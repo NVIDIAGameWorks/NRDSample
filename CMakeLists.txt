@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.15)
 
 # Options:
 # DXC_CUSTOM_PATH=/my/dxc
@@ -136,11 +136,11 @@ add_subdirectory("External/NRIFramework")
 
 # NRD
 if (DXC_CUSTOM_PATH)
-    set(NRD_DXC_CUSTOM_PATH ${DXC_CUSTOM_PATH})
+    set(NRD_DXC_CUSTOM_PATH ${DXC_CUSTOM_PATH} CACHE STRING)
 endif()
-set(NRD_OUTPUT_BIN_PATH "${OUTPUT_BIN_PATH}")
-set(NRD_SHADER_OUTPUT_PATH "${SHADER_OUTPUT_PATH}")
+set(NRD_SHADER_OUTPUT_PATH "${SHADER_OUTPUT_PATH}" CACHE STRING "")
 set(NRD_PROJECT_FOLDER "External/NRD")
+set(NRD_OUTPUT_BIN_PATH "${OUTPUT_BIN_PATH}")
 add_subdirectory("External/NRD")
 
 if(MSVC)
