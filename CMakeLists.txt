@@ -1,7 +1,10 @@
 cmake_minimum_required(VERSION 3.15)
 
-# Options:
-# DXC_CUSTOM_PATH=/my/dxc
+message("Processing 'NRD sample'...")
+
+set(DXC_CUSTOM_PATH "custom/path/to/dxc" CACHE STRING "This DXC will be used if Vulkan SDK is not installed")
+
+# Settings
 option(DISABLE_SHADER_COMPILATION "disable compilation of shaders" OFF)
 option(USE_MINIMAL_DATA "use minimal _Data (90MB)" OFF)
 option(USE_DXC_FROM_PACKMAN_ON_AARCH64 "download DXC for aarch64 using Packman" ON)
@@ -66,7 +69,7 @@ endif()
 # Packman downloads some dependencies on aarch64
 if ((CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64") OR (CMAKE_SYSTEM_PROCESSOR MATCHES "arm64"))
     if (("${DXC_CUSTOM_PATH}" STREQUAL "") AND USE_DXC_FROM_PACKMAN_ON_AARCH64)
-        set(DXC_CUSTOM_PATH "${CMAKE_CURRENT_SOURCE_DIR}/External/DXC/bin/dxc")
+        set(DXC_CUSTOM_PATH "${CMAKE_CURRENT_SOURCE_DIR}/External/DXC/bin/dxc" CACHE STRING)
     endif()
 endif()
 
@@ -127,7 +130,6 @@ set(OUTPUT_BIN_PATH "${CMAKE_SOURCE_DIR}/_Build")
 # NRI
 set(NRI_PROJECT_FOLDER "External/NRI")
 set(NRI_OUTPUT_BIN_PATH "${OUTPUT_BIN_PATH}")
-option(NRI_DISABLE_WAYLAND_SUPPORT "" ON)
 add_subdirectory("External/NRIFramework/External/NRI")
 
 # NRIFramework
@@ -135,9 +137,7 @@ set(NRIF_OUTPUT_PATH "${OUTPUT_BIN_PATH}")
 add_subdirectory("External/NRIFramework")
 
 # NRD
-if (DXC_CUSTOM_PATH)
-    set(NRD_DXC_CUSTOM_PATH ${DXC_CUSTOM_PATH} CACHE STRING)
-endif()
+set(NRD_DXC_CUSTOM_PATH ${DXC_CUSTOM_PATH})
 set(NRD_SHADER_OUTPUT_PATH "${SHADER_OUTPUT_PATH}" CACHE STRING "")
 set(NRD_PROJECT_FOLDER "External/NRD")
 set(NRD_OUTPUT_BIN_PATH "${OUTPUT_BIN_PATH}")
@@ -189,30 +189,34 @@ if (WIN32 AND MSVC)
     configure_file(.args "${CMAKE_BINARY_DIR}/NRDSample.args.json" COPYONLY)
 endif()
 
-# DLSS integration
+# DLSS
 if (WIN32)
     find_library(INPUT_NGX_DEBUG_LIB NAMES nvsdk_ngx_s_dbg.lib PATHS "External/NGX/lib/Windows_x86_64/x86_64")
     find_library(INPUT_NGX_RELEASE_LIB NAMES nvsdk_ngx_s.lib PATHS "External/NGX/lib/Windows_x86_64/x86_64")
     find_file(INPUT_NGX_DLL NAMES nvngx_dlss.dll PATHS "External/NGX/lib/Windows_x86_64/rel")
+else()
+    find_library(INPUT_NGX_DEBUG_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
+    find_library(INPUT_NGX_RELEASE_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
+    find_file(INPUT_NGX_DLL NAMES libnvidia-ngx-dlss.so.2.3.1 PATHS "External/NGX/lib/Linux_x86_64/rel")
+endif()
 
-    if ((NOT INPUT_NGX_DEBUG_LIB) OR (NOT INPUT_NGX_RELEASE_LIB))
-        message(WARNING "Can't find NGX LIB.")
-    endif()
+if ((NOT INPUT_NGX_DEBUG_LIB) OR (NOT INPUT_NGX_RELEASE_LIB))
+    message(WARNING "Can't find NGX LIB.")
+endif()
 
-    if (NOT INPUT_NGX_DLL)
-        message(WARNING "Can't find NGX DLL.")
-    endif()
+if (NOT INPUT_NGX_DLL)
+    message(WARNING "Can't find NGX DLL.")
+endif()
 
-    if (INPUT_NGX_DEBUG_LIB AND INPUT_NGX_RELEASE_LIB AND INPUT_NGX_DLL)
-        target_include_directories(NRDSample PRIVATE "External/NRIFramework/External/NRI/External/vulkan/Include")
-        target_link_libraries(NRDSample PRIVATE debug ${INPUT_NGX_DEBUG_LIB})
-        target_link_libraries(NRDSample PRIVATE optimized ${INPUT_NGX_RELEASE_LIB})
-        copy_library(NRDSample ${INPUT_NGX_DLL})
+if (INPUT_NGX_DEBUG_LIB AND INPUT_NGX_RELEASE_LIB AND INPUT_NGX_DLL)
+    target_include_directories(NRDSample PRIVATE "External/NRIFramework/External/NRI/External/vulkan/Include")
+    target_link_libraries(NRDSample PRIVATE debug ${INPUT_NGX_DEBUG_LIB})
+    target_link_libraries(NRDSample PRIVATE optimized ${INPUT_NGX_RELEASE_LIB})
+    copy_library(NRDSample ${INPUT_NGX_DLL})
 
-        file(GLOB DLSS_INTEGRATION_HEADERS "Source/DLSS/*.h" "Source/DLSS/*.hpp")
-        source_group("DLSS Integration" FILES ${DLSS_INTEGRATION_HEADERS})
-        target_sources(NRDSample PRIVATE ${DLSS_INTEGRATION_HEADERS})
-    endif()
+    file(GLOB DLSS_INTEGRATION_HEADERS "Source/DLSS/*.h" "Source/DLSS/*.hpp")
+    source_group("DLSS Integration" FILES ${DLSS_INTEGRATION_HEADERS})
+    target_sources(NRDSample PRIVATE ${DLSS_INTEGRATION_HEADERS})
 endif()
 
 # Copy NRD tests to _Data, but only if they do not exist in _Data

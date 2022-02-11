@@ -1198,6 +1198,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     {
                         m_Camera.Initialize(m_Scene.aabb.GetCenter(), m_Scene.aabb.vMin, CAMERA_RELATIVE);
                         m_Settings = m_DefaultSettings;
+                        m_ForceHistoryReset = true;
                     }
 
                     // Tests
@@ -1300,10 +1301,18 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
                                 if (fp && fseek(fp, test * testByteSize, SEEK_SET) == 0)
                                 {
-                                    fread(&m_Settings, sizeof(m_Settings), 1, fp);
-                                    fread(m_Camera.GetState(), Camera::GetStateSize(), 1, fp);
+                                    size_t elemNum = fread(&m_Settings, sizeof(m_Settings), 1, fp);
+                                    if (elemNum == 1)
+                                        elemNum = fread(m_Camera.GetState(), Camera::GetStateSize(), 1, fp);
 
                                     m_LastSelectedTest = test;
+
+                                    // File read error
+                                    if (elemNum != 1)
+                                    {
+                                        m_Camera.Initialize(m_Scene.aabb.GetCenter(), m_Scene.aabb.vMin, CAMERA_RELATIVE);
+                                        m_Settings = m_DefaultSettings;
+                                    }
 
                                     // Reset some settings to defaults to avoid a potential confusion
                                     m_Settings.debug = 0.0f;

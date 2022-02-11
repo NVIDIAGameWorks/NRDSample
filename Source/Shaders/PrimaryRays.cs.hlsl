@@ -79,44 +79,44 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     GeometryProps geometryProps0 = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, INF, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
     MaterialProps materialProps0 = GetMaterialProps( geometryProps0 );
 
-    // Transparent lighting
+    // Transparent layer
+    // TODO: move after Composition to be able to use final frame for refractions
     if( gTransparent != 0.0 )
     {
-        float2 mipAndCone = GetConeAngleFromRoughness( 2.0, 0.0 );
-        GeometryProps geometryPropsT0 = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, geometryProps0.tmin, mipAndCone, gWorldTlas, GEOMETRY_ONLY_TRANSPARENT, 0 );
+        float2 mipAndCone = GetConeAngleFromRoughness( geometryProps0.mip, 0.0 );
+        GeometryProps geometryPropsT = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, geometryProps0.tmin, mipAndCone, gWorldTlas, GEOMETRY_ONLY_TRANSPARENT, 0 );
 
         float4 transparentLayer = 0;
-        if( geometryPropsT0.tmin < geometryProps0.tmin )
+        if( geometryPropsT.tmin < geometryProps0.tmin )
         {
-            float roughness = 0.0;
-            float3 origin = geometryPropsT0.GetXoffset();
-            float3 direction = reflect( cameraRayDirection, geometryPropsT0.N );
+            float3 origin = geometryPropsT.GetXoffset();
+            float3 direction = reflect( cameraRayDirection, geometryPropsT.N );
 
-            GeometryProps geometryPropsT1 = CastRay( origin, direction, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
-            MaterialProps materialPropsT1 = GetMaterialProps( geometryPropsT1 );
+            GeometryProps geometryPropsRefl = CastRay( origin, direction, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
+            MaterialProps materialPropsRefl = GetMaterialProps( geometryPropsRefl );
 
-            // Direct lighting
-            float3 Lsum = materialPropsT1.Ldirect;
+            // Direct lighting at reflection
+            float3 Lsum = materialPropsRefl.Ldirect;
             if( STL::Color::Luminance( Lsum ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
-                Lsum *= CastVisibilityRay_AnyHit( geometryPropsT1.GetXoffset( ), gSunDirection, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
-            Lsum += materialPropsT1.Lemi;
+                Lsum *= CastVisibilityRay_AnyHit( geometryPropsRefl.GetXoffset( ), gSunDirection, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
+            Lsum += materialPropsRefl.Lemi;
 
-            // Ambient estimation
+            // Ambient estimation at reflection
             float3 albedo, Rf0;
-            STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialPropsT1.baseColor, materialPropsT1.metalness, albedo, Rf0 );
+            STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialPropsRefl.baseColor, materialPropsRefl.metalness, albedo, Rf0 );
 
-            float NoV = abs( dot( materialPropsT1.N, -direction ) );
-            float3 F = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, materialPropsT1.roughness );
+            float NoV = abs( dot( materialPropsRefl.N, -direction ) );
+            float3 F = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, materialPropsRefl.roughness );
 
             float3 BRDF = albedo * ( 1 - F ) + F;
             BRDF *= STL::Math::Pi( 1.0 );
-            BRDF *= float( !geometryPropsT1.IsSky() );
+            BRDF *= float( !geometryPropsRefl.IsSky() );
 
             float3 Lamb = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
             Lsum += Lamb * BRDF * gAmbient;
 
             // Apply glass material
-            float NoV0 = abs( dot( geometryPropsT0.N, direction ) );
+            float NoV0 = abs( dot( geometryPropsT.N, direction ) );
             float F0 = STL::BRDF::FresnelTerm_Schlick( 0.05, NoV0 ).x;
 
             transparentLayer.xyz = Lsum * F0 * GLASS_TINT;

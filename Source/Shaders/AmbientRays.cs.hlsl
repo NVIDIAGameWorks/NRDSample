@@ -20,7 +20,7 @@ NRI_RESOURCE( RWTexture2D<float3>, gOut_Ambient, u, 0, 1 );
 #define CTA_H           16
 #define DISPATCH_W      ( CTA_W * 2 )
 #define DISPATCH_H      ( CTA_H * 2 )
-#define NORM_VALUE      4096
+#define NORM_VALUE      4096.0
 
 groupshared uint g_Lsumi[ 3 ];
 
@@ -104,7 +104,7 @@ void main( uint2 tilePos : SV_GroupId, uint2 pixelPos : SV_DispatchThreadId, uin
     if( threadIndex == 0 )
     {
         uint3 Lsumi = uint3( g_Lsumi[ 0 ], g_Lsumi[ 1 ], g_Lsumi[ 2 ] );
-        float3 currAmbient = float3( Lsumi / NORM_VALUE );
+        float3 currAmbient = float3( Lsumi ) / NORM_VALUE;
         currAmbient /= CTA_W * CTA_H;
 
         // Temporal stabilization
