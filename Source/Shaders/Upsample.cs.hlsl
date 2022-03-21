@@ -27,14 +27,14 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     }
     */
 
-    float2 pixelUv = float2( pixelPos + 0.5 ) * gInvScreenSize;
+    float2 pixelUv = float2( pixelPos + 0.5 ) * gInvOutputSize;
 
     // Upsampling
     float2 uvScaled = clamp( pixelUv * gRectSize, 1.5, gRectSize - 1.5 );
-    float3 upsampled = BicubicFilterNoCorners( gIn_Image, gLinearSampler, uvScaled, gInvOutputSize, 0.66 ).xyz;
+    float3 upsampled = BicubicFilterNoCorners( gIn_Image, gLinearSampler, uvScaled, gInvScreenSize, 0.66 ).xyz;
 
     // Split screen - noisy input / denoised output
-    float3 input = gIn_Image.SampleLevel( gNearestMipmapNearestSampler, uvScaled * gInvOutputSize, 0 ).xyz;
+    float3 input = gIn_Image.SampleLevel( gNearestMipmapNearestSampler, uvScaled * gInvScreenSize, 0 ).xyz;
     float3 result = pixelUv.x < gSeparator ? input : upsampled;
 
     // Split screen - vertical line

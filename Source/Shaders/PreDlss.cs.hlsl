@@ -25,14 +25,14 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     // ViewZ to depth
     float viewZ = gOut_ViewZ[ pixelPos ];
-    float3 Xv = STL::Geometry::ReconstructViewPosition( pixelUv, gCameraFrustum, viewZ, gIsOrtho );
+    float3 Xv = STL::Geometry::ReconstructViewPosition( pixelUv, gCameraFrustum, viewZ, gOrthoMode );
     float4 clipPos = STL::Geometry::ProjectiveTransform( gViewToClip, Xv );
     gOut_ViewZ[ pixelPos ] = clipPos.z / clipPos.w;
 
     // Object to surface motion
     float3 X = STL::Geometry::AffineTransform( gViewToWorld, Xv );
-    float3 motionVector = gIn_ObjectMotion[ pixelPos ] * ( gWorldSpaceMotion ? 1.0 : gInvScreenSize.xyy );
-    float2 pixelUvPrev = STL::Geometry::GetPrevUvFromMotion( pixelUv, X, gWorldToClipPrev, motionVector, gWorldSpaceMotion );
+    float3 motionVector = gIn_ObjectMotion[ pixelPos ] * ( gIsWorldSpaceMotionEnabled ? 1.0 : gInvScreenSize.xyy );
+    float2 pixelUvPrev = STL::Geometry::GetPrevUvFromMotion( pixelUv, X, gWorldToClipPrev, motionVector, gIsWorldSpaceMotionEnabled );
     float2 pixelMotion = ( pixelUvPrev - pixelUv ) * gScreenSize;
     gOut_SurfaceMotion[ pixelPos ] = pixelMotion;
 

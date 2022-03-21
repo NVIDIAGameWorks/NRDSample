@@ -9,7 +9,7 @@ option(DISABLE_SHADER_COMPILATION "disable compilation of shaders" OFF)
 option(USE_MINIMAL_DATA "use minimal _Data (90MB)" OFF)
 option(USE_DXC_FROM_PACKMAN_ON_AARCH64 "download DXC for aarch64 using Packman" ON)
 
-project(Samples LANGUAGES C CXX)
+project(NRDSample LANGUAGES C CXX)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
@@ -80,27 +80,23 @@ if (NOT DISABLE_SHADER_COMPILATION)
     set(MATHLIB_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/External/NRIFramework/External/MathLib")
     set(EXTERNAL_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/External")
     set(NRD_SHADER_HEADER_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/External/NRD/Include")
-    set(SHADER_OUTPUT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/_Data/Shaders")
+    set(SHADER_OUTPUT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/_Shaders")
 
     # List HLSL shaders and headers
     file(GLOB_RECURSE HLSL_FILES "Source/Shaders/*.hlsl" "Source/Shaders/*.hlsli")
     file(GLOB_RECURSE HLSL_MATHLIB_HEADER_FILES "${MATHLIB_INCLUDE_PATH}/*.hlsli")
     file(GLOB_RECURSE HLSL_NRD_HEADER_FILES "${NRD_SHADER_HEADER_INCLUDE_PATH}/*.hlsli")
 
+    file(MAKE_DIRECTORY ${SHADER_OUTPUT_PATH})
     include(ShaderCompilation.cmake)
-
-    # Create "_Data/Shaders"
-    add_custom_target(SampleCreateFolderForShaders ALL COMMAND ${CMAKE_COMMAND} -E make_directory ${SHADER_OUTPUT_PATH})
-    set_property(TARGET SampleCreateFolderForShaders PROPERTY FOLDER "Shaders")
 
     # Define build rules for the shaders
     list_hlsl_headers("${HLSL_FILES}" HEADER_FILES)
     list_hlsl_headers("${HLSL_MATHLIB_HEADER_FILES}" HEADER_FILES)
     list_hlsl_headers("${HLSL_NRD_HEADER_FILES}" HEADER_FILES)
     list_hlsl_shaders("${HLSL_FILES}" "${HEADER_FILES}" SHADER_FILES)
-    add_custom_target(SampleShaders ALL DEPENDS ${SHADER_FILES} SOURCES "${HEADER_FILES}")
-    add_dependencies(SampleShaders SampleCreateFolderForShaders)
-    set_property(TARGET SampleShaders PROPERTY FOLDER "Shaders")
+    add_custom_target(NRDSampleShaders ALL DEPENDS ${SHADER_FILES} SOURCES "${HEADER_FILES}")
+    set_property(TARGET NRDSampleShaders PROPERTY FOLDER "Samples")
 else()
     option(NRD_DISABLE_SHADER_COMPILATION "" ON)
 endif()
@@ -114,7 +110,7 @@ endif()
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     # -Wno-pragma-pack: assimp causes a number of these warnings
     # warning: the current #pragma pack alignment value is modified in the included file [-Wpragma-pack]
-    add_compile_options(${ARCHITECTURE_COMPILE_OPTIONS} -Wno-missing-braces -Wno-return-type-c-linkage -Wno-pragma-pack)
+    add_compile_options(${ARCHITECTURE_COMPILE_OPTIONS} -Wno-missing-braces -Wno-return-type-c-linkage -Wno-pragma-pack -Wno-format-security)
     set(DETEX_COMPILE_OPTIONS -Wno-unused-function)
 elseif (CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     add_compile_options(${ARCHITECTURE_COMPILE_OPTIONS})
@@ -171,7 +167,7 @@ target_include_directories(NRDSample PRIVATE "External/NRD/Include" "External/NR
 target_compile_definitions(NRDSample PRIVATE ${PLATFORM_DEFINITIONS} PROJECT_NAME=NRDSample)
 
 if (NOT DISABLE_SHADER_COMPILATION)
-    add_dependencies(NRDSample SampleShaders)
+    add_dependencies(NRDSample NRDSampleShaders)
 endif()
 
 target_link_libraries(NRDSample PRIVATE NRIFramework NRI NRD)
@@ -197,7 +193,7 @@ if (WIN32)
 else()
     find_library(INPUT_NGX_DEBUG_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
     find_library(INPUT_NGX_RELEASE_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
-    find_file(INPUT_NGX_DLL NAMES libnvidia-ngx-dlss.so.2.3.1 PATHS "External/NGX/lib/Linux_x86_64/rel")
+    find_file(INPUT_NGX_DLL NAMES libnvidia-ngx-dlss.so.2.3.11 PATHS "External/NGX/lib/Linux_x86_64/rel")
 endif()
 
 if ((NOT INPUT_NGX_DEBUG_LIB) OR (NOT INPUT_NGX_RELEASE_LIB))
@@ -218,13 +214,3 @@ if (INPUT_NGX_DEBUG_LIB AND INPUT_NGX_RELEASE_LIB AND INPUT_NGX_DLL)
     source_group("DLSS Integration" FILES ${DLSS_INTEGRATION_HEADERS})
     target_sources(NRDSample PRIVATE ${DLSS_INTEGRATION_HEADERS})
 endif()
-
-# Copy NRD tests to _Data, but only if they do not exist in _Data
-file(GLOB NRD_TESTS "Tests/*")
-foreach(TEST ${NRD_TESTS})
-    get_filename_component(TEST_FILENAME ${TEST} NAME)
-    set(DEST_TEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/_Data/Tests/${TEST_FILENAME}")
-    if (NOT EXISTS "${DEST_TEST_PATH}")
-        configure_file(${TEST} "${DEST_TEST_PATH}" COPYONLY)
-    endif()
-endforeach()

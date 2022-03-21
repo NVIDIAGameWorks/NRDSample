@@ -15,9 +15,9 @@
 #include "NGX/include/nvsdk_ngx_helpers_vk.h"
 
 #define DLSS_INTEGRATION 1
-#define DLSS_INTEGRATION_MAJOR 2
+#define DLSS_INTEGRATION_MAJOR 3
 #define DLSS_INTEGRATION_MINOR 0
-#define DLSS_INTEGRATION_DATE "14 January 2022"
+#define DLSS_INTEGRATION_DATE "25 February 2022"
 
 enum class DlssQuality
 {
@@ -25,7 +25,8 @@ enum class DlssQuality
     PERFORMANCE,
     BALANCED,
     QUALITY,
-    ULTRA_QUALITY
+
+    MAX_NUM
 };
 
 // This is retrieved from DLSS
@@ -49,21 +50,21 @@ struct DlssInitDesc
 
 struct DlssDispatchDesc
 {
+    // Output - required state SHADER_RESOURCE_STORAGE, output resolution
+    nri::Texture* texOutput = nullptr;
+
     // Inputs - required state SHADER_RESOURCE, render resolution
     nri::Texture* texInput = nullptr;
     nri::Texture* texMv = nullptr;
     nri::Texture* texDepth = nullptr;
     nri::Texture* texExposure = nullptr; // (optional) 1x1
 
-    // Output - required state SHADER_RESOURCE_STORAGE, output resolution
-    nri::Texture* texOutput = nullptr;
-
     // For VULKAN
+    nri::Descriptor* descriptorOutput = nullptr;
     nri::Descriptor* descriptorInput = nullptr;
     nri::Descriptor* descriptorMv = nullptr;
     nri::Descriptor* descriptorDepth = nullptr;
     nri::Descriptor* descriptorExposure = nullptr;
-    nri::Descriptor* descriptorOutput = nullptr;
 
     NVSDK_NGX_Dimensions renderOrScaledResolution = {};
     float jitter[2] = {0.0f, 0.0f};

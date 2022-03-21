@@ -27,6 +27,11 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     V.y = 0.0;
     V.z = NoV;
 
+    float m = roughness * roughness;
+    float m2 = m * m;
+    float a = NoV + STL::Math::Sqrt01( ( NoV - m2 * NoV ) * NoV + m2 );
+    float pdf = 0.5 * STL::Math::PositiveRcp( a );
+
     float2 GG = 0.0;
 
     [loop]
@@ -61,10 +66,16 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
             // TODO: almost the same and simpler
             // throughput.x += STL::BRDF::GeometryTerm_Smith( roughness, NoL );
 
-            float D = STL::BRDF::DistributionTerm( roughness, NoH );
             float G = STL::BRDF::GeometryTermMod( roughness, NoL, NoV, VoH, NoH );
 
-            GG.y += D * G * NoL / STL::ImportanceSampling::VNDF::GetPDF( NoV, NoH, roughness );
+            #if 0
+                // Baseline ( can produce insane values for low roughness if PDF is super low, "saturate" for averaged result is needed )
+                float D = STL::BRDF::DistributionTerm( roughness, NoH );
+                GG.y += D * G * NoL / STL::ImportanceSampling::VNDF::GetPDF( NoV, NoH, roughness );
+            #else
+                // Numerically stable, doesn't produce extremely large values for low roughness
+                GG.y += G * NoL / pdf;
+            #endif
         }
     }
 

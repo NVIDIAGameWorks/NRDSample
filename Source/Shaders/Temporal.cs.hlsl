@@ -109,10 +109,10 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     // Previous pixel position
     offseti -= BORDER;
     float2 offset = float2( offseti ) * gInvRectSize;
-    float3 Xvnearest = STL::Geometry::ReconstructViewPosition( pixelUv + offset, gCameraFrustum, viewZnearest, gIsOrtho );
+    float3 Xvnearest = STL::Geometry::ReconstructViewPosition( pixelUv + offset, gCameraFrustum, viewZnearest, gOrthoMode );
     float3 Xnearest = STL::Geometry::AffineTransform( gViewToWorld, Xvnearest );
-    float3 mvNearest = gIn_ObjectMotion[ pixelPos + offseti ] * ( gWorldSpaceMotion ? 1.0 : gInvRectSize.xyy );
-    float2 pixelUvPrev = STL::Geometry::GetPrevUvFromMotion( pixelUv + offset, Xnearest, gWorldToClipPrev, mvNearest, gWorldSpaceMotion );
+    float3 mvNearest = gIn_ObjectMotion[ pixelPos + offseti ] * ( gIsWorldSpaceMotionEnabled ? 1.0 : gInvRectSize.xyy );
+    float2 pixelUvPrev = STL::Geometry::GetPrevUvFromMotion( pixelUv + offset, Xnearest, gWorldToClipPrev, mvNearest, gIsWorldSpaceMotionEnabled );
     pixelUvPrev -= offset;
 
     // History clamping
@@ -125,7 +125,7 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     float2 pixelMotion = pixelUvPrev - pixelUv;
     float motionAmount = saturate( length( pixelMotion ) / TAA_MOTION_MAX_REUSE );
     float historyWeight = lerp( TAA_MAX_HISTORY_WEIGHT, TAA_MIN_HISTORY_WEIGHT, motionAmount );
-    historyWeight *= float( gMipBias != 0.0 && isInScreen );
+    historyWeight *= float( any( gJitter != 0.0 ) && isInScreen );
     historyWeight *= 1.0 - gReference;
 
     // Final mix

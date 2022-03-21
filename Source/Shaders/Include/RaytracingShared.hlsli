@@ -168,7 +168,7 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps, bool useSimplifiedM
 {
     MaterialProps props = ( MaterialProps )0;
 
-    float3 Csky = GetSkyIntensity( geometryProps.rayDirection, gSunDirection, gSunAngularRadius );
+    float3 Csky = GetSkyIntensity( geometryProps.rayDirection, gSunDirection, gTanSunAngularRadius );
 
     [branch]
     if( geometryProps.IsSky( ) )
@@ -229,7 +229,7 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps, bool useSimplifiedM
     [branch]
     if( shadow != 0.0 )
     {
-        float3 Csun = GetSunIntensity( gSunDirection, gSunDirection, gSunAngularRadius );
+        float3 Csun = GetSunIntensity( gSunDirection, gSunDirection, gTanSunAngularRadius );
 
         // Pseudo sky importance sampling
         float3 Cimp = lerp( Csky, Csun, STL::Math::SmoothStep( 0.0, 0.2, roughness ) );

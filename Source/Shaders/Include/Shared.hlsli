@@ -26,6 +26,22 @@ Modifiers:
 */
 
 //===============================================================
+// FP16
+//===============================================================
+
+#ifdef NRD_COMPILER_DXC
+    #define half_float float16_t
+    #define half_float2 float16_t2
+    #define half_float3 float16_t3
+    #define half_float4 float16_t4
+#else
+    #define half_float float
+    #define half_float2 float2
+    #define half_float3 float3
+    #define half_float4 float4
+#endif
+
+//===============================================================
 // RESOURCES
 //===============================================================
 
@@ -36,8 +52,7 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float4x4 gViewToClip;
     float4x4 gWorldToClipPrev;
     float4x4 gWorldToClip;
-    float4 gDiffHitDistParams;
-    float4 gSpecHitDistParams;
+    float4 gHitDistParams;
     float4 gCameraFrustum;
     float3 gSunDirection;
     float gExposure;
@@ -46,7 +61,7 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float3 gTrimmingParams;
     float gEmissionIntensity;
     float3 gViewDirection;
-    float gIsOrtho;
+    float gOrthoMode;
     float2 gOutputSize;
     float2 gInvOutputSize;
     float2 gScreenSize;
@@ -58,14 +73,12 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float gNearZ;
     float gAmbientAccumSpeed;
     float gAmbient;
-    float gAmbientInComposition;
     float gSeparator;
     float gRoughnessOverride;
     float gMetalnessOverride;
     float gUnitToMetersMultiplier;
     float gIndirectDiffuse;
     float gIndirectSpecular;
-    float gSunAngularRadius; // TODO: use gTanSunAngularRadius or fix the code where used
     float gTanSunAngularRadius;
     float gTanPixelAngularRadius;
     float gDebug;
@@ -77,11 +90,39 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     uint gFrameIndex;
     uint gForcedMaterial;
     uint gUseNormalMap;
-    uint gWorldSpaceMotion;
+    uint gIsWorldSpaceMotionEnabled;
     uint gTracingMode;
     uint gSampleNum;
     uint gBounceNum;
     uint gOcclusionOnly;
+
+    // NIS
+    float gNisDetectRatio;
+    float gNisDetectThres;
+    float gNisMinContrastRatio;
+    float gNisRatioNorm;
+    float gNisContrastBoost;
+    float gNisEps;
+    float gNisSharpStartY;
+    float gNisSharpScaleY;
+    float gNisSharpStrengthMin;
+    float gNisSharpStrengthScale;
+    float gNisSharpLimitMin;
+    float gNisSharpLimitScale;
+    float gNisScaleX;
+    float gNisScaleY;
+    float gNisDstNormX;
+    float gNisDstNormY;
+    float gNisSrcNormX;
+    float gNisSrcNormY;
+    uint gNisInputViewportOriginX;
+    uint gNisInputViewportOriginY;
+    uint gNisInputViewportWidth;
+    uint gNisInputViewportHeight;
+    uint gNisOutputViewportOriginX;
+    uint gNisOutputViewportOriginY;
+    uint gNisOutputViewportWidth;
+    uint gNisOutputViewportHeight;
 };
 
 NRI_RESOURCE( SamplerState, gLinearMipmapLinearSampler, s, 1, 0 );
@@ -92,6 +133,7 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 // DENOISER PART
 //=============================================================================================
 
+#define NRD_HEADER_ONLY
 #include "NRD/Include/NRD.hlsli"
 
 //=============================================================================================
@@ -119,7 +161,7 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 #define SHOW_WORLD_UNITS                    10
 #define SHOW_MESH                           11
 #define SHOW_MIP_PRIMARY                    12
-#define SHOW_MIP_SPECULAR                   13 // TODO: remove of fix visualization
+#define SHOW_MIP_SPECULAR                   13
 
 #define FP16_MAX                            65504.0
 #define INF                                 1e5
@@ -133,7 +175,7 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 #define USE_SIMPLEX_LIGHTING_MODEL          0
 #define USE_IMPORTANCE_SAMPLING             1
 #define USE_MODULATED_IRRADIANCE            0 // an example, demonstrating how irradiance can be modulated before denoising and then de-modulated after denoising to avoid over-blurring
-#define USE_SANITIZATION                    0 // NRD sample is NAN/INF free, but all relevant code is here to demonstrate usage
+#define USE_SANITIZATION                    1 // NRD sample is NAN/INF free, but ZeroDay scene is not
 
 #define BRDF_ENERGY_THRESHOLD               0.003
 #define AMBIENT_BOUNCE_NUM                  3
@@ -154,13 +196,13 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 
 float3 GetViewVector( float3 X )
 {
-    return gIsOrtho == 0.0 ? normalize( gCameraOrigin - X ) : gViewDirection;
+    return gOrthoMode == 0.0 ? normalize( gCameraOrigin - X ) : gViewDirection;
 }
 
 float3 ApplyPostLightingComposition( uint2 pixelPos, float3 Lsum, Texture2D<float4> gIn_TransparentLayer, bool convertToLDR = true )
 {
-    // Transparent layer
-    float4 transparentLayer = gTransparent ? gIn_TransparentLayer[ pixelPos ] : 0;
+    // Transparent layer ( non-reference mode )
+    float4 transparentLayer = ( gTransparent && !gReference ) ? gIn_TransparentLayer[ pixelPos ] : 0;
     Lsum = Lsum * ( 1.0 - transparentLayer.w ) * ( transparentLayer.w != 0.0 ? GLASS_TINT : 1.0 ) + transparentLayer.xyz;
 
     // Exposure
@@ -238,7 +280,7 @@ float3 BicubicFilterNoCorners( Texture2D<float3> tex, SamplerState samp, float2 
 #define SKY_INTENSITY 1.0
 #define SUN_INTENSITY 8.0
 
-float3 GetSunIntensity( float3 v, float3 sunDirection, float angularRadius )
+float3 GetSunIntensity( float3 v, float3 sunDirection, float tanAngularRadius )
 {
     float b = dot( v, sunDirection );
     float d = length( v - sunDirection * b );
@@ -247,8 +289,9 @@ float3 GetSunIntensity( float3 v, float3 sunDirection, float angularRadius )
     glow *= b * 0.5 + 0.5;
     glow *= 0.6;
 
-    float a = sqrt( 2.0 ) * STL::Math::Sqrt01( 1.0 - b ); // acos approx
-    float sun = 1.0 - STL::Math::SmoothStep( angularRadius * 0.9, angularRadius * 1.66, a );
+    float a = STL::Math::Sqrt01( 1.0 - b * b ) / b;
+    float sun = 1.0 - STL::Math::SmoothStep( tanAngularRadius * 0.9, tanAngularRadius * 1.66, a );
+    sun *= float( b > 0.0 );
     sun *= 1.0 - STL::Math::Pow01( 1.0 - v.z, 4.85 );
     sun *= STL::Math::SmoothStep( 0.0, 0.1, sunDirection.z );
     sun += glow;
@@ -261,7 +304,7 @@ float3 GetSunIntensity( float3 v, float3 sunDirection, float angularRadius )
     return STL::Color::GammaToLinear( sunColor ) * SUN_INTENSITY;
 }
 
-float3 GetSkyIntensity( float3 v, float3 sunDirection, float angularRadius )
+float3 GetSkyIntensity( float3 v, float3 sunDirection, float tanAngularRadius )
 {
     float atmosphere = sqrt( 1.0 - saturate( v.z ) );
 
@@ -272,5 +315,5 @@ float3 GetSkyIntensity( float3 v, float3 sunDirection, float angularRadius )
     float3 skyColor = lerp( float3( 0.2, 0.4, 0.8 ), float3( scatterColor ), atmosphere / 1.3 );
     skyColor *= saturate( 1.0 + sunDirection.z );
 
-    return STL::Color::GammaToLinear( saturate( skyColor ) ) * SKY_INTENSITY + GetSunIntensity( v, sunDirection, angularRadius );
+    return STL::Color::GammaToLinear( saturate( skyColor ) ) * SKY_INTENSITY + GetSunIntensity( v, sunDirection, tanAngularRadius );
 }

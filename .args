@@ -100,9 +100,6 @@
         },
         {
           "Command": "--dlssQuality=3"
-        },
-        {
-          "Command": "--dlssQuality=4"
         }
       ]
     }

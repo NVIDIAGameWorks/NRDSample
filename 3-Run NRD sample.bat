@@ -92,7 +92,6 @@ echo 2 - ultra performance
 echo 3 - performance
 echo 4 - balanced
 echo 5 - quality
-echo 6 - ultra quality
 :CHOOSE_DLSS
     set /P M=DLSS mode [1-6]:
     if %M%==1 (
@@ -113,10 +112,6 @@ echo 6 - ultra quality
     )
     if %M%==5 (
         set DLSS=3
-        goto SCENE
-    )
-    if %M%==6 (
-        set DLSS=4
         goto SCENE
     )
     goto CHOOSE_DLSS

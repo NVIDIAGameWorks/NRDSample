@@ -8,7 +8,7 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
-#if( !defined( COMPILER_FXC ) && !defined( VULKAN ) )
+#if( !defined( COMPILER_FXC ) )
 
 #include "Shared.hlsli"
 #include "RaytracingShared.hlsli"
@@ -72,7 +72,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     float2 sampleUv = pixelUv + gJitter;
 
     // Primary ray
-    float3 cameraRayOriginv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, gNearZ, gIsOrtho );
+    float3 cameraRayOriginv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, gNearZ, gOrthoMode );
     float3 cameraRayOrigin = STL::Geometry::AffineTransform( gViewToWorld, cameraRayOriginv );
     float3 cameraRayDirection = -GetViewVector( cameraRayOrigin );
 
@@ -132,7 +132,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         float4 clipPrev = STL::Geometry::ProjectiveTransform( gWorldToClipPrev, geometryProps0.X );
         float2 sampleUvPrev = ( clipPrev.xy / clipPrev.w ) * float2( 0.5, -0.5 ) + 0.5;
         float2 surfaceMotion = ( sampleUvPrev - sampleUv ) * gRectSize;
-        float3 motion = gWorldSpaceMotion ? 0 : surfaceMotion.xyy;
+        float3 motion = gIsWorldSpaceMotionEnabled ? 0 : surfaceMotion.xyy;
 
         gOut_Motion[ pixelPos ] = motion * STL::Math::LinearStep( 0.0, 0.0000005, abs( motion ) ); // TODO: move LinearStep to NRD?
         gOut_ViewZ[ pixelPos ] = INF * STL::Math::Sign( gNearZ );
@@ -148,7 +148,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     float4 clipPrev = STL::Geometry::ProjectiveTransform( gWorldToClipPrev, Xprev );
     float2 sampleUvPrev = ( clipPrev.xy / clipPrev.w ) * float2( 0.5, -0.5 ) + 0.5;
     float2 surfaceMotion = ( sampleUvPrev - sampleUv ) * gRectSize;
-    float3 motion = gWorldSpaceMotion ? ( Xprev - geometryProps0.X ) : surfaceMotion.xyy;
+    float3 motion = gIsWorldSpaceMotionEnabled ? ( Xprev - geometryProps0.X ) : surfaceMotion.xyy;
 
     gOut_Motion[ pixelPos ] = motion * STL::Math::LinearStep( 0.0, 0.0000005, abs( motion ) ); // TODO: move LinearStep to NRD?
 

@@ -20,23 +20,13 @@ Makefile
 # VS Code
 .vscode/
 
-# Shaders
+# shaders
 *.dxbc
 *.dxil
 *.spirv
 *.dxbc.h
 *.dxil.h
 *.spirv.h
-
-# Library
-*.lib
-*.exp
-*.dll
-*.pdb
-*.so
-*.so.*
-*.a
-*.exe
 
 # ninja
 .ninja_deps
@@ -46,17 +36,31 @@ compile_commands.json
 *.log
 *.ninja
 
+# library
+*.lib
+*.exp
+*.dll
+*.ilk
+*.pdb
+*.so
+*.so.*
+*.manifest
+
 # external packages
-External/Assimp
-External/Detex
-External/Glfw
-External/ImGui
-External/vulkansdk
-External/DXC
+External/Assimp/
+External/Detex/
+External/Glfw/
+External/ImGui/
+External/vulkansdk/
+External/DXC/
 
-_Data/
+# generated folders
 _Build/
+_Compiler/
+_Data/
+_Shaders/
+_NRD_SDK/
+_NRI_SDK/
 
-# on Linux, _Data is symbolic link
+# can be a symbolic link
 _Data
-*/Output/*

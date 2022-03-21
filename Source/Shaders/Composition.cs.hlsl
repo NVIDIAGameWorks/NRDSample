@@ -89,7 +89,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float4 baseColorMetalness = gIn_BaseColor_Metalness[ pixelPos ];
     STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( baseColorMetalness.xyz, baseColorMetalness.w, albedo, Rf0 );
 
-    float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gIsOrtho );
+    float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
     float3 X = STL::Geometry::RotateVector( gViewToWorld, Xv );
     float3 V = GetViewVector( X );
 
@@ -104,10 +104,22 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         specIndirect = specIndirect.xxxx;
     }
 
-    diffIndirect = gDenoiserType != REBLUR ? RELAX_BackEnd_UnpackRadianceAndHitDist( diffIndirect ) : REBLUR_BackEnd_UnpackRadianceAndHitDist( diffIndirect );
-    diffIndirect.xyz *= gIndirectDiffuse;
+    if( gDenoiserType != REBLUR )
+    {
+        diffIndirect = RELAX_BackEnd_UnpackRadianceAndHitDist( diffIndirect );
+        specIndirect = RELAX_BackEnd_UnpackRadianceAndHitDist( specIndirect );
 
-    specIndirect = gDenoiserType != REBLUR ? RELAX_BackEnd_UnpackRadianceAndHitDist( specIndirect ) : REBLUR_BackEnd_UnpackRadianceAndHitDist( specIndirect );
+        // RELAX doesn't support AO/SO denoising, set to estimated integrated average
+        diffIndirect.w = 1.0 / STL::Math::Pi( 1.0 );
+        specIndirect.w = 1.0 / STL::Math::Pi( 1.0 );
+    }
+    else
+    {
+        diffIndirect = REBLUR_BackEnd_UnpackRadianceAndHitDist( diffIndirect );
+        specIndirect = REBLUR_BackEnd_UnpackRadianceAndHitDist( specIndirect );
+    }
+
+    diffIndirect.xyz *= gIndirectDiffuse;
     specIndirect.xyz *= gIndirectSpecular;
 
     // Environment ( pre-integrated ) specular term
@@ -122,14 +134,14 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     // Add ambient // TODO: reduce if multi bounce?
     float3 ambient = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
     ambient *= exp2( AMBIENT_FADE * STL::Math::LengthSquared( X - gCameraOrigin ) );
-    ambient *= gAmbientInComposition;
+    ambient *= gAmbient;
 
     float2 gg = gIn_IntegratedBRDF.SampleLevel( gLinearSampler, float2( NoV, roughness ), 0 );
     diffIndirect.w *= gg.x;
     specIndirect.w *= gg.y;
 
     float m = roughness * roughness;
-    Lsum += ambient * diffIndirect.w * albedo * ( 1 - F );
+    Lsum += ambient * diffIndirect.w * albedo * ( 1.0 - F );
     Lsum += ambient * specIndirect.w * m * F;
 
     // Debug
