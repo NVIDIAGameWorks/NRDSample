@@ -28,9 +28,8 @@ if /I "%M%" neq "y" goto NRI
 
 mkdir "Shaders"
 
-xcopy "..\%NRD_DIR%\Source\Shaders\" "Shaders" /s
-copy "..\%NRD_DIR%\External\MathLib\*.hlsli" "Shaders\Include"
-copy "..\%NRD_DIR%\Include\*.hlsli" "Shaders\Include"
+xcopy "..\%NRD_DIR%\Shaders\" "Shaders" /s
+copy "..\%NRD_DIR%\External\MathLib\*.hlsli" "Shaders\Source"
 
 :NRI
 

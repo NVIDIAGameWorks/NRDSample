@@ -6,7 +6,7 @@ All-in-one repository including all relevant pieces to see [*NRD (NVIDIA Real-ti
 
 - Install [*Cmake*](https://cmake.org/download/) 3.15+
 - Install on
-    - Windows: *WindowsSDK*, *VulkanSDK*
+    - Windows: latest *WindowsSDK*, *VulkanSDK*
     - Linux (x86-64): *VulkanSDK*, *libx11-dev*, *libxrandr-dev*, *libwayland-dev*
     - Linux (aarch64): find a precompiled binary for [*DXC*](https://github.com/microsoft/DirectXShaderCompiler), *libx11-dev*, *libxrandr-dev*, *libwayland-dev*
 - Build (variant 1) - using *Git* and *CMake* explicitly

@@ -114,27 +114,23 @@ bool DlssIntegration::InitializeLibrary(nri::Device& device, const char* appData
     DLSS_ConvertCharToWchar(appDataPath, path, 512);
     wchar_t* paths[1] = { path };
 
-    NVSDK_NGX_FeatureCommonInfo commonInfo = {};
-    commonInfo.PathListInfo.Length = 1;
-    commonInfo.PathListInfo.Path = paths;
-
     NVSDK_NGX_Result result = NVSDK_NGX_Result::NVSDK_NGX_Result_Fail;
     if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D12)
     {
         ID3D12Device* d3d12Device = NRI.GetDeviceD3D12(*m_Device);
-        result = NVSDK_NGX_D3D12_Init(m_ApplicationId, path, d3d12Device, &commonInfo);
+        result = NVSDK_NGX_D3D12_Init(m_ApplicationId, path, d3d12Device);
     }
     else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VULKAN)
     {
         VkDevice vkDevice = (VkDevice)NRI.GetDeviceVK(*m_Device);
         VkPhysicalDevice vkPhysicalDevice = (VkPhysicalDevice)NRI.GetPhysicalDeviceVK(*m_Device);
         VkInstance vkInstance = (VkInstance)NRI.GetInstanceVK(*m_Device);
-        result = NVSDK_NGX_VULKAN_Init(m_ApplicationId, path, vkInstance, vkPhysicalDevice, vkDevice, &commonInfo);
+        result = NVSDK_NGX_VULKAN_Init(m_ApplicationId, path, vkInstance, vkPhysicalDevice, vkDevice);
     }
     else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D11)
     {
         ID3D11Device* d3d11Device = NRI.GetDeviceD3D11(*m_Device);
-        result = NVSDK_NGX_D3D11_Init(m_ApplicationId, path, d3d11Device, &commonInfo);
+        result = NVSDK_NGX_D3D11_Init(m_ApplicationId, path, d3d11Device);
     }
 
     if (NVSDK_NGX_SUCCEED(result))

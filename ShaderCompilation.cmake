@@ -140,13 +140,13 @@ macro(list_hlsl_shaders HLSL_FILES HEADER_FILES SHADER_FILES)
         if (NOT "${FXC_PROFILE}" STREQUAL "" AND NOT "${FXC_PATH}" STREQUAL "")
             add_custom_command(
                     OUTPUT ${OUTPUT_PATH_DXBC} ${OUTPUT_PATH_DXBC}.h
-                    COMMAND ${FXC_PATH} /nologo ${ENTRY_POINT} /DCOMPILER_FXC=1 /T ${FXC_PROFILE}
+                    COMMAND ${FXC_PATH} /nologo ${ENTRY_POINT} /T ${FXC_PROFILE} /WX /O3
+                        /DCOMPILER_FXC=1 /DNRD_USE_OCT_NORMAL_ENCODING=${NRD_USE_OCT_NORMAL_ENCODING} /DNRD_USE_MATERIAL_ID=${NRD_USE_MATERIAL_ID}
                         /I "${EXTERNAL_INCLUDE_PATH}" /I "${SHADER_INCLUDE_PATH}" /I "${MATHLIB_INCLUDE_PATH}" /I "Include"
                         ${FILE_NAME} /Vn g_${BYTECODE_ARRAY_NAME}_dxbc /Fh ${OUTPUT_PATH_DXBC}.h /Fo ${OUTPUT_PATH_DXBC}
-                        /WX /O3
                     MAIN_DEPENDENCY ${FILE_NAME}
                     DEPENDS ${HEADER_FILES}
-                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Source/Shaders"
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Shaders"
                     VERBATIM
             )
             list(APPEND SHADER_FILES ${OUTPUT_PATH_DXBC})
@@ -155,13 +155,13 @@ macro(list_hlsl_shaders HLSL_FILES HEADER_FILES SHADER_FILES)
         if (NOT "${DXC_PROFILE}" STREQUAL "" AND NOT "${DXC_PATH}" STREQUAL "")
             add_custom_command(
                     OUTPUT ${OUTPUT_PATH_DXIL} ${OUTPUT_PATH_DXIL}.h
-                    COMMAND ${DXC_PATH} ${ENTRY_POINT} -DCOMPILER_DXC=1 -T ${DXC_PROFILE}
+                    COMMAND ${DXC_PATH} ${ENTRY_POINT} -T ${DXC_PROFILE} -WX -O3 -enable-16bit-types
+                        -DCOMPILER_DXC=1 -DNRD_USE_OCT_NORMAL_ENCODING=${NRD_USE_OCT_NORMAL_ENCODING} -DNRD_USE_MATERIAL_ID=${NRD_USE_MATERIAL_ID}
                         -I "${EXTERNAL_INCLUDE_PATH}" -I "${SHADER_INCLUDE_PATH}" -I "${MATHLIB_INCLUDE_PATH}" -I "Include"
                         ${FILE_NAME} -Vn g_${BYTECODE_ARRAY_NAME}_dxil -Fh ${OUTPUT_PATH_DXIL}.h -Fo ${OUTPUT_PATH_DXIL}
-                        -WX -O3 -enable-16bit-types
                     MAIN_DEPENDENCY ${FILE_NAME}
                     DEPENDS ${HEADER_FILES}
-                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Source/Shaders"
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Shaders"
                     VERBATIM
             )
             list(APPEND SHADER_FILES ${OUTPUT_PATH_DXIL})
@@ -170,14 +170,14 @@ macro(list_hlsl_shaders HLSL_FILES HEADER_FILES SHADER_FILES)
         if (NOT "${DXC_PROFILE}" STREQUAL "" AND NOT "${DXC_SPIRV_PATH}" STREQUAL "")
             add_custom_command(
                     OUTPUT ${OUTPUT_PATH_SPIRV} ${OUTPUT_PATH_SPIRV}.h
-                    COMMAND ${DXC_SPIRV_PATH} ${ENTRY_POINT} -DCOMPILER_DXC=1 -DVULKAN=1 -T ${DXC_PROFILE}
+                    COMMAND ${DXC_SPIRV_PATH} ${ENTRY_POINT} -T ${DXC_PROFILE} -WX -O3 -enable-16bit-types
+                        -DCOMPILER_DXC=1 -DVULKAN=1 -DNRD_USE_OCT_NORMAL_ENCODING=${NRD_USE_OCT_NORMAL_ENCODING} -DNRD_USE_MATERIAL_ID=${NRD_USE_MATERIAL_ID}
                         -I "${EXTERNAL_INCLUDE_PATH}" -I "${SHADER_INCLUDE_PATH}" -I "${MATHLIB_INCLUDE_PATH}" -I "Include"
                         ${FILE_NAME} -spirv -Vn g_${BYTECODE_ARRAY_NAME}_spirv -Fh ${OUTPUT_PATH_SPIRV}.h -Fo ${OUTPUT_PATH_SPIRV} ${DXC_VK_SHIFTS}
-                        -WX -O3 -enable-16bit-types
                         -spirv -fspv-target-env=vulkan1.2 -fspv-extension=SPV_EXT_descriptor_indexing -fspv-extension=KHR
                     MAIN_DEPENDENCY ${FILE_NAME}
                     DEPENDS ${HEADER_FILES}
-                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Source/Shaders"
+                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Shaders"
                     VERBATIM
             )
             list(APPEND SHADER_FILES ${OUTPUT_PATH_SPIRV})

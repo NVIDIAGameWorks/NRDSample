@@ -1,13 +1,12 @@
 cmake_minimum_required(VERSION 3.15)
 
 message("Processing 'NRD sample'...")
-
 set(DXC_CUSTOM_PATH "custom/path/to/dxc" CACHE STRING "This DXC will be used if Vulkan SDK is not installed")
 
 # Settings
-option(DISABLE_SHADER_COMPILATION "disable compilation of shaders" OFF)
-option(USE_MINIMAL_DATA "use minimal _Data (90MB)" OFF)
-option(USE_DXC_FROM_PACKMAN_ON_AARCH64 "download DXC for aarch64 using Packman" ON)
+option(DISABLE_SHADER_COMPILATION "Disable compilation of shaders" OFF)
+option(USE_MINIMAL_DATA "Use minimal '_Data' (90MB)" OFF)
+option(USE_DXC_FROM_PACKMAN_ON_AARCH64 "Download DXC for aarch64 using Packman" ON)
 
 project(NRDSample LANGUAGES C CXX)
 
@@ -74,16 +73,19 @@ if ((CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64") OR (CMAKE_SYSTEM_PROCESSOR MATCHE
 endif()
 
 # Shader compilation
+set(NRD_USE_OCT_NORMAL_ENCODING "1" CACHE STRING "NRD_USE_OCT_NORMAL_ENCODING")
+set(NRD_USE_MATERIAL_ID "1" CACHE STRING "NRD_USE_MATERIAL_ID")
+
 if (NOT DISABLE_SHADER_COMPILATION)
     # Include path for DXC and FXC (used in ShaderCompilation.cmake)
-    set(SHADER_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Source/Shaders")
+    set(SHADER_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Shaders")
     set(MATHLIB_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/External/NRIFramework/External/MathLib")
     set(EXTERNAL_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/External")
     set(NRD_SHADER_HEADER_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/External/NRD/Include")
     set(SHADER_OUTPUT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/_Shaders")
 
     # List HLSL shaders and headers
-    file(GLOB_RECURSE HLSL_FILES "Source/Shaders/*.hlsl" "Source/Shaders/*.hlsli")
+    file(GLOB_RECURSE HLSL_FILES "Shaders/*.hlsl" "Shaders/*.hlsli")
     file(GLOB_RECURSE HLSL_MATHLIB_HEADER_FILES "${MATHLIB_INCLUDE_PATH}/*.hlsli")
     file(GLOB_RECURSE HLSL_NRD_HEADER_FILES "${NRD_SHADER_HEADER_INCLUDE_PATH}/*.hlsli")
 
@@ -128,7 +130,7 @@ set(NRI_PROJECT_FOLDER "External/NRI")
 set(NRI_OUTPUT_BIN_PATH "${OUTPUT_BIN_PATH}")
 add_subdirectory("External/NRIFramework/External/NRI")
 
-# NRIFramework
+# NRI framework
 set(NRIF_OUTPUT_PATH "${OUTPUT_BIN_PATH}")
 add_subdirectory("External/NRIFramework")
 
@@ -151,7 +153,6 @@ function(copy_library PROJECT LIBRARY_NAME)
 endfunction()
 
 # Creates a project for sample and adds dependent operations
-
 file(GLOB NRD_SAMPLE_SOURCE "Source/*.cpp")
 source_group("" FILES ${NRD_SAMPLE_SOURCE})
 
@@ -164,7 +165,7 @@ target_include_directories(NRDSample PRIVATE "External/NRIFramework/Include")
 target_include_directories(NRDSample PRIVATE "External/NRIFramework/External/NRI/Include")
 target_include_directories(NRDSample PRIVATE "External/NRIFramework/External")
 target_include_directories(NRDSample PRIVATE "External/NRD/Include" "External/NRD/Integration")
-target_compile_definitions(NRDSample PRIVATE ${PLATFORM_DEFINITIONS} PROJECT_NAME=NRDSample)
+target_compile_definitions(NRDSample PRIVATE ${PLATFORM_DEFINITIONS} PROJECT_NAME=NRDSample NRD_USE_OCT_NORMAL_ENCODING=${NRD_USE_OCT_NORMAL_ENCODING})
 
 if (NOT DISABLE_SHADER_COMPILATION)
     add_dependencies(NRDSample NRDSampleShaders)
@@ -193,7 +194,7 @@ if (WIN32)
 else()
     find_library(INPUT_NGX_DEBUG_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
     find_library(INPUT_NGX_RELEASE_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
-    find_file(INPUT_NGX_DLL NAMES libnvidia-ngx-dlss.so.2.3.11 PATHS "External/NGX/lib/Linux_x86_64/rel")
+    find_file(INPUT_NGX_DLL NAMES libnvidia-ngx-dlss.so.2.4.0 PATHS "External/NGX/lib/Linux_x86_64/rel")
 endif()
 
 if ((NOT INPUT_NGX_DEBUG_LIB) OR (NOT INPUT_NGX_RELEASE_LIB))

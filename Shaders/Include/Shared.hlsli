@@ -134,7 +134,7 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 //=============================================================================================
 
 #define NRD_HEADER_ONLY
-#include "NRD/Include/NRD.hlsli"
+#include "NRD/Shaders/Include/NRD.hlsli"
 
 //=============================================================================================
 // SETTINGS

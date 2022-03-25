@@ -39,10 +39,12 @@ constexpr auto TOP_LEVEL_BUILD_FLAGS = nri::AccelerationStructureBuildBits::PREF
 #define UI_GREEN ImVec4(0.5f, 0.9f, 0.0f, 1.0f)
 #define UI_RED ImVec4(1.0f, 0.1f, 0.0f, 1.0f)
 
-// Choose normal format & choose desired NRD_NORMAL_ENCODING in NRD.hlsli
-//#define NORMAL_FORMAT nri::Format::RGBA8_UNORM
-#define NORMAL_FORMAT nri::Format::R10_G10_B10_A2_UNORM
-//#define NORMAL_FORMAT nri::Format::RGBA16_UNORM
+#if( NRD_USE_OCT_NORMAL_ENCODING == 1 )
+    #define NORMAL_FORMAT nri::Format::R10_G10_B10_A2_UNORM
+#else
+    #define NORMAL_FORMAT nri::Format::RGBA8_UNORM
+    //#define NORMAL_FORMAT nri::Format::RGBA16_UNORM
+#endif
 
 // See HLSL
 #define FLAG_FIRST_BIT                  20
@@ -1184,9 +1186,9 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             ImGui::Text("[%.1f%%; %.1f%%]", m_ReblurSettings.antilagIntensitySettings.thresholdMin * 100.0, m_ReblurSettings.antilagIntensitySettings.thresholdMax * 100.0);
 
                             ImGui::SameLine();
-                            ImGui::Checkbox("Hit distance", &m_ReblurSettings.antilagHitDistanceSettings.enable);
+                            ImGui::Checkbox("Hit dist", &m_ReblurSettings.antilagHitDistanceSettings.enable);
                             ImGui::SameLine();
-                            ImGui::Text("[%.1f%%; %.1f %%]", m_ReblurSettings.antilagHitDistanceSettings.thresholdMin * 100.0, m_ReblurSettings.antilagHitDistanceSettings.thresholdMax * 100.0);
+                            ImGui::Text("[%.1f%%; %.1f%%]", m_ReblurSettings.antilagHitDistanceSettings.thresholdMin * 100.0, m_ReblurSettings.antilagHitDistanceSettings.thresholdMax * 100.0);
                         }
                         else if (m_Settings.denoiser == RELAX)
                         {
