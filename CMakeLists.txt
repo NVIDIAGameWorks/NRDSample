@@ -206,7 +206,7 @@ if (NOT INPUT_NGX_DLL)
 endif()
 
 if (INPUT_NGX_DEBUG_LIB AND INPUT_NGX_RELEASE_LIB AND INPUT_NGX_DLL)
-    target_include_directories(NRDSample PRIVATE "External/NRIFramework/External/NRI/External/vulkan/Include")
+    target_include_directories(NRDSample PRIVATE "External/NRIFramework/External/NRI/External/vulkan/include")
     target_link_libraries(NRDSample PRIVATE debug ${INPUT_NGX_DEBUG_LIB})
     target_link_libraries(NRDSample PRIVATE optimized ${INPUT_NGX_RELEASE_LIB})
     copy_library(NRDSample ${INPUT_NGX_DLL})
