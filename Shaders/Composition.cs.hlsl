@@ -97,19 +97,12 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float4 diffIndirect = Upsample( gIn_Diff, pixelUv, viewZ );
     float4 specIndirect = Upsample( gIn_Spec, pixelUv, viewZ );
 
-    [flatten]
-    if( gOcclusionOnly )
-    {
-        diffIndirect = diffIndirect.xxxx;
-        specIndirect = specIndirect.xxxx;
-    }
-
     if( gDenoiserType != REBLUR )
     {
         diffIndirect = RELAX_BackEnd_UnpackRadianceAndHitDist( diffIndirect );
         specIndirect = RELAX_BackEnd_UnpackRadianceAndHitDist( specIndirect );
 
-        // RELAX doesn't support AO/SO denoising, set to estimated integrated average
+        // RELAX doesn't support AO / SO denoising, set to estimated integrated average
         diffIndirect.w = 1.0 / STL::Math::Pi( 1.0 );
         specIndirect.w = 1.0 / STL::Math::Pi( 1.0 );
     }
@@ -119,17 +112,31 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         specIndirect = REBLUR_BackEnd_UnpackRadianceAndHitDist( specIndirect );
     }
 
+    [flatten]
+    if( gOcclusionOnly )
+    {
+        diffIndirect = diffIndirect.xxxx;
+        specIndirect = specIndirect.xxxx;
+    }
+
     diffIndirect.xyz *= gIndirectDiffuse;
     specIndirect.xyz *= gIndirectSpecular;
 
     // Environment ( pre-integrated ) specular term
     float NoV = abs( dot( N, V ) );
-    float3 F = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, roughness );
+    float3 Fenv = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, roughness );
+    albedo *= 1.0 - Fenv;
 
     // Add indirect lighting
+    float lobeAngleNorm = 2.0 * roughness * roughness / ( 1.0 + roughness * roughness );
+    float roughnessMod = USE_ROUGHNESS_BASED_DEMODULATION ? lerp( 0.1, 1.0, lobeAngleNorm ) : 1.0;
+
+    float3 diffDemod = gReference ? 1.0 : albedo;
+    float3 specDemod = gReference ? 1.0 : Fenv * roughnessMod;
+
     float3 Lsum = Ldirect.xyz;
-    Lsum += diffIndirect.xyz * albedo;
-    Lsum += specIndirect.xyz * F;
+    Lsum += diffIndirect.xyz * diffDemod;
+    Lsum += specIndirect.xyz * specDemod;
 
     // Add ambient // TODO: reduce if multi bounce?
     float3 ambient = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
@@ -140,9 +147,9 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     diffIndirect.w *= gg.x;
     specIndirect.w *= gg.y;
 
-    float m = roughness * roughness;
-    Lsum += ambient * diffIndirect.w * albedo * ( 1.0 - F );
-    Lsum += ambient * specIndirect.w * m * F;
+    float specAmbientAmount = gDenoiserType == RELAX ? roughness : GetSpecMagicCurve( roughness );
+    Lsum += ambient * diffIndirect.w * albedo * gIndirectDiffuse;
+    Lsum += ambient * specIndirect.w * specAmbientAmount * Fenv * gIndirectSpecular;
 
     // Debug
     if( gOnScreen == SHOW_DENOISED_DIFFUSE )

@@ -84,6 +84,7 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float gDebug;
     float gTransparent; // TODO: try to remove, casting a ray in an empty TLAS should be for free
     float gReference;
+    float gUsePrevFrame;
     uint gDenoiserType;
     uint gDisableShadowsAndEnableImportanceSampling; // TODO: remove - modify GetSunIntensity to return 0 if sun is below horizon
     uint gOnScreen;
@@ -145,8 +146,9 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 #define RELAX                               1
 
 #define RESOLUTION_FULL                     0
-#define RESOLUTION_HALF                     1
-#define RESOLUTION_QUARTER                  2
+#define RESOLUTION_FULL_PROBABILISTIC       1
+#define RESOLUTION_HALF                     2
+#define RESOLUTION_QUARTER                  3
 
 #define SHOW_FINAL                          0
 #define SHOW_DENOISED_DIFFUSE               1
@@ -174,12 +176,11 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 // Settings
 #define USE_SIMPLEX_LIGHTING_MODEL          0
 #define USE_IMPORTANCE_SAMPLING             1
-#define USE_MODULATED_IRRADIANCE            0 // an example, demonstrating how irradiance can be modulated before denoising and then de-modulated after denoising to avoid over-blurring
-#define USE_SANITIZATION                    1 // NRD sample is NAN/INF free, but ZeroDay scene is not
+#define USE_ROUGHNESS_BASED_DEMODULATION    0 // demonstrates how to preserve roughness details ( biased, but allows to relax "roughnessFraction" parameter )
+#define USE_SANITIZATION                    0 // NRD sample is NAN/INF free
+#define USE_SIMULATED_MATERIAL_ID_TEST      0 // for NRD_USE_MATERIAL_ID support debugging
 
 #define BRDF_ENERGY_THRESHOLD               0.003
-#define AMBIENT_BOUNCE_NUM                  3
-#define AMBIENT_MIP_BIAS                    2
 #define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
 #define TAA_HISTORY_SHARPNESS               0.5 // [0; 1], 0.5 matches Catmull-Rom
 #define TAA_MAX_HISTORY_WEIGHT              0.95
@@ -193,6 +194,15 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 //=============================================================================================
 // MISC
 //=============================================================================================
+
+// Taken out from NRD
+float GetSpecMagicCurve( float roughness, float power = 0.25 )
+{
+    float f = 1.0 - exp2( -200.0 * roughness * roughness );
+    f *= STL::Math::Pow01( roughness, power );
+
+    return f;
+}
 
 float3 GetViewVector( float3 X )
 {

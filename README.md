@@ -2,11 +2,23 @@
 
 All-in-one repository including all relevant pieces to see [*NRD (NVIDIA Real-time Denoisers)*](https://github.com/NVIDIAGameWorks/RayTracingDenoiser) in action. The sample is cross-platform, it's based on [*NRI (NVIDIA Rendering Interface)*](https://github.com/NVIDIAGameWorks/NRI) to bring cross-GraphicsAPI support.
 
+*NRD sample* is a land for high performance path tracing for games. Some features to highlight:
+- minimalistic path tracer utilizing *Trace Ray Inline*
+- quarter, half (checkerboard) and full resolution tracing
+- full resolution tracing with probabilistic diffuse / specular selection at the primary hit
+- NRD denoising
+- overhead-free multi-bounce propagation (even in case of a single bounce) based on reusing the previously denoised frame
+- reference accumulation
+- many RPP and bounces
+- reflections on transparent surfaces
+- physically based ambient estimation using RT
+- mip level calculation
+
 ## Build instructions
 
 - Install [*Cmake*](https://cmake.org/download/) 3.15+
 - Install on
-    - Windows: latest *WindowsSDK*, *VulkanSDK*
+    - Windows: latest *WindowsSDK* (22000+), *VulkanSDK* (1.3.211+)
     - Linux (x86-64): *VulkanSDK*, *libx11-dev*, *libxrandr-dev*, *libwayland-dev*
     - Linux (aarch64): find a precompiled binary for [*DXC*](https://github.com/microsoft/DirectXShaderCompiler), *libx11-dev*, *libxrandr-dev*, *libwayland-dev*
 - Build (variant 1) - using *Git* and *CMake* explicitly

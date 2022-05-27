@@ -160,6 +160,11 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps0.baseColor, materialProps0.metalness, albedo, Rf0 );
     uint noDiffuseFlag = STL::Color::Luminance( albedo ) < BRDF_ENERGY_THRESHOLD ? 1 : 0;
 
+    #if( USE_SIMULATED_MATERIAL_ID_TEST == 1 )
+        if( gDebug == 0.0 )
+            noDiffuseFlag = noDiffuseFlag || ( frac( geometryProps0.X ).x < 0.05 ? 1 : 0 );
+    #endif
+
     gOut_ViewZ[ pixelPos ] = viewZ;
     gOut_PrimaryMip[ pixelPos ] = mipNorm;
     gOut_Normal_Roughness[ pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( materialProps0.N, materialProps0.roughness, noDiffuseFlag );
@@ -204,7 +209,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         shadowTranslucency = 1.0;
         while( STL::Color::Luminance( shadowTranslucency ) > 0.01 )
         {
-            GeometryProps geometryPropsShadow = CastRay( Xoffset, sunDirection, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_ALL, 0, true );
+            GeometryProps geometryPropsShadow = CastRay( Xoffset, sunDirection, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_ALL, 0 );
 
             if( geometryPropsShadow.IsSky( ) )
             {
@@ -237,9 +242,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 [numthreads( 16, 16, 1 )]
 void main( uint2 pixelPos : SV_DispatchThreadId )
 {
-    // no TraceRayInline support, because of:
-    //  - DXBC
-    //  - SPIRV generation is blocked by https://github.com/microsoft/DirectXShaderCompiler/issues/4221
+    // no TraceRayInline support
 }
 
 #endif

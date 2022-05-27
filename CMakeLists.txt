@@ -81,7 +81,6 @@ if (NOT DISABLE_SHADER_COMPILATION)
     set(SHADER_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Shaders")
     set(MATHLIB_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/External/NRIFramework/External/MathLib")
     set(EXTERNAL_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/External")
-    set(NRD_SHADER_HEADER_INCLUDE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/External/NRD/Include")
     set(SHADER_OUTPUT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/_Shaders")
 
     # List HLSL shaders and headers
@@ -95,8 +94,11 @@ if (NOT DISABLE_SHADER_COMPILATION)
     # Define build rules for the shaders
     list_hlsl_headers("${HLSL_FILES}" HEADER_FILES)
     list_hlsl_headers("${HLSL_MATHLIB_HEADER_FILES}" HEADER_FILES)
-    list_hlsl_headers("${HLSL_NRD_HEADER_FILES}" HEADER_FILES)
+    list(APPEND HEADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/External/NRD/Shaders/Include/NRD.hlsli")
+    set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/External/NRD/Shaders/Include/NRD.hlsli" PROPERTIES VS_TOOL_OVERRIDE "None")
+
     list_hlsl_shaders("${HLSL_FILES}" "${HEADER_FILES}" SHADER_FILES)
+
     add_custom_target(NRDSampleShaders ALL DEPENDS ${SHADER_FILES} SOURCES "${HEADER_FILES}")
     set_property(TARGET NRDSampleShaders PROPERTY FOLDER "Samples")
 else()

@@ -164,7 +164,7 @@ float3 GetRealMip( uint textureIndex, float mip )
     return max( mips, 0.0 );
 }
 
-MaterialProps GetMaterialProps( GeometryProps geometryProps, bool useSimplifiedModel = false )
+MaterialProps GetMaterialProps( GeometryProps geometryProps )
 {
     MaterialProps props = ( MaterialProps )0;
 
@@ -195,7 +195,6 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps, bool useSimplifiedM
     float2 packedNormal = gIn_Textures[ baseTexture + 2 ].SampleLevel( gLinearMipmapLinearSampler, geometryProps.uv, mips.y ).xy;
     packedNormal = gUseNormalMap ? packedNormal : ( 127.0 / 255.0 );
     float3 N = STL::Geometry::TransformLocalNormal( packedNormal, geometryProps.T, geometryProps.N );
-    N = useSimplifiedModel ? geometryProps.N : N;
 
     // Emission
     float3 Lemi = gIn_Textures[ baseTexture + 3 ].SampleLevel( gLinearMipmapLinearSampler, geometryProps.uv, mips.x ).xyz;
@@ -265,6 +264,29 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps, bool useSimplifiedM
     props.metalness = metalness;
 
     return props;
+}
+
+//====================================================================================================================================
+// MISC
+//====================================================================================================================================
+
+float3 GetAmbientBRDF( GeometryProps geometryProps, MaterialProps materialProps, bool approximate = false )
+{
+    float3 albedo, Rf0;
+    STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
+
+    float3 ambBRDF;
+    if( !approximate )
+    {
+        float NoV = abs( dot( materialProps.N, -geometryProps.rayDirection ) );
+        float3 Fenv = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, materialProps.roughness );
+
+        ambBRDF = albedo * ( 1.0 - Fenv ) + Fenv;
+    }
+    else
+        ambBRDF = albedo * ( 1.0 - Rf0 ) + Rf0;
+
+    return ambBRDF;
 }
 
 //====================================================================================================================================
@@ -359,7 +381,7 @@ float CastVisibilityRay_ClosestHit( float3 rayOrigin, float3 rayDirection, float
     return rayQuery.CommittedStatus( ) == COMMITTED_NOTHING ? INF : rayQuery.CommittedRayT( );
 }
 
-GeometryProps CastRay( float3 rayOrigin, float3 rayDirection, float Tmin, float Tmax, float2 mipAndCone, RaytracingAccelerationStructure accelerationStructure, uint instanceInclusionMask, uint rayFlags, bool useSimplifiedModel = false  )
+GeometryProps CastRay( float3 rayOrigin, float3 rayDirection, float Tmin, float Tmax, float2 mipAndCone, RaytracingAccelerationStructure accelerationStructure, uint instanceInclusionMask, uint rayFlags )
 {
     RayDesc ray;
     ray.Origin = rayOrigin;
@@ -418,17 +440,14 @@ GeometryProps CastRay( float3 rayOrigin, float3 rayDirection, float Tmin, float 
         props.uv = barycentrics.x * primitiveData.uv0 + barycentrics.y * primitiveData.uv1 + barycentrics.z * primitiveData.uv2;
 
         // Tangent
-        if( !useSimplifiedModel )
-        {
-            float4 t0 = float4( STL::Packing::DecodeUnitVector( primitiveData.t0, true ), primitiveData.b0s_b1s.x );
-            float4 t1 = float4( STL::Packing::DecodeUnitVector( primitiveData.t1, true ), primitiveData.b0s_b1s.y );
-            float4 t2 = float4( STL::Packing::DecodeUnitVector( primitiveData.t2, true ), primitiveData.b2s_worldToUvUnits.x );
+        float4 t0 = float4( STL::Packing::DecodeUnitVector( primitiveData.t0, true ), primitiveData.b0s_b1s.x );
+        float4 t1 = float4( STL::Packing::DecodeUnitVector( primitiveData.t1, true ), primitiveData.b0s_b1s.y );
+        float4 t2 = float4( STL::Packing::DecodeUnitVector( primitiveData.t2, true ), primitiveData.b2s_worldToUvUnits.x );
 
-            float4 T = barycentrics.x * t0 + barycentrics.y * t1 + barycentrics.z * t2;
-            T.xyz = STL::Geometry::RotateVector( mObjectToWorld, T.xyz );
-            T.xyz = normalize( T.xyz );
-            props.T = T;
-        }
+        float4 T = barycentrics.x * t0 + barycentrics.y * t1 + barycentrics.z * t2;
+        T.xyz = STL::Geometry::RotateVector( mObjectToWorld, T.xyz );
+        T.xyz = normalize( T.xyz );
+        props.T = T;
 
         // Handling object scale embedded into the transformation matrix (assuming uniform scale)
         float invObjectScale = STL::Math::Rsqrt( STL::Math::LengthSquared( mObjectToWorld[ 0 ] ) );

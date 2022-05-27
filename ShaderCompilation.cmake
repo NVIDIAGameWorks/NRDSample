@@ -1,4 +1,3 @@
-
 # DXC on Windows does not like forward slashes
 if (WIN32)
     string(REPLACE "/" "\\" SHADER_INCLUDE_PATH "${SHADER_INCLUDE_PATH}")
@@ -21,7 +20,7 @@ if (WIN32)
 
     set(WINDOWS_SDK_BIN "${WINDOWS_SDK_ROOT}/bin/${WINDOWS_SDK_VERSION}/x64")
 
-    # on Windows, FXC and DXC are part of WindowsSDK and there's also DXC in VulkanSDK which supports SPIR-V
+    # On Windows, FXC and DXC are part of WindowsSDK and there's also DXC in VulkanSDK which supports SPIR-V
     find_program(FXC_PATH "${WINDOWS_SDK_BIN}/fxc")
     if (NOT FXC_PATH)
         message(FATAL_ERROR "Can't find FXC: '${WINDOWS_SDK_BIN}/fxc'")
@@ -41,7 +40,7 @@ if (WIN32)
         endif()
     endif()
 else()
-    # on Linux, VulkanSDK does not set VULKAN_SDK, but DXC can be called directly
+    # On Linux, VulkanSDK does not set VULKAN_SDK, but DXC can be called directly
     find_program(DXC_SPIRV_PATH "dxc")
     if (NOT DXC_SPIRV_PATH)
         find_program(DXC_SPIRV_PATH "${DXC_CUSTOM_PATH}")
@@ -136,7 +135,7 @@ macro(list_hlsl_shaders HLSL_FILES HEADER_FILES SHADER_FILES)
         set(OUTPUT_PATH_SPIRV "${SHADER_OUTPUT_PATH}/${NAME_ONLY}.spirv")
         get_shader_profile_from_name(${FILE_NAME} DXC_PROFILE FXC_PROFILE ENTRY_POINT)
 
-        # add FXC compilation step (DXBC)
+        # DXBC
         if (NOT "${FXC_PROFILE}" STREQUAL "" AND NOT "${FXC_PATH}" STREQUAL "")
             add_custom_command(
                     OUTPUT ${OUTPUT_PATH_DXBC} ${OUTPUT_PATH_DXBC}.h
@@ -151,7 +150,8 @@ macro(list_hlsl_shaders HLSL_FILES HEADER_FILES SHADER_FILES)
             )
             list(APPEND SHADER_FILES ${OUTPUT_PATH_DXBC})
         endif()
-        # add DXC compilation step (DXIL)
+
+        # DXIL
         if (NOT "${DXC_PROFILE}" STREQUAL "" AND NOT "${DXC_PATH}" STREQUAL "")
             add_custom_command(
                     OUTPUT ${OUTPUT_PATH_DXIL} ${OUTPUT_PATH_DXIL}.h
@@ -166,7 +166,8 @@ macro(list_hlsl_shaders HLSL_FILES HEADER_FILES SHADER_FILES)
             )
             list(APPEND SHADER_FILES ${OUTPUT_PATH_DXIL})
         endif()
-        # add one more DXC compilation step (SPIR-V)
+
+        # SPIRV
         if (NOT "${DXC_PROFILE}" STREQUAL "" AND NOT "${DXC_SPIRV_PATH}" STREQUAL "")
             add_custom_command(
                     OUTPUT ${OUTPUT_PATH_SPIRV} ${OUTPUT_PATH_SPIRV}.h
