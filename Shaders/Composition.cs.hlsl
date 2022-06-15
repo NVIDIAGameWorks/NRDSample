@@ -15,14 +15,16 @@ NRI_RESOURCE( Texture2D<float>, gIn_ViewZ, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float>, gIn_Downsampled_ViewZ, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_Normal_Roughness, t, 2, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_BaseColor_Metalness, t, 3, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_DirectLighting_ViewZ, t, 4, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_DirectLighting, t, 4, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 5, 1 );
 NRI_RESOURCE( Texture2D<float2>, gIn_IntegratedBRDF, t, 6, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 7, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 8, 1 );
 
 // Outputs
-NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedImage, u, 9, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_Composed, u, 9, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedDiff, u, 10, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedSpec, u, 11, 1 );
 
 float4 Upsample( Texture2D<float4> tex, float2 pixelUv, float zReal )
 {
@@ -69,22 +71,28 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float2 sampleUv = pixelUv + gJitter;
 
     // Early out - sky
-    float4 Ldirect = gIn_DirectLighting_ViewZ[ pixelPos ];
+    float3 Ldirect = gIn_DirectLighting[ pixelPos ];
     float viewZ = gIn_ViewZ[ pixelPos ];
+
+    float4 normalAndRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos ] );
+    float3 N = normalAndRoughness.xyz;
+    float roughness = normalAndRoughness.w;
+
+    float z = abs( viewZ ) * NRD_FP16_VIEWZ_SCALE;
+    z *= STL::Math::Sign( dot( N, gSunDirection ) );
 
     if( abs( viewZ ) == INF )
     {
-        Ldirect.xyz *= float( gOnScreen == SHOW_FINAL );
-        gOut_ComposedImage[ pixelPos ] = Ldirect;
+        Ldirect *= float( gOnScreen == SHOW_FINAL );
+
+        gOut_Composed[ pixelPos ] = float4( Ldirect, z );
+        gOut_ComposedDiff[ pixelPos ] = float4( 0, 0, 0, z );
+        gOut_ComposedSpec[ pixelPos ] = float4( 0, 0, 0, z );
 
         return;
     }
 
     // G-buffer
-    float4 normalAndRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos ] );
-    float3 N = normalAndRoughness.xyz;
-    float roughness = normalAndRoughness.w;
-
     float3 albedo, Rf0;
     float4 baseColorMetalness = gIn_BaseColor_Metalness[ pixelPos ];
     STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( baseColorMetalness.xyz, baseColorMetalness.w, albedo, Rf0 );
@@ -127,16 +135,15 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 Fenv = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, roughness );
     albedo *= 1.0 - Fenv;
 
-    // Add indirect lighting
+    // Composition
     float lobeAngleNorm = 2.0 * roughness * roughness / ( 1.0 + roughness * roughness );
     float roughnessMod = USE_ROUGHNESS_BASED_DEMODULATION ? lerp( 0.1, 1.0, lobeAngleNorm ) : 1.0;
 
     float3 diffDemod = gReference ? 1.0 : albedo;
     float3 specDemod = gReference ? 1.0 : Fenv * roughnessMod;
 
-    float3 Lsum = Ldirect.xyz;
-    Lsum += diffIndirect.xyz * diffDemod;
-    Lsum += specIndirect.xyz * specDemod;
+    float3 Ldiff = Ldirect + diffIndirect.xyz * diffDemod; // add direct lighting to diffuse ( simplification )
+    float3 Lspec = specIndirect.xyz * specDemod;
 
     // Add ambient // TODO: reduce if multi bounce?
     float3 ambient = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
@@ -148,8 +155,10 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     specIndirect.w *= gg.y;
 
     float specAmbientAmount = gDenoiserType == RELAX ? roughness : GetSpecMagicCurve( roughness );
-    Lsum += ambient * diffIndirect.w * albedo * gIndirectDiffuse;
-    Lsum += ambient * specIndirect.w * specAmbientAmount * Fenv * gIndirectSpecular;
+    Ldiff += ambient * diffIndirect.w * albedo * gIndirectDiffuse;
+    Lspec += ambient * specIndirect.w * specAmbientAmount * Fenv * gIndirectSpecular;
+
+    float3 Lsum = Ldiff + Lspec;
 
     // Debug
     if( gOnScreen == SHOW_DENOISED_DIFFUSE )
@@ -174,5 +183,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         Lsum = gOnScreen == SHOW_MIP_SPECULAR ? specIndirect.xyz : Ldirect.xyz;
 
     // Output
-    gOut_ComposedImage[ pixelPos ] = float4( Lsum, abs( viewZ ) * NRD_FP16_VIEWZ_SCALE * STL::Math::Sign( dot( N, gSunDirection ) ) );
+    gOut_Composed[ pixelPos ] = float4( Lsum, z );
+    gOut_ComposedDiff[ pixelPos ] = float4( Ldiff, z );
+    gOut_ComposedSpec[ pixelPos ] = float4( Lspec, z );
 }

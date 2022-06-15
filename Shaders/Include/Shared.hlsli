@@ -85,6 +85,7 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float gTransparent; // TODO: try to remove, casting a ray in an empty TLAS should be for free
     float gReference;
     float gUsePrevFrame;
+    float gMinProbability;
     uint gDenoiserType;
     uint gDisableShadowsAndEnableImportanceSampling; // TODO: remove - modify GetSunIntensity to return 0 if sun is below horizon
     uint gOnScreen;

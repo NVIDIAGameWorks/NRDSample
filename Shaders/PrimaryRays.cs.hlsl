@@ -24,7 +24,7 @@ NRI_RESOURCE( RWTexture2D<float>, gOut_ViewZ, u, 4, 1 );
 NRI_RESOURCE( RWTexture2D<float4>, gOut_Normal_Roughness, u, 5, 1 );
 NRI_RESOURCE( RWTexture2D<float4>, gOut_BaseColor_Metalness, u, 6, 1 );
 NRI_RESOURCE( RWTexture2D<float>, gOut_PrimaryMip, u, 7, 1 );
-NRI_RESOURCE( RWTexture2D<float4>, gOut_DirectLighting, u, 8, 1 );
+NRI_RESOURCE( RWTexture2D<float3>, gOut_DirectLighting, u, 8, 1 );
 NRI_RESOURCE( RWTexture2D<float3>, gOut_DirectEmission, u, 9, 1 );
 NRI_RESOURCE( RWTexture2D<float4>, gOut_TransparentLayer, u, 10, 1 );
 NRI_RESOURCE( RWTexture2D<float2>, gOut_ShadowData, u, 11, 1 );
@@ -137,7 +137,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         gOut_Motion[ pixelPos ] = motion * STL::Math::LinearStep( 0.0, 0.0000005, abs( motion ) ); // TODO: move LinearStep to NRD?
         gOut_ViewZ[ pixelPos ] = INF * STL::Math::Sign( gNearZ );
         gOut_DirectEmission[ pixelPos ] = materialProps0.Lemi;
-        gOut_DirectLighting[ pixelPos ] = float4( 0, 0, 0, NRD_FP16_MAX * STL::Math::Sign( gNearZ ) );
+        gOut_DirectLighting[ pixelPos ] = 0;
 
         return;
     }
@@ -179,7 +179,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     else if( gOnScreen == SHOW_MIP_PRIMARY )
         materialProps0.Ldirect = STL::Color::ColorizeZucconi( mipNorm );
 
-    gOut_DirectLighting[ pixelPos ] = float4( materialProps0.Ldirect, viewZ * NRD_FP16_VIEWZ_SCALE );
+    gOut_DirectLighting[ pixelPos ] = materialProps0.Ldirect;
     gOut_DirectEmission[ pixelPos ] = materialProps0.Lemi;
 
     // Sun shadow // TODO: move to a separate pass to unblock checkerboard

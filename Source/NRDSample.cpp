@@ -109,16 +109,23 @@ enum class Texture : uint32_t
     Unfiltered_Diff,
     Unfiltered_Spec,
     Unfiltered_Shadow_Translucency,
-    ComposedLighting_ViewZ,
-    TaaHistory,
-    TaaHistoryPrev,
+    Composed_ViewZ,
     DlssOutput,
     Final,
+
+    // History
+    ComposedDiff_ViewZ,
+    ComposedSpec_ViewZ,
+    TaaHistory,
+    TaaHistoryPrev,
 
     // Read-only
     NisData1,
     NisData2,
-    MaterialTextures
+    MaterialTextures,
+
+    // Aliases
+    DlssInput = DiffDirectionPdf
 };
 
 enum class Pipeline : uint32_t
@@ -188,21 +195,31 @@ enum class Descriptor : uint32_t
     Unfiltered_Spec_StorageTexture,
     Unfiltered_Shadow_Translucency_Texture,
     Unfiltered_Shadow_Translucency_StorageTexture,
-    ComposedLighting_ViewZ_Texture,
-    ComposedLighting_ViewZ_StorageTexture,
-    TaaHistory_Texture,
-    TaaHistory_StorageTexture,
-    TaaHistoryPrev_Texture,
-    TaaHistoryPrev_StorageTexture,
+    Composed_ViewZ_Texture,
+    Composed_ViewZ_StorageTexture,
     DlssOutput_Texture,
     DlssOutput_StorageTexture,
     Final_Texture,
     Final_StorageTexture,
 
+    // History
+    ComposedDiff_ViewZ_Texture,
+    ComposedDiff_ViewZ_StorageTexture,
+    ComposedSpec_ViewZ_Texture,
+    ComposedSpec_ViewZ_StorageTexture,
+    TaaHistory_Texture,
+    TaaHistory_StorageTexture,
+    TaaHistoryPrev_Texture,
+    TaaHistoryPrev_StorageTexture,
+
     // Read-only
     NisData1,
     NisData2,
-    MaterialTextures
+    MaterialTextures,
+
+    // Aliases
+    DlssInput_Texture = DiffDirectionPdf_Texture,
+    DlssInput_StorageTexture = DiffDirectionPdf_StorageTexture
 };
 
 enum class DescriptorSet : uint32_t
@@ -277,6 +294,7 @@ struct GlobalConstantBufferData
     float gTransparent;
     float gReference;
     float gUsePrevFrame;
+    float gMinProbability;
     uint32_t gDenoiserType;
     uint32_t gDisableShadowsAndEnableImportanceSampling;
     uint32_t gOnScreen;
@@ -353,7 +371,7 @@ struct Settings
     int32_t     bounceNum                          = 1;
     int32_t     tracingMode                        = RESOLUTION_HALF;
 
-    bool        enableAntiFirefly                  = false;
+    bool        unused                             = false; // TODO: unused
     bool        limitFps                           = false;
     bool        ambient                            = true;
     bool        reference                          = false;
@@ -601,7 +619,7 @@ private:
     bool m_ForceHistoryReset = false;
     bool m_IsDlssEnabled = false;
     bool m_IsNisEnabled = true;
-    bool m_EnableHitDistanceReconstruction = true;
+    bool m_AdaptRadiusToResolution = true;
 };
 
 Sample::~Sample()
@@ -1137,6 +1155,13 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     ImGui::NewLine();
                     ImGui::PushID("DENOISER");
                     {
+                        static const char* hitDistanceReconstructionMode[] =
+                        {
+                            "Off",
+                            "3x3",
+                            "5x5",
+                        };
+
                         const nrd::LibraryDesc& nrdLibraryDesc = nrd::GetLibraryDesc();
 
                         ImGui::PushStyleColor(ImGuiCol_Text, UI_GREEN);
@@ -1151,25 +1176,37 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
                         ImGui::Checkbox("Adaptive accum", &m_Settings.adaptiveAccumulation);
                         ImGui::SameLine();
-                        ImGui::Checkbox("Anti-firefly", &m_Settings.enableAntiFirefly);
 
                         if (m_Settings.denoiser == REBLUR)
                         {
+                            ImGui::Checkbox("Anti-firefly", &m_ReblurSettings.enableAntiFirefly);
                             ImGui::SameLine();
                             ImGui::Checkbox("Advanced prepass", &m_ReblurSettings.enableAdvancedPrepass);
                             ImGui::Checkbox("Reference accum", &m_ReblurSettings.enableReferenceAccumulation);
                             ImGui::SameLine();
                             ImGui::Checkbox("Perf mode", &m_ReblurSettings.enablePerformanceMode);
-                            if (m_Settings.tracingMode == RESOLUTION_FULL_PROBABILISTIC)
-                            {
-                                ImGui::SameLine();
-                                ImGui::Checkbox("HitT reconstruction", &m_EnableHitDistanceReconstruction);
-                            }
-
+                            ImGui::SameLine();
+                            ImGui::Checkbox("Adaptive radius", &m_AdaptRadiusToResolution);
+    
                             ImGui::Text("SPATIAL FILTERING:");
 
                             #if( NRD_OCCLUSION_ONLY == 0 )
-                                ImGui::SliderFloat2("Pre-pass blur radius", &m_ReblurSettings.diffusePrepassBlurRadius, 0.0f, 75.0f, "%.1f");
+                                if (m_Settings.tracingMode == RESOLUTION_FULL_PROBABILISTIC)
+                                {
+                                    ImGui::PushStyleColor(ImGuiCol_Text, m_ReblurSettings.hitDistanceReconstructionMode != nrd::HitDistanceReconstructionMode::OFF ? UI_GREEN : UI_RED);
+                                    {
+                                        int32_t v = (int32_t)m_ReblurSettings.hitDistanceReconstructionMode;
+                                        ImGui::Combo("HitT reconstruction", &v, hitDistanceReconstructionMode, helper::GetCountOf(hitDistanceReconstructionMode));
+                                        m_ReblurSettings.hitDistanceReconstructionMode = (nrd::HitDistanceReconstructionMode)v;
+                                    }
+                                    ImGui::PopStyleColor();
+
+                                    ImGui::PushStyleColor(ImGuiCol_Text, m_ReblurSettings.diffusePrepassBlurRadius != 0.0f && m_ReblurSettings.specularPrepassBlurRadius != 0.0f ? UI_GREEN : UI_RED);
+                                        ImGui::SliderFloat2("Prepass blur radius (px)", &m_ReblurSettings.diffusePrepassBlurRadius, 0.0f, 75.0f, "%.1f");
+                                    ImGui::PopStyleColor();
+                                }
+                                else
+                                    ImGui::SliderFloat2("Prepass blur radius (px)", &m_ReblurSettings.diffusePrepassBlurRadius, 0.0f, 75.0f, "%.1f");
                             #endif
 
                             ImGui::SliderFloat("Blur base radius (px)", &m_ReblurSettings.blurRadius, 0.0f, 60.0f, "%.1f");
@@ -1183,7 +1220,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             #endif
 
                             ImGui::SliderFloat("History fix strength", &m_ReblurSettings.historyFixStrength, 0.0f, 1.0f, "%.2f");
-                            ImGui::SliderFloat("Residual noise level", &m_ReblurSettings.residualNoiseLevel, 0.01f, 0.1f, "%.2f");
                             ImGui::SliderFloat("Input mix", &m_ReblurSettings.inputMix, 0.0f, 1.0f, "%.3f");
                             ImGui::SetNextItemWidth( ImGui::CalcItemWidth() * 0.5f );
                             ImGui::SliderFloat("Responsive accumulation roughness threshold", &m_ReblurSettings.responsiveAccumulationRoughnessThreshold, 0.0f, 1.0f, "%.2f");
@@ -1199,6 +1235,12 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             ImGui::Text("[%.1f%%; %.1f%%; %.1f]", m_ReblurSettings.antilagHitDistanceSettings.thresholdMin * 100.0, m_ReblurSettings.antilagHitDistanceSettings.thresholdMax * 100.0, m_ReblurSettings.antilagHitDistanceSettings.sigmaScale);
 
                             nrd::ReblurSettings defaults = {};
+
+                            if (m_Settings.tracingMode == RESOLUTION_FULL_PROBABILISTIC)
+                            {
+                                defaults.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
+                                defaults.diffusePrepassBlurRadius = defaults.specularPrepassBlurRadius;
+                            }
 
                             bool isSame = true;
                             if (m_ReblurSettings.diffusePrepassBlurRadius != defaults.diffusePrepassBlurRadius)
@@ -1221,9 +1263,13 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 isSame = false;
                             else if (m_ReblurSettings.historyFixStrength != defaults.historyFixStrength)
                                 isSame = false;
-                            else if (m_ReblurSettings.residualNoiseLevel != defaults.residualNoiseLevel)
-                                isSame = false;
                             else if (m_ReblurSettings.inputMix != defaults.inputMix)
+                                isSame = false;
+                            else if (m_ReblurSettings.hitDistanceReconstructionMode != defaults.hitDistanceReconstructionMode)
+                                isSame = false;
+                            else if (m_ReblurSettings.enableAntiFirefly != defaults.enableAntiFirefly)
+                                isSame = false;
+                            else if (m_ReblurSettings.enableAdvancedPrepass != defaults.enableAdvancedPrepass)
                                 isSame = false;
                             else if (m_ReblurSettings.enableReferenceAccumulation != defaults.enableReferenceAccumulation)
                                 isSame = false;
@@ -1256,39 +1302,62 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         }
                         else if (m_Settings.denoiser == RELAX)
                         {
-                            ImGui::Checkbox("No motion hack", &m_RelaxSettings.enableReprojectionTestSkippingWithoutMotion);
+                            ImGui::Checkbox("Anti-firefly", &m_RelaxSettings.enableAntiFirefly);
                             ImGui::SameLine();
+                            ImGui::Checkbox("No motion hack", &m_RelaxSettings.enableReprojectionTestSkippingWithoutMotion);
                             ImGui::Checkbox("Roughness edge stopping", &m_RelaxSettings.enableRoughnessEdgeStopping);
+                            ImGui::SameLine();
                             ImGui::Checkbox("Virtual history clamping", &m_RelaxSettings.enableSpecularVirtualHistoryClamping);
+                            ImGui::Checkbox("Adaptive radius", &m_AdaptRadiusToResolution);
 
                             ImGui::Text("REPROJECTION:");
                             ImGui::SliderFloat("Spec variance boost", &m_RelaxSettings.specularVarianceBoost, 0.0f, 8.0f, "%.2f");
                             ImGui::SliderFloat("Clamping sigma scale", &m_RelaxSettings.historyClampingColorBoxSigmaScale, 0.0f, 10.0f, "%.1f");
 
                             ImGui::Text("SPATIAL FILTERING:");
+
+                            if (m_Settings.tracingMode == RESOLUTION_FULL_PROBABILISTIC)
+                            {
+                                ImGui::PushStyleColor(ImGuiCol_Text, m_RelaxSettings.hitDistanceReconstructionMode != nrd::HitDistanceReconstructionMode::OFF ? UI_GREEN : UI_RED);
+                                {
+                                    int32_t v = (int32_t)m_RelaxSettings.hitDistanceReconstructionMode;
+                                    ImGui::Combo("HitT reconstruction", &v, hitDistanceReconstructionMode, helper::GetCountOf(hitDistanceReconstructionMode));
+                                    m_RelaxSettings.hitDistanceReconstructionMode = (nrd::HitDistanceReconstructionMode)v;
+                                }
+                                ImGui::PopStyleColor();
+
+                                ImGui::PushStyleColor(ImGuiCol_Text, m_RelaxSettings.diffusePrepassBlurRadius != 0.0f && m_RelaxSettings.specularPrepassBlurRadius != 0.0f ? UI_GREEN : UI_RED);
+                                    ImGui::SliderFloat2("Prepass blur radius (px)", &m_RelaxSettings.diffusePrepassBlurRadius, 0.0f, 75.0f, "%.1f");
+                                ImGui::PopStyleColor();
+                            }
+                            else
+                                ImGui::SliderFloat2("Prepass blur radius (px)", &m_RelaxSettings.diffusePrepassBlurRadius, 0.0f, 75.0f, "%.1f");
+
                             ImGui::SliderInt("A-trous iterations", (int32_t*)&m_RelaxSettings.atrousIterationNum, 2, 8);
-                            ImGui::SliderFloat2("Pre-pass blur radius", &m_RelaxSettings.diffusePrepassBlurRadius, 0.0f, 75.0f, "%.1f");
                             ImGui::SliderFloat2("Diff-Spec luma weight", &m_RelaxSettings.diffusePhiLuminance, 0.0f, 10.0f, "%.1f");
                             ImGui::SliderFloat2("Min luma weight", &m_RelaxSettings.diffuseMinLuminanceWeight, 0.0f, 1.0f, "%.2f");
-                            ImGui::SetNextItemWidth( ImGui::CalcItemWidth() * 0.9f );
-                            ImGui::SliderFloat3("Diff-Spec-Rough fraction", &m_RelaxSettings.diffuseLobeAngleFraction, 0.0f, 1.0f, "%.2f");
-                            ImGui::SetNextItemWidth( ImGui::CalcItemWidth() * 0.9f );
-                            ImGui::SliderFloat3("Luma-Normal-Rough relaxation", &m_RelaxSettings.luminanceEdgeStoppingRelaxation, 0.0f, 1.0f, "%.2f");
                             ImGui::SliderFloat("Spec lobe angle slack", &m_RelaxSettings.specularLobeAngleSlack, 0.0f, 89.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
                             ImGui::SliderFloat("Depth threshold", &m_RelaxSettings.depthThreshold, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                            ImGui::Text("Diffuse lobe / Specular lobe / Roughness:");
+                            ImGui::SliderFloat3("Fraction", &m_RelaxSettings.diffuseLobeAngleFraction, 0.0f, 1.0f, "%.2f");
+                            ImGui::Text("Luminance / Normal / Roughness:");
+                            ImGui::SliderFloat3("Relaxation", &m_RelaxSettings.luminanceEdgeStoppingRelaxation, 0.0f, 1.0f, "%.2f");
 
                             ImGui::Text("DISOCCLUSION FIX:");
-                            ImGui::SliderFloat("Edge-stop normal power", &m_RelaxSettings.disocclusionFixEdgeStoppingNormalPower, 0.0f, 128.0f, "%.1f");
-                            ImGui::SetNextItemWidth( ImGui::CalcItemWidth() * 0.38f );
+                            ImGui::SliderFloat("Normal weight power", &m_RelaxSettings.disocclusionFixEdgeStoppingNormalPower, 0.0f, 128.0f, "%.1f");
                             ImGui::SliderFloat("Max radius", &m_RelaxSettings.disocclusionFixMaxRadius, 0.0f, 100.0f, "%.1f");
-                            ImGui::SameLine();
-                            ImGui::SetNextItemWidth( ImGui::CalcItemWidth() * 0.38f );
                             ImGui::SliderInt("Frames to fix", (int32_t*)&m_RelaxSettings.disocclusionFixNumFramesToFix, 0, 10);
 
                             ImGui::Text("SPATIAL VARIANCE ESTIMATION:");
                             ImGui::SliderInt("History threshold", (int32_t*)&m_RelaxSettings.spatialVarianceEstimationHistoryThreshold, 0, 10);
 
                             nrd::RelaxDiffuseSpecularSettings defaults = {};
+
+                            if (m_Settings.tracingMode == RESOLUTION_FULL_PROBABILISTIC)
+                            {
+                                defaults.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
+                                defaults.diffusePrepassBlurRadius = defaults.specularPrepassBlurRadius;
+                            }
 
                             bool isSame = true;
                             if (m_RelaxSettings.diffusePrepassBlurRadius != defaults.diffusePrepassBlurRadius)
@@ -1330,6 +1399,10 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             else if (m_RelaxSettings.roughnessEdgeStoppingRelaxation != defaults.roughnessEdgeStoppingRelaxation)
                                 isSame = false;
                             else if (m_RelaxSettings.normalEdgeStoppingRelaxation != defaults.normalEdgeStoppingRelaxation)
+                                isSame = false;
+                            else if (m_RelaxSettings.hitDistanceReconstructionMode != defaults.hitDistanceReconstructionMode)
+                                isSame = false;
+                            else if (m_RelaxSettings.enableAntiFirefly != defaults.enableAntiFirefly)
                                 isSame = false;
                             else if (m_RelaxSettings.enableReprojectionTestSkippingWithoutMotion != defaults.enableReprojectionTestSkippingWithoutMotion)
                                 isSame = false;
@@ -1664,6 +1737,35 @@ void Sample::PrepareFrame(uint32_t frameIndex)
         }
     }
 
+    // Adjust settings if tracing mode has been changed to / from "probabilistic sampling"
+    if (m_Settings.tracingMode != m_PrevSettings.tracingMode)
+    {
+        nrd::ReblurSettings reblurDefaults = {};
+        nrd::ReblurSettings relaxDefaults = {};
+
+        if (m_Settings.tracingMode == RESOLUTION_FULL_PROBABILISTIC)
+        {
+            m_ReblurSettings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
+            m_ReblurSettings.diffusePrepassBlurRadius = reblurDefaults.specularPrepassBlurRadius;
+            m_ReblurSettings.specularPrepassBlurRadius = reblurDefaults.specularPrepassBlurRadius;
+
+            m_RelaxSettings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
+            m_RelaxSettings.diffusePrepassBlurRadius = relaxDefaults.specularPrepassBlurRadius;
+            m_RelaxSettings.specularPrepassBlurRadius = relaxDefaults.specularPrepassBlurRadius;
+        }
+        else
+        {
+            m_ReblurSettings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::OFF;
+            m_ReblurSettings.diffusePrepassBlurRadius = reblurDefaults.diffusePrepassBlurRadius;
+            m_ReblurSettings.specularPrepassBlurRadius = reblurDefaults.specularPrepassBlurRadius;
+
+            m_RelaxSettings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::OFF;
+            m_RelaxSettings.diffusePrepassBlurRadius = relaxDefaults.diffusePrepassBlurRadius;
+            m_RelaxSettings.specularPrepassBlurRadius = relaxDefaults.specularPrepassBlurRadius;
+        }
+    }
+
+    // Print out information
     if (prevResolutionScale != m_ResolutionScale || m_PrevSettings.tracingMode != m_Settings.tracingMode || m_PrevSettings.rpp != m_Settings.rpp)
     {
         std::array<uint32_t, 4> rppScale = {2, 1, 2, 2};
@@ -1905,16 +2007,22 @@ void Sample::CreateResources(nri::Format swapChainFormat)
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::Unfiltered_Shadow_Translucency", nri::Format::RGBA8_UNORM, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
-    CreateTexture(descriptorDescs, "Texture::ComposedLighting_ViewZ", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
-        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
-    CreateTexture(descriptorDescs, "Texture::TaaHistory", nri::Format::R10_G10_B10_A2_UNORM, w, h, 1, 1,
-        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
-    CreateTexture(descriptorDescs, "Texture::TaaHistoryPrev", nri::Format::R10_G10_B10_A2_UNORM, w, h, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::Composed_ViewZ", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
     CreateTexture(descriptorDescs, "Texture::DlssOutput", nri::Format::R11_G11_B10_UFLOAT, m_OutputResolution.x, m_OutputResolution.y, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
     CreateTexture(descriptorDescs, "Texture::Final", swapChainFormat, (uint16_t)m_OutputResolution.x, (uint16_t)m_OutputResolution.y, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::COPY_SOURCE);
+
+    // History
+    CreateTexture(descriptorDescs, "Texture::ComposedDiff_ViewZ", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
+        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
+    CreateTexture(descriptorDescs, "Texture::ComposedSpec_ViewZ", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
+        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
+    CreateTexture(descriptorDescs, "Texture::TaaHistory", nri::Format::R10_G10_B10_A2_UNORM, w, h, 1, 1,
+        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
+    CreateTexture(descriptorDescs, "Texture::TaaHistoryPrev", nri::Format::R10_G10_B10_A2_UNORM, w, h, 1, 1,
+        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
 
     // Read-only
     CreateTexture(descriptorDescs, "Texture::NisData1", nri::Format::RGBA16_SFLOAT, kFilterSize / 4, kPhaseCount, 1, 1,
@@ -2127,8 +2235,8 @@ void Sample::CreatePipelines()
     { // Pipeline::IndirectRays
         const nri::DescriptorRangeDesc descriptorRanges1[] =
         {
-            { 0, 7, nri::DescriptorType::TEXTURE, nri::ShaderStage::ALL },
-            { 7, 7, nri::DescriptorType::STORAGE_TEXTURE, nri::ShaderStage::ALL }
+            { 0, 8, nri::DescriptorType::TEXTURE, nri::ShaderStage::ALL },
+            { 8, 7, nri::DescriptorType::STORAGE_TEXTURE, nri::ShaderStage::ALL }
         };
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
@@ -2158,7 +2266,7 @@ void Sample::CreatePipelines()
         const nri::DescriptorRangeDesc descriptorRanges1[] =
         {
             { 0, 9, nri::DescriptorType::TEXTURE, nri::ShaderStage::ALL },
-            { 9, 1, nri::DescriptorType::STORAGE_TEXTURE, nri::ShaderStage::ALL }
+            { 9, 3, nri::DescriptorType::STORAGE_TEXTURE, nri::ShaderStage::ALL }
         };
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
@@ -2460,7 +2568,8 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Normal_Roughness_Texture),
             Get(Descriptor::BaseColor_Metalness_Texture),
             Get(Descriptor::PrimaryMip_Texture),
-            Get(Descriptor::ComposedLighting_ViewZ_Texture),
+            Get(Descriptor::ComposedDiff_ViewZ_Texture),
+            Get(Descriptor::ComposedSpec_ViewZ_Texture),
             Get(Descriptor::Ambient_Texture),
             Get(Descriptor::Motion_Texture),
         };
@@ -2504,7 +2613,9 @@ void Sample::CreateDescriptorSets()
 
         const nri::Descriptor* storageTextures[] =
         {
-            Get(Descriptor::ComposedLighting_ViewZ_StorageTexture),
+            Get(Descriptor::Composed_ViewZ_StorageTexture),
+            Get(Descriptor::ComposedDiff_ViewZ_StorageTexture),
+            Get(Descriptor::ComposedSpec_ViewZ_StorageTexture),
         };
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -2523,7 +2634,7 @@ void Sample::CreateDescriptorSets()
         const nri::Descriptor* textures[] =
         {
             Get(Descriptor::Motion_Texture),
-            Get(Descriptor::ComposedLighting_ViewZ_Texture),
+            Get(Descriptor::Composed_ViewZ_Texture),
             Get(Descriptor::TransparentLighting_Texture),
             Get(Descriptor::TaaHistoryPrev_Texture),
         };
@@ -2549,7 +2660,7 @@ void Sample::CreateDescriptorSets()
         const nri::Descriptor* textures[] =
         {
             Get(Descriptor::Motion_Texture),
-            Get(Descriptor::ComposedLighting_ViewZ_Texture),
+            Get(Descriptor::Composed_ViewZ_Texture),
             Get(Descriptor::TransparentLighting_Texture),
             Get(Descriptor::TaaHistory_Texture),
         };
@@ -2672,14 +2783,14 @@ void Sample::CreateDescriptorSets()
         {
             Get(Descriptor::Motion_Texture),
             Get(Descriptor::TransparentLighting_Texture),
-            Get(Descriptor::ComposedLighting_ViewZ_Texture),
+            Get(Descriptor::Composed_ViewZ_Texture),
         };
 
         const nri::Descriptor* storageTextures[] =
         {
             Get(Descriptor::ViewZ_StorageTexture),
             Get(Descriptor::Unfiltered_ShadowData_StorageTexture),
-            Get(Descriptor::Unfiltered_Diff_StorageTexture),
+            Get(Descriptor::DlssInput_StorageTexture),
         };
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3169,6 +3280,22 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
     nrd::HitDistanceParameters hitDistanceParameters = {};
     hitDistanceParameters.A = m_Settings.hitDistScale * m_Settings.meterToUnitsMultiplier;
 
+    float minProbability = 0.0f;
+    if (m_Settings.tracingMode == RESOLUTION_FULL_PROBABILISTIC)
+    {
+        nrd::HitDistanceReconstructionMode mode = nrd::HitDistanceReconstructionMode::OFF;
+        if (m_Settings.denoiser == REBLUR)
+            mode = m_ReblurSettings.hitDistanceReconstructionMode;
+        else if (m_Settings.denoiser == RELAX)
+            mode = m_RelaxSettings.hitDistanceReconstructionMode;
+
+        // Min / max allowed probability to guarantee a sample in 3x3 or 5x5 area - https://godbolt.org/z/YGYo1rjnM
+        if (mode == nrd::HitDistanceReconstructionMode::AREA_3X3)
+            minProbability = 1.0f / 4.0f;
+        else if (mode == nrd::HitDistanceReconstructionMode::AREA_5X5)
+            minProbability = 1.0f / 16.0f;
+    }
+
     const uint32_t bufferedFrameIndex = frameIndex % BUFFERED_FRAME_MAX_NUM;
     const uint64_t rangeOffset = m_Frames[bufferedFrameIndex].globalConstantBufferOffset;
     nri::Buffer* globalConstants = Get(Buffer::GlobalConstants);
@@ -3211,6 +3338,7 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
         data->gTransparent                                  = ( m_HasTransparentObjects && !NRD_OCCLUSION_ONLY && ( m_Settings.onScreen == 0 || m_Settings.onScreen == 2 ) ) ? 1.0f : 0.0f;
         data->gReference                                    = m_Settings.reference ? 1.0f : 0.0f;
         data->gUsePrevFrame                                 = m_Settings.usePrevFrame;
+        data->gMinProbability                               = minProbability;
         data->gDenoiserType                                 = (uint32_t)m_Settings.denoiser;
         data->gDisableShadowsAndEnableImportanceSampling    = (sunDirection.z < 0.0f && m_Settings.importanceSampling) ? 1 : 0;
         data->gOnScreen                                     = m_Settings.onScreen + NRD_OCCLUSION_ONLY * 3; // preserve original mapping
@@ -3437,8 +3565,8 @@ void Sample::RenderFrame(uint32_t frameIndex)
         NrdIntegration_SetResource(userPool, nrd::ResourceType::OUT_SHADOW_TRANSLUCENCY, {&GetState(Texture::Shadow), GetFormat(Texture::Shadow)});
 
         // REFERENCE
-        NrdIntegration_SetResource(userPool, nrd::ResourceType::IN_RADIANCE, {&GetState(Texture::ComposedLighting_ViewZ), GetFormat(Texture::ComposedLighting_ViewZ)});
-        NrdIntegration_SetResource(userPool, nrd::ResourceType::OUT_RADIANCE, {&GetState(Texture::ComposedLighting_ViewZ), GetFormat(Texture::ComposedLighting_ViewZ)});
+        NrdIntegration_SetResource(userPool, nrd::ResourceType::IN_RADIANCE, {&GetState(Texture::Composed_ViewZ), GetFormat(Texture::Composed_ViewZ)});
+        NrdIntegration_SetResource(userPool, nrd::ResourceType::OUT_RADIANCE, {&GetState(Texture::Composed_ViewZ), GetFormat(Texture::Composed_ViewZ)});
     }
 
     UpdateConstantBuffer(frameIndex, resetHistoryFactor);
@@ -3579,7 +3707,8 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::BaseColor_Metalness, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::PrimaryMip, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::ComposedLighting_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::ComposedDiff_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::Motion, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 // Output
@@ -3622,6 +3751,10 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 commonSettings.resolutionScale[1] = resolutionScaleQuarter;
             }
 
+            float radiusResolutionScale = 1.0f;
+            if (m_AdaptRadiusToResolution)
+                radiusResolutionScale = float( resolutionScaleQuarter * m_ScreenResolution.y ) / 1440.0f;
+
             if (m_Settings.denoiser == REBLUR)
             {
                 const float3 trimmingParams = GetSpecularLobeTrimming();
@@ -3649,14 +3782,17 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
                 m_ReblurSettings.maxAccumulatedFrameNum = maxAccumulatedFrameNum;
                 m_ReblurSettings.checkerboardMode = tracingMode == RESOLUTION_HALF ? nrd::CheckerboardMode::WHITE : nrd::CheckerboardMode::OFF;
-                m_ReblurSettings.enableAntiFirefly = m_Settings.enableAntiFirefly;
                 m_ReblurSettings.enableMaterialTestForDiffuse = true;
                 m_ReblurSettings.enableMaterialTestForSpecular = false;
-                m_ReblurSettings.enableHitDistanceReconstruction = tracingMode == RESOLUTION_FULL_PROBABILISTIC ? m_EnableHitDistanceReconstruction : false;
+
+                nrd::ReblurSettings settings = m_ReblurSettings;
+                settings.blurRadius *= radiusResolutionScale;
+                settings.diffusePrepassBlurRadius *= radiusResolutionScale;
+                settings.specularPrepassBlurRadius *= radiusResolutionScale;
 
                 #if( NRD_OCCLUSION_ONLY == 0 )
                     #if( NRD_COMBINED == 1 )
-                        m_Reblur.SetMethodSettings(nrd::Method::REBLUR_DIFFUSE_SPECULAR, &m_ReblurSettings);
+                        m_Reblur.SetMethodSettings(nrd::Method::REBLUR_DIFFUSE_SPECULAR, &settings);
                     #else
                         m_Reblur.SetMethodSettings(nrd::Method::REBLUR_DIFFUSE, &m_ReblurSettings);
                         m_Reblur.SetMethodSettings(nrd::Method::REBLUR_SPECULAR, &m_ReblurSettings);
@@ -3679,61 +3815,63 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 m_RelaxSettings.specularMaxAccumulatedFrameNum = maxAccumulatedFrameNum;
                 m_RelaxSettings.specularMaxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
                 m_RelaxSettings.checkerboardMode = tracingMode == RESOLUTION_HALF ? nrd::CheckerboardMode::WHITE : nrd::CheckerboardMode::OFF;
-                m_RelaxSettings.enableAntiFirefly = m_Settings.enableAntiFirefly;
                 m_RelaxSettings.enableMaterialTestForDiffuse = true;
                 m_RelaxSettings.enableMaterialTestForSpecular = false;
-                m_RelaxSettings.enableSpecularHitDistanceReconstruction = tracingMode == RESOLUTION_FULL_PROBABILISTIC ? m_EnableHitDistanceReconstruction : false;
+
+                nrd::RelaxDiffuseSpecularSettings settings = m_RelaxSettings;
+                settings.diffusePrepassBlurRadius *= radiusResolutionScale;
+                settings.specularPrepassBlurRadius *= radiusResolutionScale;
 
                 #if( NRD_COMBINED == 1 )
                     m_Relax.SetMethodSettings(nrd::Method::RELAX_DIFFUSE_SPECULAR, &m_RelaxSettings);
                 #else
                     nrd::RelaxDiffuseSettings diffuseSettings = {};
-                    diffuseSettings.prepassBlurRadius                            = m_RelaxSettings.diffusePrepassBlurRadius;
-                    diffuseSettings.diffuseMaxAccumulatedFrameNum                = m_RelaxSettings.diffuseMaxAccumulatedFrameNum;
-                    diffuseSettings.diffuseMaxFastAccumulatedFrameNum            = m_RelaxSettings.diffuseMaxFastAccumulatedFrameNum;
-                    diffuseSettings.diffusePhiLuminance                          = m_RelaxSettings.diffusePhiLuminance;
-                    diffuseSettings.diffuseLobeAngleFraction                     = m_RelaxSettings.diffuseLobeAngleFraction;
-                    diffuseSettings.disocclusionFixEdgeStoppingNormalPower       = m_RelaxSettings.disocclusionFixEdgeStoppingNormalPower;
-                    diffuseSettings.disocclusionFixMaxRadius                     = m_RelaxSettings.disocclusionFixMaxRadius;
-                    diffuseSettings.disocclusionFixNumFramesToFix                = m_RelaxSettings.disocclusionFixNumFramesToFix;
-                    diffuseSettings.historyClampingColorBoxSigmaScale            = m_RelaxSettings.historyClampingColorBoxSigmaScale;
-                    diffuseSettings.spatialVarianceEstimationHistoryThreshold    = m_RelaxSettings.spatialVarianceEstimationHistoryThreshold;
-                    diffuseSettings.atrousIterationNum                           = m_RelaxSettings.atrousIterationNum;
-                    diffuseSettings.minLuminanceWeight                           = m_RelaxSettings.diffuseMinLuminanceWeight;
-                    diffuseSettings.depthThreshold                               = m_RelaxSettings.depthThreshold;
-                    diffuseSettings.checkerboardMode                             = m_RelaxSettings.checkerboardMode;
-                    diffuseSettings.enableAntiFirefly                            = m_RelaxSettings.enableAntiFirefly;
-                    diffuseSettings.enableReprojectionTestSkippingWithoutMotion  = m_RelaxSettings.enableReprojectionTestSkippingWithoutMotion;
-                    diffuseSettings.enableMaterialTest                           = m_RelaxSettings.enableMaterialTestForDiffuse;
+                    diffuseSettings.prepassBlurRadius                            = settings.diffusePrepassBlurRadius;
+                    diffuseSettings.diffuseMaxAccumulatedFrameNum                = settings.diffuseMaxAccumulatedFrameNum;
+                    diffuseSettings.diffuseMaxFastAccumulatedFrameNum            = settings.diffuseMaxFastAccumulatedFrameNum;
+                    diffuseSettings.diffusePhiLuminance                          = settings.diffusePhiLuminance;
+                    diffuseSettings.diffuseLobeAngleFraction                     = settings.diffuseLobeAngleFraction;
+                    diffuseSettings.disocclusionFixEdgeStoppingNormalPower       = settings.disocclusionFixEdgeStoppingNormalPower;
+                    diffuseSettings.disocclusionFixMaxRadius                     = settings.disocclusionFixMaxRadius;
+                    diffuseSettings.disocclusionFixNumFramesToFix                = settings.disocclusionFixNumFramesToFix;
+                    diffuseSettings.historyClampingColorBoxSigmaScale            = settings.historyClampingColorBoxSigmaScale;
+                    diffuseSettings.spatialVarianceEstimationHistoryThreshold    = settings.spatialVarianceEstimationHistoryThreshold;
+                    diffuseSettings.atrousIterationNum                           = settings.atrousIterationNum;
+                    diffuseSettings.minLuminanceWeight                           = settings.diffuseMinLuminanceWeight;
+                    diffuseSettings.depthThreshold                               = settings.depthThreshold;
+                    diffuseSettings.checkerboardMode                             = settings.checkerboardMode;
+                    diffuseSettings.enableAntiFirefly                            = settings.enableAntiFirefly;
+                    diffuseSettings.enableReprojectionTestSkippingWithoutMotion  = settings.enableReprojectionTestSkippingWithoutMotion;
+                    diffuseSettings.enableMaterialTest                           = settings.enableMaterialTestForDiffuse;
 
                     nrd::RelaxSpecularSettings specularSettings = {};
-                    specularSettings.prepassBlurRadius                           = m_RelaxSettings.specularPrepassBlurRadius;
-                    specularSettings.specularMaxAccumulatedFrameNum              = m_RelaxSettings.specularMaxAccumulatedFrameNum;
-                    specularSettings.specularMaxFastAccumulatedFrameNum          = m_RelaxSettings.specularMaxFastAccumulatedFrameNum;
-                    specularSettings.specularPhiLuminance                        = m_RelaxSettings.specularPhiLuminance;
-                    specularSettings.diffuseLobeAngleFraction                    = m_RelaxSettings.diffuseLobeAngleFraction;
-                    specularSettings.specularLobeAngleFraction                   = m_RelaxSettings.specularLobeAngleFraction;
-                    specularSettings.roughnessFraction                           = m_RelaxSettings.roughnessFraction;
-                    specularSettings.specularVarianceBoost                       = m_RelaxSettings.specularVarianceBoost;
-                    specularSettings.specularLobeAngleSlack                      = m_RelaxSettings.specularLobeAngleSlack;
-                    specularSettings.disocclusionFixEdgeStoppingNormalPower      = m_RelaxSettings.disocclusionFixEdgeStoppingNormalPower;
-                    specularSettings.disocclusionFixMaxRadius                    = m_RelaxSettings.disocclusionFixMaxRadius;
-                    specularSettings.disocclusionFixNumFramesToFix               = m_RelaxSettings.disocclusionFixNumFramesToFix;
-                    specularSettings.historyClampingColorBoxSigmaScale           = m_RelaxSettings.historyClampingColorBoxSigmaScale;
-                    specularSettings.spatialVarianceEstimationHistoryThreshold   = m_RelaxSettings.spatialVarianceEstimationHistoryThreshold;
-                    specularSettings.atrousIterationNum                          = m_RelaxSettings.atrousIterationNum;
-                    specularSettings.minLuminanceWeight                          = m_RelaxSettings.specularMinLuminanceWeight;
-                    specularSettings.depthThreshold                              = m_RelaxSettings.depthThreshold;
-                    specularSettings.luminanceEdgeStoppingRelaxation             = m_RelaxSettings.luminanceEdgeStoppingRelaxation;
-                    specularSettings.normalEdgeStoppingRelaxation                = m_RelaxSettings.normalEdgeStoppingRelaxation;
-                    specularSettings.roughnessEdgeStoppingRelaxation             = m_RelaxSettings.roughnessEdgeStoppingRelaxation;
+                    specularSettings.prepassBlurRadius                           = settings.specularPrepassBlurRadius;
+                    specularSettings.specularMaxAccumulatedFrameNum              = settings.specularMaxAccumulatedFrameNum;
+                    specularSettings.specularMaxFastAccumulatedFrameNum          = settings.specularMaxFastAccumulatedFrameNum;
+                    specularSettings.specularPhiLuminance                        = settings.specularPhiLuminance;
+                    specularSettings.diffuseLobeAngleFraction                    = settings.diffuseLobeAngleFraction;
+                    specularSettings.specularLobeAngleFraction                   = settings.specularLobeAngleFraction;
+                    specularSettings.roughnessFraction                           = settings.roughnessFraction;
+                    specularSettings.specularVarianceBoost                       = settings.specularVarianceBoost;
+                    specularSettings.specularLobeAngleSlack                      = settings.specularLobeAngleSlack;
+                    specularSettings.disocclusionFixEdgeStoppingNormalPower      = settings.disocclusionFixEdgeStoppingNormalPower;
+                    specularSettings.disocclusionFixMaxRadius                    = settings.disocclusionFixMaxRadius;
+                    specularSettings.disocclusionFixNumFramesToFix               = settings.disocclusionFixNumFramesToFix;
+                    specularSettings.historyClampingColorBoxSigmaScale           = settings.historyClampingColorBoxSigmaScale;
+                    specularSettings.spatialVarianceEstimationHistoryThreshold   = settings.spatialVarianceEstimationHistoryThreshold;
+                    specularSettings.atrousIterationNum                          = settings.atrousIterationNum;
+                    specularSettings.minLuminanceWeight                          = settings.specularMinLuminanceWeight;
+                    specularSettings.depthThreshold                              = settings.depthThreshold;
+                    specularSettings.luminanceEdgeStoppingRelaxation             = settings.luminanceEdgeStoppingRelaxation;
+                    specularSettings.normalEdgeStoppingRelaxation                = settings.normalEdgeStoppingRelaxation;
+                    specularSettings.roughnessEdgeStoppingRelaxation             = settings.roughnessEdgeStoppingRelaxation;
                     specularSettings.checkerboardMode                            = tracingMode == RESOLUTION_HALF ? nrd::CheckerboardMode::BLACK : nrd::CheckerboardMode::OFF;
-                    specularSettings.enableAntiFirefly                           = m_RelaxSettings.enableAntiFirefly;
-                    specularSettings.enableReprojectionTestSkippingWithoutMotion = m_RelaxSettings.enableReprojectionTestSkippingWithoutMotion;
-                    specularSettings.enableSpecularVirtualHistoryClamping        = m_RelaxSettings.enableSpecularVirtualHistoryClamping;
-                    specularSettings.enableRoughnessEdgeStopping                 = m_RelaxSettings.enableRoughnessEdgeStopping;
-                    specularSettings.enableMaterialTest                          = m_RelaxSettings.enableMaterialTestForSpecular;
-                    specularSettings.enableSpecularHitDistanceReconstruction     = m_RelaxSettings.enableSpecularHitDistanceReconstruction;
+                    specularSettings.enableAntiFirefly                           = settings.enableAntiFirefly;
+                    specularSettings.enableReprojectionTestSkippingWithoutMotion = settings.enableReprojectionTestSkippingWithoutMotion;
+                    specularSettings.enableSpecularVirtualHistoryClamping        = settings.enableSpecularVirtualHistoryClamping;
+                    specularSettings.enableRoughnessEdgeStopping                 = settings.enableRoughnessEdgeStopping;
+                    specularSettings.enableMaterialTest                          = settings.enableMaterialTestForSpecular;
+                    specularSettings.enableSpecularHitDistanceReconstruction     = settings.enableSpecularHitDistanceReconstruction;
 
                     m_Relax.SetMethodSettings(nrd::Method::RELAX_DIFFUSE, &diffuseSettings);
                     m_Relax.SetMethodSettings(nrd::Method::RELAX_SPECULAR, &specularSettings);
@@ -3761,7 +3899,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 {Texture::Diff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::Spec, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 // Output
-                {Texture::ComposedLighting_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::ComposedDiff_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
             };
             transitionBarriers.textures = optimizedTransitions.data();
             transitionBarriers.textureNum = BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions.data(), helper::GetCountOf(optimizedTransitions));
@@ -3801,11 +3941,11 @@ void Sample::RenderFrame(uint32_t frameIndex)
                     // Input
                     {Texture::Motion, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                     {Texture::TransparentLighting, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                    {Texture::ComposedLighting_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                    {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                     // Output
                     {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                     {Texture::Unfiltered_ShadowData, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                    {Texture::Unfiltered_Diff, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                    {Texture::DlssInput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 };
                 transitionBarriers.textures = optimizedTransitions.data();
                 transitionBarriers.textureNum = BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions.data(), helper::GetCountOf(optimizedTransitions));
@@ -3828,7 +3968,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                     // Input
                     {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                     {Texture::Unfiltered_ShadowData, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                    {Texture::Unfiltered_Diff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                    {Texture::DlssInput, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                     // Output
                     {Texture::DlssOutput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 };
@@ -3837,12 +3977,12 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
 
                 DlssDispatchDesc dlssDesc = {};
-                dlssDesc.texInput = Get(Texture::Unfiltered_Diff);
+                dlssDesc.texInput = Get(Texture::DlssInput);
                 dlssDesc.texMv = Get(Texture::Unfiltered_ShadowData);
                 dlssDesc.texDepth = Get(Texture::ViewZ);
                 dlssDesc.texOutput = Get(Texture::DlssOutput);
 
-                dlssDesc.descriptorInput = Get(Descriptor::Unfiltered_Diff_Texture);
+                dlssDesc.descriptorInput = Get(Descriptor::DlssInput_Texture);
                 dlssDesc.descriptorMv = Get(Descriptor::Unfiltered_ShadowData_Texture);
                 dlssDesc.descriptorDepth = Get(Descriptor::ViewZ_Texture);
                 dlssDesc.descriptorOutput = Get(Descriptor::DlssOutput_StorageTexture);
@@ -3896,7 +4036,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 {
                     // Input
                     {Texture::Motion, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                    {Texture::ComposedLighting_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                    {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                     {Texture::TransparentLighting, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                     {taaSrc, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                     // Output

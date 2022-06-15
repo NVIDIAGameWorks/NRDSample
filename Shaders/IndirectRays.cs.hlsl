@@ -18,18 +18,19 @@ NRI_RESOURCE( Texture2D<float>, gIn_ViewZ, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_Normal_Roughness, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_BaseColor_Metalness, t, 2, 1 );
 NRI_RESOURCE( Texture2D<float>, gIn_PrimaryMip, t, 3, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_PrevFinalLighting_PrevViewZ, t, 4, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 5, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_Motion, t, 6, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_PrevComposedDiff_PrevViewZ, t, 4, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_PrevComposedSpec_PrevViewZ, t, 5, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 6, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_Motion, t, 7, 1 );
 
 // Outputs
-NRI_RESOURCE( RWTexture2D<float4>, gOut_Diff, u, 7, 1 );
-NRI_RESOURCE( RWTexture2D<float4>, gOut_Spec, u, 8, 1 );
-NRI_RESOURCE( RWTexture2D<float4>, gOut_DiffDirectionPdf, u, 9, 1 );
-NRI_RESOURCE( RWTexture2D<float4>, gOut_SpecDirectionPdf, u, 10, 1 );
-NRI_RESOURCE( RWTexture2D<float>, gOut_Downsampled_ViewZ, u, 11, 1 );
-NRI_RESOURCE( RWTexture2D<float3>, gOut_Downsampled_Motion, u, 12, 1 );
-NRI_RESOURCE( RWTexture2D<float4>, gOut_Downsampled_Normal_Roughness, u, 13, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_Diff, u, 8, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_Spec, u, 9, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_DiffDirectionPdf, u, 10, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_SpecDirectionPdf, u, 11, 1 );
+NRI_RESOURCE( RWTexture2D<float>, gOut_Downsampled_ViewZ, u, 12, 1 );
+NRI_RESOURCE( RWTexture2D<float3>, gOut_Downsampled_Motion, u, 13, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_Downsampled_Normal_Roughness, u, 14, 1 );
 
 /*
 "TraceOpaque" traces "pathNum" paths, doing up to "bounceNum" bounces. The function
@@ -96,15 +97,20 @@ struct TraceOpaqueResult
     float4 specDirectionAndPdf;     // IN_SPEC_DIRECTION_PDF
 };
 
-float3 GetRadianceFromPreviousFrame( GeometryProps geometryProps, float2 pixelUv, inout float weight )
+float GetRadianceFromPreviousFrame( GeometryProps geometryProps, float2 pixelUv, out float3 prevLdiff, out float3 prevLspec )
 {
     float4 clipPrev = STL::Geometry::ProjectiveTransform( gWorldToClipPrev, geometryProps.X ); // Not Xprev because confidence is based on viewZ
     float2 uvPrev = ( clipPrev.xy / clipPrev.w ) * float2( 0.5, -0.5 ) + 0.5 - gJitter;
-    float4 prevLsum = gIn_PrevFinalLighting_PrevViewZ.SampleLevel( gNearestMipmapNearestSampler, uvPrev * gRectSizePrev * gInvScreenSize, 0 );
-    float prevViewZ = abs( prevLsum.w ) / NRD_FP16_VIEWZ_SCALE;
 
-    // Clear out bad values
-    weight *= all( !isnan( prevLsum ) && !isinf( prevLsum ) );
+    float4 data = gIn_PrevComposedDiff_PrevViewZ.SampleLevel( gNearestMipmapNearestSampler, uvPrev * gRectSizePrev * gInvScreenSize, 0 );
+    float prevViewZ = abs( data.w ) / NRD_FP16_VIEWZ_SCALE;
+
+    prevLdiff = data.xyz;
+    prevLspec = gIn_PrevComposedSpec_PrevViewZ.SampleLevel( gNearestMipmapNearestSampler, uvPrev * gRectSizePrev * gInvScreenSize, 0 ).xyz;
+
+    // Initial state
+    float weight = 0.9 * gUsePrevFrame; // TODO: use F( bounceIndex ) bounceIndex = 99 => 1.0
+    weight *= 1.0 - gAmbientAccumSpeed;
 
     // Fade-out on screen edges
     float2 f = STL::Math::LinearStep( 0.0, 0.1, uvPrev ) * STL::Math::LinearStep( 1.0, 0.9, uvPrev );
@@ -114,13 +120,13 @@ float3 GetRadianceFromPreviousFrame( GeometryProps geometryProps, float2 pixelUv
 
     // Confidence - viewZ
     // No "abs" for clipPrev.w, because if it's negative we have a back-projection!
-    float err = abs( prevViewZ - clipPrev.w ) * STL::Math::PositiveRcp( min( prevViewZ, abs( clipPrev.w ) ) );
+    float err = abs( prevViewZ - clipPrev.w ) * STL::Math::PositiveRcp( max( prevViewZ, abs( clipPrev.w ) ) );
     weight *= STL::Math::LinearStep( 0.02, 0.005, err );
 
     // Confidence - ignore back-facing
     // Instead of storing previous normal we can store previous NoL, if signs do not match we hit the surface from the opposite side
     float NoL = dot( geometryProps.N, gSunDirection );
-    weight *= float( NoL * STL::Math::Sign( prevLsum.w ) > 0.0 );
+    weight *= float( NoL * STL::Math::Sign( data.w ) > 0.0 );
 
     // Confidence - ignore too short rays
     float4 clip = STL::Geometry::ProjectiveTransform( gWorldToClip, geometryProps.X );
@@ -131,23 +137,36 @@ float3 GetRadianceFromPreviousFrame( GeometryProps geometryProps, float2 pixelUv
     // Ignore sky
     weight *= float( !geometryProps.IsSky() );
 
-    return weight ? prevLsum.xyz : 0;
+    // Clear out bad values
+    weight *= all( !isnan( prevLdiff ) && !isinf( prevLdiff ) );
+    weight *= all( !isnan( prevLspec ) && !isinf( prevLspec ) );
+
+    prevLdiff = weight == 0 ? 0 : prevLdiff;
+    prevLspec = weight == 0 ? 0 : prevLspec;
+
+    return weight;
 }
 
-float EstimateDiffuseMagicProbability( GeometryProps geometryProps, MaterialProps materialProps )
+float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps materialProps, bool useMagicBoost = false )
 {
     float3 albedo, Rf0;
     STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
 
-    // TODO: add missing "1 - F" energy conservation for diffuse?
     float smc = GetSpecMagicCurve( materialProps.roughness );
     float NoV = abs( dot( materialProps.N, -geometryProps.rayDirection ) );
     float3 Fenv = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, materialProps.roughness );
-    float lumDiff = lerp( STL::Color::Luminance( albedo ), 1.0, smc ); // boost diffuse if roughness is high
-    float lumSpec = STL::Color::Luminance( Fenv ) * lerp( 10.0, 1.0, smc ); // boost specular if roughness is low
-    float diffProb = lumDiff / ( lumDiff + lumSpec + 1e-6 );
 
-    // TODO: bump if currDir ~= primary viewVector
+    float lumSpec = STL::Color::Luminance( Fenv );
+    float lumDiff = STL::Color::Luminance( albedo * ( 1.0 - Fenv ) );
+
+    // Boost diffuse if roughness is high
+    if( useMagicBoost )
+    {
+        lumDiff = lerp( lumDiff, 1.0, smc );
+        lumSpec = lerp( lumSpec, 0.0, smc );
+    }
+
+    float diffProb = lumDiff / ( lumDiff + lumSpec + 1e-6 );
 
     return diffProb;
 }
@@ -171,9 +190,6 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
         uint bounceNum = 1 + desc.bounceNum;
         bool isDiffuse0 = true;
 
-        float accumulatedPrevFrameWeight = 0.9 * gUsePrevFrame; // TODO: use F( bounceIndex ) bounceIndex = 99 => 1.0
-        accumulatedPrevFrameWeight *= 1.0 - gAmbientAccumSpeed;
-
         [loop]
         for( uint bounceIndex = 1; bounceIndex < bounceNum && !geometryProps.IsSky(); bounceIndex++ )
         {
@@ -181,11 +197,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
             STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
 
             // Estimate diffuse probability
-            float NoV = abs( dot( materialProps.N, -geometryProps.rayDirection ) );
-            float3 Fenv = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, materialProps.roughness ); // TODO: use accumulated / max roughness to avoid caustics?
-            float lumSpec = STL::Color::Luminance( Fenv ) * 0.999 + 0.001;
-            float lumDiff = STL::Color::Luminance( albedo ) * ( 1.0 - lumSpec );
-            float diffuseProbability = lumDiff / ( lumDiff + lumSpec );
+            float diffuseProbability = EstimateDiffuseProbability( geometryProps, materialProps );
 
             // These will be "set" ( not "averaged" ) because we choose a single direction
             float3 throughput = 0;
@@ -194,12 +206,12 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
             // Diffuse probability:
             //  - 0 for metals ( or if albedo is 0 )
-            //  - rescaled to sane values otherwise
+            //  - rescaled to sane values otherwise to guarantee a sample in 3x3 or 5x5 area according to NRD settings
             //  - not used for 1st bounce in the checkerboard and 1rpp modes
             //  - always used for 2nd+ bounces, since the split is probabilistic
-            diffuseProbability = diffuseProbability != 0.0 ? clamp( diffuseProbability, 0.25, 0.75 ) : 1e-6;
+            diffuseProbability = clamp( diffuseProbability, gMinProbability, 1.0 - gMinProbability ) * float( diffuseProbability != 0.0 );
 
-            bool isDiffuse = STL::Rng::GetFloat2( ).x < diffuseProbability;
+            bool isDiffuse = diffuseProbability != 0.0 && STL::Rng::GetFloat2( ).x < diffuseProbability;
             if( bounceIndex == 1 )
             {
                 [flatten]
@@ -208,7 +220,10 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 else if( gTracingMode == RESOLUTION_FULL || gTracingMode == RESOLUTION_QUARTER )
                     isDiffuse = ( i & 0x1 ) != 0;
                 else
-                    isDiffuse = STL::Sequence::Bayer4x4( desc.pixelPos, gFrameIndex ) + STL::Rng::GetFloat2( ).x / 16.0 < diffuseProbability;
+                {
+                    float rnd = STL::Sequence::Bayer4x4( desc.pixelPos, gFrameIndex ) + STL::Rng::GetFloat2( ).x / 16.0;
+                    isDiffuse = diffuseProbability != 0.0 && rnd < diffuseProbability;
+                }
 
                 // Save "event type" at the primary hit
                 isDiffuse0 = isDiffuse;
@@ -287,9 +302,6 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
             if( STL::Color::Luminance( BRDF ) < desc.threshold )
                 break;
 
-            float metalnessAtOrigin = materialProps.metalness;
-            float diffProbAtOrigin = EstimateDiffuseMagicProbability( geometryProps, materialProps );
-
             // Cast ray and update result ( i.e. jump to next hit point )
             geometryProps = CastRay( geometryProps.GetXoffset( ), rayDirection, 0.0, INF, mipAndCone, gWorldTlas, desc.instanceInclusionMask, desc.rayFlags );
             materialProps = GetMaterialProps( geometryProps );
@@ -312,11 +324,15 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
             L += materialProps.Lemi;
 
-            // Reuse previous frame ( carefully treating specular )
-            float3 prevLsum = GetRadianceFromPreviousFrame( geometryProps, desc.pixelUv, accumulatedPrevFrameWeight );
+            // Reuse previous frame carefully treating specular ( but specular reuse is still biased )
+            float3 prevLdiff, prevLspec;
+            float accumulatedPrevFrameWeight = GetRadianceFromPreviousFrame( geometryProps, desc.pixelUv, prevLdiff, prevLspec );
 
-            float diffProbAtHit = EstimateDiffuseMagicProbability( geometryProps, materialProps ); // TODO: better split previous frame data into diffuse and specular and apply the logic to specular only
-            accumulatedPrevFrameWeight *= lerp( diffProbAtOrigin, diffProbAtHit, metalnessAtOrigin );
+            float diffAmount = lerp( 1.0 - materialProps.metalness, 1.0, GetSpecMagicCurve( materialProps.roughness ) );
+            accumulatedPrevFrameWeight *= isDiffuse ? 1.0 : diffAmount;
+
+            float diffProbAtHit = EstimateDiffuseProbability( geometryProps, materialProps, true );
+            float3 prevLsum = prevLdiff + prevLspec * diffProbAtHit; // if specular contribution is high we can't reuse it because it was computed for another view vector!
 
             float l1 = STL::Color::Luminance( L );
             float l2 = STL::Color::Luminance( prevLsum );
@@ -339,13 +355,13 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
             // Accumulate roughness along the path
             accumulatedRoughness += ( isDiffuse || materialProps.metalness < 0.5 ) ? 999.0 : materialProps.roughness; // TODO: fix / improve
 
-            // Reduce contribution of next samples if previous frame is sampled ( already with multi-bounce information )
+            // Reduce contribution of next samples if previous frame is sampled, which already has multi-bounce information ( biased )
             BRDF *= 1.0 - accumulatedPrevFrameWeight;
         }
 
         // Ambient estimation at the end of the path
         BRDF *= GetAmbientBRDF( geometryProps, materialProps );
-        BRDF *= 1.0 + EstimateDiffuseMagicProbability( geometryProps, materialProps ); // TODO: hack? divide by PDF of the last ray?
+        BRDF *= 1.0 + EstimateDiffuseProbability( geometryProps, materialProps, true ); // TODO: hack? divide by PDF of the last ray?
 
         float occlusion = REBLUR_FrontEnd_GetNormHitDist( geometryProps.tmin, 0.0, gHitDistParams, 1.0 );
         occlusion = lerp( 1.0 / STL::Math::Pi( 1.0 ), 1.0, occlusion );
@@ -491,8 +507,8 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         float3 diffDemod = gReference ? 1.0 : albedo;
         float3 specDemod = gReference ? 1.0 : Fenv * roughnessMod;
 
-        result.diffRadianceAndHitDist.xyz *= rcp( max( diffDemod, 0.001 ) );
-        result.specRadianceAndHitDist.xyz *= rcp( max( specDemod, 0.001 ) ); // actually, can't be 0
+        result.diffRadianceAndHitDist.xyz *= rcp( max( diffDemod, 0.01 ) );
+        result.specRadianceAndHitDist.xyz *= rcp( max( specDemod, 0.01 ) ); // actually, can't be 0
     }
 
     // Convert for NRD

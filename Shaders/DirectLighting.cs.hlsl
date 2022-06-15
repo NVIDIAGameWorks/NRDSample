@@ -16,7 +16,7 @@ NRI_RESOURCE( Texture2D<float4>, gIn_Shadow, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_TransparentLayer, t, 2, 1 );
 
 // Outputs
-NRI_RESOURCE( RWTexture2D<float4>, gInOut_DirectLighting, u, 3, 1 );
+NRI_RESOURCE( RWTexture2D<float3>, gInOut_DirectLighting, u, 3, 1 );
 
 [numthreads( 16, 16, 1)]
 void main( int2 pixelPos : SV_DispatchThreadId )
@@ -29,10 +29,9 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     shadowData = SIGMA_BackEnd_UnpackShadow( shadowData );
     float3 shadow = lerp( shadowData.yzw, 1.0, shadowData.x );
 
-    float4 temp = gInOut_DirectLighting[ pixelPos ];
-    float3 Ldirect = temp.xyz;
-
+    float3 Ldirect = gInOut_DirectLighting[ pixelPos ];
     float3 Lemi = gIn_DirectEmission[ pixelPos ];
+
     float3 Lsum = Ldirect * shadow + Lemi;
 
     // Debug
@@ -46,5 +45,5 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     Lsum = Lsum * ( 1.0 - transparentLayer.w ) * ( transparentLayer.w != 0.0 ? GLASS_TINT : 1.0 ) + transparentLayer.xyz;
 
     // Output
-    gInOut_DirectLighting[ pixelPos ] = float4( Lsum, temp.w );
+    gInOut_DirectLighting[ pixelPos ] = Lsum;
 }
