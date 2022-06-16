@@ -1140,7 +1140,12 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         ImGui::SameLine();
                         ImGui::Checkbox("Use prev frame", &m_Settings.usePrevFrame);
                         ImGui::SameLine();
+                        cmp = m_Settings.reference;
+                        if (cmp)
+                            ImGui::PushStyleColor(ImGuiCol_Text, UI_RED);
                         ImGui::Checkbox("Reference", &m_Settings.reference);
+                        if (cmp)
+                            ImGui::PopStyleColor();
                         ImGui::Checkbox("Diffuse", &m_Settings.indirectDiffuse);
                         ImGui::SameLine();
                         ImGui::Checkbox("Specular", &m_Settings.indirectSpecular);
