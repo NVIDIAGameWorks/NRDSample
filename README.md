@@ -6,7 +6,7 @@ All-in-one repository including all relevant pieces to see [*NRD (NVIDIA Real-ti
 - minimalistic path tracer utilizing *Trace Ray Inline*
 - quarter, half (checkerboard) and full resolution tracing
 - full resolution tracing with probabilistic diffuse / specular selection at the primary hit
-- NRD denoising
+- NRD denoising (including occlusion only and spherical harminics modes)
 - overhead-free multi-bounce propagation (even in case of a single bounce) based on reusing the previously denoised frame
 - reference accumulation
 - many RPP and bounces
@@ -18,7 +18,7 @@ All-in-one repository including all relevant pieces to see [*NRD (NVIDIA Real-ti
 
 - Install [*Cmake*](https://cmake.org/download/) 3.15+
 - Install on
-    - Windows: latest *WindowsSDK* (22000+), *VulkanSDK* (1.3.211+)
+    - Windows: latest *WindowsSDK* (22000+), *VulkanSDK* (1.3.216+)
     - Linux (x86-64): *VulkanSDK*, *libx11-dev*, *libxrandr-dev*, *libwayland-dev*
     - Linux (aarch64): find a precompiled binary for [*DXC*](https://github.com/microsoft/DirectXShaderCompiler), *libx11-dev*, *libxrandr-dev*, *libwayland-dev*
 - Build (variant 1) - using *Git* and *CMake* explicitly
@@ -52,12 +52,16 @@ Any Ray Tracing compatible GPU:
 
 ## Usage
 
-- Press MOUSE_RIGHT to move...
-- W/S/A/D - move camera
-- MOUSE_SCROLL - accelerate / decelerate
-- F1 - hide UI toggle
-- F2 - switch to the next denoiser (*REBLUR* => *RELAX* => ..., *SIGMA* is the only denoiser for shadows)
-- SPACE - pause animation toggle
+- Right mouse button + W/S/A/D - move camera
+- Mouse scroll - accelerate / decelerate
+- F1 - toggle "gDebug" (can be useful for debugging and experiments)
+- F2 - go to next test (only if *TESTS* section is unfolded)
+- F3 - toggle emission
+- Tab - UI toggle
+- Space - animation toggle
+- PgUp/PgDown - switch between denoisers
+
+By default *NRD* is used in common mode. But it can also be used in occlusion-only and SH modes in the sample. To change the behavior `NRD_MODE` macro needs to be changed from `NORMAL` to `OCCLUSION` or `SH` in two places: `NRDSample.cpp` and `Shared.hlsli`.
 
 Notes:
 - RELAX doesn't support AO / SO denoising. If RELAX is the current denoiser, ambient term will be automatically ignored, bypassing settings in the UI In such cases the default behavior can be returned by pressing the `Default settings` button or choosing a new test, if `--testMode` is set in the command line.

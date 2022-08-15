@@ -92,7 +92,7 @@ struct TraceOpaqueResult
     float4 diffRadianceAndHitDist;  // IN_DIFF_RADIANCE_HITDIST
     float4 specRadianceAndHitDist;  // IN_SPEC_RADIANCE_HITDIST
 
-    // (Optional) for nrd::PrePass:ADVANCED
+    // ( Optional ) for nrd::PrePass:ADVANCED
     float4 diffDirectionAndPdf;     // IN_DIFF_DIRECTION_PDF
     float4 specDirectionAndPdf;     // IN_SPEC_DIRECTION_PDF
 };
@@ -174,11 +174,12 @@ float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps mat
 TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 {
     TraceOpaqueResult result = ( TraceOpaqueResult )0;
-    float diffSum = 0;
-    float specSum = 0;
+    float diffSum = 1e-9;
+    float specSum = 1e-9;
+    uint pathNum = desc.pathNum << ( ( gTracingMode == RESOLUTION_FULL_PROBABILISTIC || gTracingMode == RESOLUTION_HALF ) ? 0 : 1 );
 
     [loop]
-    for( uint i = 0; i < desc.pathNum; i++ )
+    for( uint i = 0; i < pathNum; i++ )
     {
         GeometryProps geometryProps = desc.geometryProps;
         MaterialProps materialProps = desc.materialProps;
@@ -245,6 +246,11 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                     throughput = albedo;
 
+                    float3 H = normalize( -geometryProps.rayDirection + rayDirection );
+                    float VoH = abs( dot( -geometryProps.rayDirection, H ) );
+                    float3 F = STL::BRDF::FresnelTerm_Schlick( Rf0, VoH );
+                    throughput *= 1.0 - F;
+
                     // Optional
                     float NoL = saturate( dot( materialProps.N, rayDirection ) );
                     pdf = STL::ImportanceSampling::Cosine::GetPDF( NoL );
@@ -262,7 +268,8 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                     throughput = STL::BRDF::GeometryTerm_Smith( materialProps.roughness, NoL );
 
                     float VoH = abs( dot( -geometryProps.rayDirection, H ) );
-                    throughput *= STL::BRDF::FresnelTerm_Schlick( Rf0, VoH );
+                    float3 F = STL::BRDF::FresnelTerm_Schlick( Rf0, VoH );
+                    throughput *= F;
 
                     // Optional
                     float NoV = abs( dot( materialProps.N, -geometryProps.rayDirection ) );
@@ -283,7 +290,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 sampleNum += 1.0;
             }
 
-            // Save sampling direction and PDF of the 1st bounce ( optional )
+            // ( Optional ) Save sampling direction and PDF of the 1st bounce
             if( bounceIndex == 1 )
             {
                 if( isDiffuse0 )
@@ -344,16 +351,14 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
             L *= BRDF;
             Lsum += L;
 
-            // Accumulate path length
+            // Accumulate path length for NRD ( taking into account energy dissipation is important )
+            pathLength += geometryProps.tmin * STL::Math::SmoothStep( 0.15, 0.0, accumulatedRoughness );
+
             float a = STL::Color::Luminance( L ) + 1e-6;
             float b = STL::Color::Luminance( Lsum ) + 1e-6;
             float importance = a / b;
 
-            float hitDist = NRD_GetCorrectedHitDist( geometryProps.tmin, bounceIndex, accumulatedRoughness, importance );
-            pathLength += hitDist;
-
-            // Accumulate roughness along the path
-            accumulatedRoughness += ( isDiffuse || materialProps.metalness < 0.5 ) ? 999.0 : materialProps.roughness; // TODO: fix / improve
+            accumulatedRoughness += lerp( 1.0 - importance, 1.0, isDiffuse ? 1.0 : materialProps.roughness );
 
             // Reduce contribution of next samples if previous frame is sampled, which already has multi-bounce information ( biased )
             BRDF *= 1.0 - accumulatedPrevFrameWeight;
@@ -392,13 +397,16 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
         specSum += specWeight;
     }
 
-    float invDiffSum = 1.0 / max( diffSum, 1e-6 );
-    result.diffRadianceAndHitDist *= invDiffSum;
-    result.diffDirectionAndPdf *= invDiffSum;
+    // Radiance already divided by sampling probability, we need to average across all paths
+    result.diffRadianceAndHitDist.xyz /= float( desc.pathNum );
+    result.specRadianceAndHitDist.xyz /= float( desc.pathNum );
 
-    float invSpecSum = 1.0 / max( specSum, 1e-6 );
-    result.specRadianceAndHitDist *= invSpecSum;
-    result.specDirectionAndPdf *= invSpecSum;
+    // Hit distance and sampling direction are not divided by sampling probability, we need to average across diffuse-only ( or specular-only ) paths
+    result.diffRadianceAndHitDist.w /= diffSum;
+    result.diffDirectionAndPdf /= diffSum;
+
+    result.specRadianceAndHitDist.w /= specSum;
+    result.specDirectionAndPdf /= specSum;
 
     return result;
 }
@@ -447,7 +455,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
     float3 X = STL::Geometry::AffineTransform( gViewToWorld, Xv );
-    float3 V = GetViewVector( X );
+    float3 V = gOrthoMode == 0 ? normalize( gCameraOrigin - X ) : gViewDirection;
     float3 N = normalAndRoughness.xyz;
     float mip0 = gIn_PrimaryMip[ pixelPos ];
 
@@ -485,7 +493,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     desc.pixelUv = pixelUv;
     desc.threshold = BRDF_ENERGY_THRESHOLD;
     desc.checkerboard = checkerboard;
-    desc.pathNum = gSampleNum << ( ( gTracingMode == RESOLUTION_FULL_PROBABILISTIC || gTracingMode == RESOLUTION_HALF ) ? 0 : 1 );
+    desc.pathNum = gSampleNum;
     desc.bounceNum = gBounceNum; // TODO: adjust by roughness
     desc.instanceInclusionMask = GEOMETRY_IGNORE_TRANSPARENT;
     desc.rayFlags = 0;
@@ -499,42 +507,13 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( baseColorMetalness.xyz, baseColorMetalness.w, albedo, Rf0 );
 
         float roughness = materialProps0.roughness;
-        float3 Fenv = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV0, roughness );
+        float3 Fenv = STL::BRDF::EnvironmentTerm_Rtg( Rf0, NoV0, roughness );
 
-        float lobeAngleNorm = 2.0 * roughness * roughness / ( 1.0 + roughness * roughness );
-        float roughnessMod = USE_ROUGHNESS_BASED_DEMODULATION ? lerp( 0.1, 1.0, lobeAngleNorm ) : 1.0;
+        float3 diffDemod = ( 1.0 - Fenv ) * albedo;
+        float3 specDemod = Fenv;
 
-        float3 diffDemod = gReference ? 1.0 : albedo;
-        float3 specDemod = gReference ? 1.0 : Fenv * roughnessMod;
-
-        result.diffRadianceAndHitDist.xyz *= rcp( max( diffDemod, 0.01 ) );
-        result.specRadianceAndHitDist.xyz *= rcp( max( specDemod, 0.01 ) ); // actually, can't be 0
-    }
-
-    // Convert for NRD
-    if( gDenoiserType == REBLUR )
-    {
-        result.diffRadianceAndHitDist.w = REBLUR_FrontEnd_GetNormHitDist( result.diffRadianceAndHitDist.w, viewZ, gHitDistParams, 1.0 );
-        result.specRadianceAndHitDist.w = REBLUR_FrontEnd_GetNormHitDist( result.specRadianceAndHitDist.w, viewZ, gHitDistParams, materialProps0.roughness );
-
-        result.diffRadianceAndHitDist = REBLUR_FrontEnd_PackRadianceAndHitDist( result.diffRadianceAndHitDist.xyz, result.diffRadianceAndHitDist.w, USE_SANITIZATION );
-        result.specRadianceAndHitDist = REBLUR_FrontEnd_PackRadianceAndHitDist( result.specRadianceAndHitDist.xyz, result.specRadianceAndHitDist.w, USE_SANITIZATION );
-    }
-    else
-    {
-        result.diffRadianceAndHitDist = RELAX_FrontEnd_PackRadianceAndHitDist( result.diffRadianceAndHitDist.xyz, result.diffRadianceAndHitDist.w, USE_SANITIZATION );
-        result.specRadianceAndHitDist = RELAX_FrontEnd_PackRadianceAndHitDist( result.specRadianceAndHitDist.xyz, result.specRadianceAndHitDist.w, USE_SANITIZATION );
-    }
-
-    result.diffDirectionAndPdf = NRD_FrontEnd_PackDirectionAndPdf( result.diffDirectionAndPdf.xyz, result.diffDirectionAndPdf.w );
-    result.specDirectionAndPdf = NRD_FrontEnd_PackDirectionAndPdf( result.specDirectionAndPdf.xyz, result.specDirectionAndPdf.w );
-
-    // Occlusion only
-    [flatten]
-    if( gOcclusionOnly )
-    {
-        result.diffRadianceAndHitDist = result.diffRadianceAndHitDist.wwww;
-        result.specRadianceAndHitDist = result.specRadianceAndHitDist.wwww;
+        result.diffRadianceAndHitDist.xyz /= gReference ? 1.0 : ( diffDemod * 0.99 + 0.01 );
+        result.specRadianceAndHitDist.xyz /= gReference ? 1.0 : ( specDemod * 0.99 + 0.01 );
     }
 
     // Debug
@@ -542,6 +521,32 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         if( frac( X ).x < 0.05 )
             result.diffRadianceAndHitDist.xyz = float3( 0, 10, 0 ) * STL::Color::Luminance( result.diffRadianceAndHitDist.xyz );
     #endif
+
+    // Convert for NRD
+    if( gDenoiserType == RELAX )
+    {
+        result.diffRadianceAndHitDist = RELAX_FrontEnd_PackRadianceAndHitDist( result.diffRadianceAndHitDist.xyz, result.diffRadianceAndHitDist.w, USE_SANITIZATION );
+        result.specRadianceAndHitDist = RELAX_FrontEnd_PackRadianceAndHitDist( result.specRadianceAndHitDist.xyz, result.specRadianceAndHitDist.w, USE_SANITIZATION );
+    }
+    else
+    {
+        float diffNormHitDist = REBLUR_FrontEnd_GetNormHitDist( result.diffRadianceAndHitDist.w, viewZ, gHitDistParams, 1.0 );
+        float specNormHitDist = REBLUR_FrontEnd_GetNormHitDist( result.specRadianceAndHitDist.w, viewZ, gHitDistParams, materialProps0.roughness );
+
+    #if( NRD_MODE == OCCLUSION )
+        result.diffRadianceAndHitDist = diffNormHitDist;
+        result.specRadianceAndHitDist = specNormHitDist;
+    #elif( NRD_MODE == SH )
+        result.diffRadianceAndHitDist = REBLUR_FrontEnd_PackSh( result.diffRadianceAndHitDist.xyz, diffNormHitDist, result.diffDirectionAndPdf.xyz, result.diffDirectionAndPdf.w, result.diffDirectionAndPdf, USE_SANITIZATION );
+        result.specRadianceAndHitDist = REBLUR_FrontEnd_PackSh( result.specRadianceAndHitDist.xyz, specNormHitDist, result.specDirectionAndPdf.xyz, result.specDirectionAndPdf.w, result.specDirectionAndPdf, USE_SANITIZATION );
+    #else
+        result.diffRadianceAndHitDist = REBLUR_FrontEnd_PackRadianceAndNormHitDist( result.diffRadianceAndHitDist.xyz, diffNormHitDist, USE_SANITIZATION );
+        result.diffDirectionAndPdf = NRD_FrontEnd_PackDirectionAndPdf( result.diffDirectionAndPdf.xyz, result.diffDirectionAndPdf.w );
+
+        result.specRadianceAndHitDist = REBLUR_FrontEnd_PackRadianceAndNormHitDist( result.specRadianceAndHitDist.xyz, specNormHitDist, USE_SANITIZATION );
+        result.specDirectionAndPdf = NRD_FrontEnd_PackDirectionAndPdf( result.specDirectionAndPdf.xyz, result.specDirectionAndPdf.w );
+    #endif
+    }
 
     // Output
     if( gTracingMode == RESOLUTION_HALF )

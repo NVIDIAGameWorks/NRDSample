@@ -74,7 +74,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     // Primary ray
     float3 cameraRayOriginv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, gNearZ, gOrthoMode );
     float3 cameraRayOrigin = STL::Geometry::AffineTransform( gViewToWorld, cameraRayOriginv );
-    float3 cameraRayDirection = -GetViewVector( cameraRayOrigin );
+    float3 cameraRayDirection = gOrthoMode == 0 ? normalize( STL::Geometry::RotateVector( gViewToWorld, cameraRayOriginv ) ) : -gViewDirection;
 
     GeometryProps geometryProps0 = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, INF, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
     MaterialProps materialProps0 = GetMaterialProps( geometryProps0 );

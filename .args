@@ -62,9 +62,6 @@
           "Command": "--ignoreDPI"
         },
         {
-          "Command": "--testMode"
-        },
-        {
           "Command": "--frameNum=9999999"
         }
       ]

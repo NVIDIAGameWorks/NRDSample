@@ -118,15 +118,14 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     // History clamping
     float2 pixelPosPrev = saturate( pixelUvPrev ) * gRectSizePrev;
     float3 history = BicubicFilterNoCorners( gIn_History, gLinearSampler, pixelPosPrev, gInvScreenSize, TAA_HISTORY_SHARPNESS ).xyz;
-    float3 historyClamped = STL::Color::Clamp( m1.xyzz, sigma.xyzz, history.xyzz ).xyz;
+    float3 historyClamped = STL::Color::ClampAabb( m1, sigma, history );
 
     // History weight
     bool isInScreen = float( all( saturate( pixelUvPrev ) == pixelUvPrev ) );
     float2 pixelMotion = pixelUvPrev - pixelUv;
     float motionAmount = saturate( length( pixelMotion ) / TAA_MOTION_MAX_REUSE );
     float historyWeight = lerp( TAA_MAX_HISTORY_WEIGHT, TAA_MIN_HISTORY_WEIGHT, motionAmount );
-    historyWeight *= float( any( gJitter != 0.0 ) && isInScreen );
-    historyWeight *= 1.0 - gReference;
+    historyWeight *= float( gTaa != 0 && isInScreen );
 
     // Final mix
     float3 result = lerp( input, historyClamped, historyWeight );

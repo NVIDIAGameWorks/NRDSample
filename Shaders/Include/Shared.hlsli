@@ -96,7 +96,8 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     uint gTracingMode;
     uint gSampleNum;
     uint gBounceNum;
-    uint gOcclusionOnly;
+    uint gTaa;
+    uint gSH;
 
     // NIS
     float gNisDetectRatio;
@@ -142,15 +143,43 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 // SETTINGS
 //=============================================================================================
 
-// Constants
+#define NRD_MODE                            NORMAL // NORMAL, OCCLUSION, SH
+
+#define USE_SIMPLEX_LIGHTING_MODEL          0
+#define USE_IMPORTANCE_SAMPLING             1
+#define USE_SANITIZATION                    0 // NRD sample is NAN/INF free
+#define USE_SIMULATED_MATERIAL_ID_TEST      0 // for NRD_USE_MATERIAL_ID support debugging
+
+#define BRDF_ENERGY_THRESHOLD               0.003
+#define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
+#define TAA_HISTORY_SHARPNESS               0.5 // [0; 1], 0.5 matches Catmull-Rom
+#define TAA_MAX_HISTORY_WEIGHT              0.95
+#define TAA_MIN_HISTORY_WEIGHT              0.1
+#define TAA_MOTION_MAX_REUSE                0.1
+#define MAX_MIP_LEVEL                       11.0
+#define IMPORTANCE_SAMPLE_NUM               16
+#define GLASS_TINT                          float3( 0.9, 0.9, 1.0 )
+
+//=============================================================================================
+// CONSTANTS
+//=============================================================================================
+
+// NRD variant
+#define NORMAL                              0
+#define OCCLUSION                           1
+#define SH                                  2
+
+// Denoiser
 #define REBLUR                              0
 #define RELAX                               1
 
+// Resolution
 #define RESOLUTION_FULL                     0
 #define RESOLUTION_FULL_PROBABILISTIC       1
 #define RESOLUTION_HALF                     2
 #define RESOLUTION_QUARTER                  3
 
+// What is on screen?
 #define SHOW_FINAL                          0
 #define SHOW_DENOISED_DIFFUSE               1
 #define SHOW_DENOISED_SPECULAR              2
@@ -166,31 +195,13 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 #define SHOW_MIP_PRIMARY                    12
 #define SHOW_MIP_SPECULAR                   13
 
-#define FP16_MAX                            65504.0
-#define INF                                 1e5
-
+// Predefined material override
 #define MAT_GYPSUM                          1
 #define MAT_COBALT                          2
 
-#define SKY_MARK                            0.0
-
-// Settings
-#define USE_SIMPLEX_LIGHTING_MODEL          0
-#define USE_IMPORTANCE_SAMPLING             1
-#define USE_ROUGHNESS_BASED_DEMODULATION    0 // demonstrates how to preserve roughness details ( biased, but allows to relax "roughnessFraction" parameter )
-#define USE_SANITIZATION                    0 // NRD sample is NAN/INF free
-#define USE_SIMULATED_MATERIAL_ID_TEST      0 // for NRD_USE_MATERIAL_ID support debugging
-
-#define BRDF_ENERGY_THRESHOLD               0.003
-#define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
-#define TAA_HISTORY_SHARPNESS               0.5 // [0; 1], 0.5 matches Catmull-Rom
-#define TAA_MAX_HISTORY_WEIGHT              0.95
-#define TAA_MIN_HISTORY_WEIGHT              0.1
-#define TAA_MOTION_MAX_REUSE                0.1
-#define MAX_MIP_LEVEL                       11.0
-#define EMISSION_TEXTURE_MIP_BIAS           5.0
-#define IMPORTANCE_SAMPLE_NUM               16
-#define GLASS_TINT                          float3( 0.9, 0.9, 1.0 )
+// Other
+#define FP16_MAX                            65504.0
+#define INF                                 1e5
 
 //=============================================================================================
 // MISC
@@ -203,11 +214,6 @@ float GetSpecMagicCurve( float roughness, float power = 0.25 )
     f *= STL::Math::Pow01( roughness, power );
 
     return f;
-}
-
-float3 GetViewVector( float3 X )
-{
-    return gOrthoMode == 0.0 ? normalize( gCameraOrigin - X ) : gViewDirection;
 }
 
 float3 ApplyPostLightingComposition( uint2 pixelPos, float3 Lsum, Texture2D<float4> gIn_TransparentLayer, bool convertToLDR = true )

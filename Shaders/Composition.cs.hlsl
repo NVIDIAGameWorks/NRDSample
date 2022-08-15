@@ -17,16 +17,20 @@ NRI_RESOURCE( Texture2D<float4>, gIn_Normal_Roughness, t, 2, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_BaseColor_Metalness, t, 3, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_DirectLighting, t, 4, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 5, 1 );
-NRI_RESOURCE( Texture2D<float2>, gIn_IntegratedBRDF, t, 6, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 7, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 8, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 6, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 7, 1 );
+
+#if( NRD_MODE == SH )
+    NRI_RESOURCE( Texture2D<float4>, gIn_DiffSh, t, 8, 1 );
+    NRI_RESOURCE( Texture2D<float4>, gIn_SpecSh, t, 9, 1 );
+#endif
 
 // Outputs
-NRI_RESOURCE( RWTexture2D<float4>, gOut_Composed, u, 9, 1 );
-NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedDiff, u, 10, 1 );
-NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedSpec, u, 11, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_Composed, u, 0, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedDiff, u, 1, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedSpec, u, 2, 1 );
 
-float4 Upsample( Texture2D<float4> tex, float2 pixelUv, float zReal )
+float2 GetUpsampleUv( float2 pixelUv, float zReal )
 {
     // Set to 1 if you don't use a quarter part of the full texture
     float2 RESOLUTION_SCALE = 0.5 * gRectSize * gInvScreenSize;
@@ -57,7 +61,7 @@ float4 Upsample( Texture2D<float4> tex, float2 pixelUv, float zReal )
         uv *= RESOLUTION_SCALE;
     }
 
-    return tex.SampleLevel( gLinearSampler, uv, 0 );
+    return uv;
 }
 
 [numthreads( 16, 16, 1)]
@@ -98,77 +102,93 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( baseColorMetalness.xyz, baseColorMetalness.w, albedo, Rf0 );
 
     float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
-    float3 X = STL::Geometry::RotateVector( gViewToWorld, Xv );
-    float3 V = GetViewVector( X );
+    float3 X = STL::Geometry::AffineTransform( gViewToWorld, Xv );
+    float3 V = gOrthoMode == 0 ? normalize( gCameraOrigin - X ) : gViewDirection;
 
     // Denoised indirect lighting
-    float4 diffIndirect = Upsample( gIn_Diff, pixelUv, viewZ );
-    float4 specIndirect = Upsample( gIn_Spec, pixelUv, viewZ );
+    float2 upsampleUv = GetUpsampleUv( pixelUv, viewZ );
 
-    if( gDenoiserType != REBLUR )
+    float4 diff = gIn_Diff.SampleLevel( gLinearSampler, upsampleUv, 0 );
+    float4 spec = gIn_Spec.SampleLevel( gLinearSampler, upsampleUv, 0 );
+
+    if( gDenoiserType == RELAX )
     {
-        diffIndirect = RELAX_BackEnd_UnpackRadianceAndHitDist( diffIndirect );
-        specIndirect = RELAX_BackEnd_UnpackRadianceAndHitDist( specIndirect );
+        diff = RELAX_BackEnd_UnpackRadiance( diff );
+        spec = RELAX_BackEnd_UnpackRadiance( spec );
 
         // RELAX doesn't support AO / SO denoising, set to estimated integrated average
-        diffIndirect.w = 1.0 / STL::Math::Pi( 1.0 );
-        specIndirect.w = 1.0 / STL::Math::Pi( 1.0 );
+        diff.w = 1.0 / STL::Math::Pi( 1.0 );
+        spec.w = 1.0 / STL::Math::Pi( 1.0 );
     }
     else
     {
-        diffIndirect = REBLUR_BackEnd_UnpackRadianceAndHitDist( diffIndirect );
-        specIndirect = REBLUR_BackEnd_UnpackRadianceAndHitDist( specIndirect );
+    #if( NRD_MODE == OCCLUSION )
+        diff = REBLUR_BackEnd_UnpackRadianceAndNormHitDist( diff ).xxxx;
+        spec = REBLUR_BackEnd_UnpackRadianceAndNormHitDist( spec ).xxxx;
+    #elif( NRD_MODE == SH )
+        float4 diffSh = gIn_DiffSh.SampleLevel( gLinearSampler, upsampleUv, 0 );
+        float4 specSh = gIn_SpecSh.SampleLevel( gLinearSampler, upsampleUv, 0 );
+
+        // Resolve diffuse
+        NRD_SH sh = REBLUR_BackEnd_UnpackSh( diff, diffSh );
+        diff.w = sh.normHitDist;
+
+        if( gSH )
+            diff.xyz = NRD_SH_ResolveColor( sh, N );
+        else
+            diff.xyz = NRD_SH_ExtractColor( sh );
+
+        // Resolve specular
+        float3 D = STL::ImportanceSampling::GetSpecularDominantDirection( N, V, roughness, STL_SPECULAR_DOMINANT_DIRECTION_G1 ).xyz;
+
+        sh = REBLUR_BackEnd_UnpackSh( spec, specSh );
+        spec.w = sh.normHitDist;
+
+        if( gSH )
+            spec.xyz = NRD_SH_ResolveColor( sh, D );
+        else
+            spec.xyz = NRD_SH_ExtractColor( sh );
+    #else
+        diff = REBLUR_BackEnd_UnpackRadianceAndNormHitDist( diff );
+        spec = REBLUR_BackEnd_UnpackRadianceAndNormHitDist( spec );
+    #endif
     }
 
-    [flatten]
-    if( gOcclusionOnly )
-    {
-        diffIndirect = diffIndirect.xxxx;
-        specIndirect = specIndirect.xxxx;
-    }
-
-    diffIndirect.xyz *= gIndirectDiffuse;
-    specIndirect.xyz *= gIndirectSpecular;
+    diff.xyz *= gIndirectDiffuse;
+    spec.xyz *= gIndirectSpecular;
 
     // Environment ( pre-integrated ) specular term
     float NoV = abs( dot( N, V ) );
-    float3 Fenv = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, roughness );
-    albedo *= 1.0 - Fenv;
+    float3 Fenv = STL::BRDF::EnvironmentTerm_Rtg( Rf0, NoV, roughness );
 
     // Composition
-    float lobeAngleNorm = 2.0 * roughness * roughness / ( 1.0 + roughness * roughness );
-    float roughnessMod = USE_ROUGHNESS_BASED_DEMODULATION ? lerp( 0.1, 1.0, lobeAngleNorm ) : 1.0;
+    float3 diffDemod = ( 1.0 - Fenv ) * albedo;
+    float3 specDemod = Fenv;
 
-    float3 diffDemod = gReference ? 1.0 : albedo;
-    float3 specDemod = gReference ? 1.0 : Fenv * roughnessMod;
+    float3 Ldiff = diff.xyz * ( gReference ? 1.0 : diffDemod * 0.99 + 0.01 );
+    float3 Lspec = spec.xyz * ( gReference ? 1.0 : specDemod * 0.99 + 0.01 );
 
-    float3 Ldiff = Ldirect + diffIndirect.xyz * diffDemod; // add direct lighting to diffuse ( simplification )
-    float3 Lspec = specIndirect.xyz * specDemod;
-
-    // Add ambient // TODO: reduce if multi bounce?
+    // Ambient
     float3 ambient = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
-    ambient *= exp2( AMBIENT_FADE * STL::Math::LengthSquared( X - gCameraOrigin ) );
+    ambient *= exp2( AMBIENT_FADE * STL::Math::LengthSquared( Xv ) );
     ambient *= gAmbient;
 
-    float2 gg = gIn_IntegratedBRDF.SampleLevel( gLinearSampler, float2( NoV, roughness ), 0 );
-    diffIndirect.w *= gg.x;
-    specIndirect.w *= gg.y;
-
     float specAmbientAmount = gDenoiserType == RELAX ? roughness : GetSpecMagicCurve( roughness );
-    Ldiff += ambient * diffIndirect.w * albedo * gIndirectDiffuse;
-    Lspec += ambient * specIndirect.w * specAmbientAmount * Fenv * gIndirectSpecular;
 
-    float3 Lsum = Ldiff + Lspec;
+    Ldiff += ambient * diff.w * ( 1.0 - Fenv ) * albedo;
+    Lspec += ambient * spec.w * Fenv * specAmbientAmount;
+
+    float3 Lsum = Ldirect + Ldiff + Lspec;
 
     // Debug
     if( gOnScreen == SHOW_DENOISED_DIFFUSE )
-        Lsum = diffIndirect.xyz;
+        Lsum = diff.xyz;
     else if( gOnScreen == SHOW_DENOISED_SPECULAR )
-        Lsum = specIndirect.xyz;
+        Lsum = spec.xyz;
     else if( gOnScreen == SHOW_AMBIENT_OCCLUSION )
-        Lsum = diffIndirect.w;
+        Lsum = diff.w;
     else if( gOnScreen == SHOW_SPECULAR_OCCLUSION )
-        Lsum = specIndirect.w;
+        Lsum = spec.w;
     else if( gOnScreen == SHOW_BASE_COLOR )
         Lsum = baseColorMetalness.xyz;
     else if( gOnScreen == SHOW_NORMAL )
@@ -180,7 +200,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     else if( gOnScreen == SHOW_WORLD_UNITS )
         Lsum = frac( X * gUnitToMetersMultiplier );
     else if( gOnScreen != SHOW_FINAL )
-        Lsum = gOnScreen == SHOW_MIP_SPECULAR ? specIndirect.xyz : Ldirect.xyz;
+        Lsum = gOnScreen == SHOW_MIP_SPECULAR ? spec.xyz : Ldirect.xyz;
 
     // Output
     gOut_Composed[ pixelPos ] = float4( Lsum, z );
