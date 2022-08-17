@@ -102,11 +102,11 @@ float GetRadianceFromPreviousFrame( GeometryProps geometryProps, float2 pixelUv,
     float4 clipPrev = STL::Geometry::ProjectiveTransform( gWorldToClipPrev, geometryProps.X ); // Not Xprev because confidence is based on viewZ
     float2 uvPrev = ( clipPrev.xy / clipPrev.w ) * float2( 0.5, -0.5 ) + 0.5 - gJitter;
 
-    float4 data = gIn_PrevComposedDiff_PrevViewZ.SampleLevel( gNearestMipmapNearestSampler, uvPrev * gRectSizePrev * gInvScreenSize, 0 );
+    float4 data = gIn_PrevComposedDiff_PrevViewZ.SampleLevel( gNearestSampler, uvPrev * gRectSizePrev * gInvScreenSize, 0 );
     float prevViewZ = abs( data.w ) / NRD_FP16_VIEWZ_SCALE;
 
     prevLdiff = data.xyz;
-    prevLspec = gIn_PrevComposedSpec_PrevViewZ.SampleLevel( gNearestMipmapNearestSampler, uvPrev * gRectSizePrev * gInvScreenSize, 0 ).xyz;
+    prevLspec = gIn_PrevComposedSpec_PrevViewZ.SampleLevel( gNearestSampler, uvPrev * gRectSizePrev * gInvScreenSize, 0 ).xyz;
 
     // Initial state
     float weight = 0.9 * gUsePrevFrame; // TODO: use F( bounceIndex ) bounceIndex = 99 => 1.0
@@ -187,7 +187,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
         float3 BRDF = 1.0;
         float2 mipAndCone = GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness );
         float accumulatedRoughness = 0;
-        float pathLength = 0;
+        float accumulatedHitDist = 0;
         uint bounceNum = 1 + desc.bounceNum;
         bool isDiffuse0 = true;
 
@@ -331,12 +331,15 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
             L += materialProps.Lemi;
 
+            // Estimate diffuse-like motion ( i.e. when specular moves like diffuse )
+            float diffuseLikeMotionAmount = lerp( 1.0 - materialProps.metalness, 1.0, GetSpecMagicCurve( materialProps.roughness ) );
+            diffuseLikeMotionAmount = lerp( diffuseLikeMotionAmount, 1.0, STL::Math::Sqrt01( materialProps.curvature ) );
+
             // Reuse previous frame carefully treating specular ( but specular reuse is still biased )
             float3 prevLdiff, prevLspec;
             float accumulatedPrevFrameWeight = GetRadianceFromPreviousFrame( geometryProps, desc.pixelUv, prevLdiff, prevLspec );
 
-            float diffAmount = lerp( 1.0 - materialProps.metalness, 1.0, GetSpecMagicCurve( materialProps.roughness ) );
-            accumulatedPrevFrameWeight *= isDiffuse ? 1.0 : diffAmount;
+            accumulatedPrevFrameWeight *= isDiffuse ? 1.0 : diffuseLikeMotionAmount;
 
             float diffProbAtHit = EstimateDiffuseProbability( geometryProps, materialProps, true );
             float3 prevLsum = prevLdiff + prevLspec * diffProbAtHit; // if specular contribution is high we can't reuse it because it was computed for another view vector!
@@ -351,14 +354,27 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
             L *= BRDF;
             Lsum += L;
 
-            // Accumulate path length for NRD ( taking into account energy dissipation is important )
-            pathLength += geometryProps.tmin * STL::Math::SmoothStep( 0.15, 0.0, accumulatedRoughness );
+            // Accumulate path length for NRD
+            /*
+            IMPORTANT:
+                - energy dissipation must be respected, i.e.
+                    - diffuse - only 1st bounce hitT is needed
+                    - specular - only 1st bounce hitT is needed for glossy+ specular
+                    - sum of all segments can be (but not necessary) needed for 0 roughness only
+                - for 0 roughness hitT must be clean like a tear! NRD specular tracking relies on it
+                    - in case of probabilistic sampling there can be pixels with "no data" (hitT = 0), but hitT reconstruction mode must be enabled in NRD
+                - see how "diffuseLikeMotionAmount" is computed above:
+                    - it's just a noise-free estimation
+                    - curvature is important: it makes reflections closer to the surface making their motion diffuse-like
+            */
+            // TODO: apply thin lens equation to hitT? Seems not needed because "accumulatedRoughness" already includes it
+            accumulatedHitDist += geometryProps.tmin * STL::Math::SmoothStep( 0.2, 0.0, accumulatedRoughness );
 
             float a = STL::Color::Luminance( L ) + 1e-6;
             float b = STL::Color::Luminance( Lsum ) + 1e-6;
             float importance = a / b;
 
-            accumulatedRoughness += lerp( 1.0 - importance, 1.0, isDiffuse ? 1.0 : materialProps.roughness );
+            accumulatedRoughness += 1.0 - importance * ( 1.0 - diffuseLikeMotionAmount );
 
             // Reduce contribution of next samples if previous frame is sampled, which already has multi-bounce information ( biased )
             BRDF *= 1.0 - accumulatedPrevFrameWeight;
@@ -388,12 +404,12 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
         float diffWeight = float( isDiffuse0 ) * w;
         result.diffRadianceAndHitDist.xyz += Lsum * diffWeight;
-        result.diffRadianceAndHitDist.w += pathLength * diffWeight;
+        result.diffRadianceAndHitDist.w += accumulatedHitDist * diffWeight;
         diffSum += diffWeight;
 
         float specWeight = float( !isDiffuse0 ) * w;
         result.specRadianceAndHitDist.xyz += Lsum * specWeight;
-        result.specRadianceAndHitDist.w += pathLength * specWeight;
+        result.specRadianceAndHitDist.w += accumulatedHitDist * specWeight;
         specSum += specWeight;
     }
 

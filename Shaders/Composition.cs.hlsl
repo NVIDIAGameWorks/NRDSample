@@ -35,7 +35,7 @@ float2 GetUpsampleUv( float2 pixelUv, float zReal )
     // Set to 1 if you don't use a quarter part of the full texture
     float2 RESOLUTION_SCALE = 0.5 * gRectSize * gInvScreenSize;
 
-    float4 zLow = gIn_Downsampled_ViewZ.GatherRed( gNearestMipmapNearestSampler, pixelUv * RESOLUTION_SCALE );
+    float4 zLow = gIn_Downsampled_ViewZ.GatherRed( gNearestSampler, pixelUv * RESOLUTION_SCALE );
     float4 delta = abs( zReal - zLow ) / zReal;
 
     float4 offsets = float4( -1.0, 1.0, -1.0, 1.0 ) * gInvRectSize.xxyy;

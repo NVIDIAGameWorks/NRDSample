@@ -6,7 +6,7 @@ All-in-one repository including all relevant pieces to see [*NRD (NVIDIA Real-ti
 - minimalistic path tracer utilizing *Trace Ray Inline*
 - quarter, half (checkerboard) and full resolution tracing
 - full resolution tracing with probabilistic diffuse / specular selection at the primary hit
-- NRD denoising (including occlusion only and spherical harminics modes)
+- NRD denoising (including occlusion only and spherical harmonic modes)
 - overhead-free multi-bounce propagation (even in case of a single bounce) based on reusing the previously denoised frame
 - reference accumulation
 - many RPP and bounces
@@ -61,7 +61,7 @@ Any Ray Tracing compatible GPU:
 - Space - animation toggle
 - PgUp/PgDown - switch between denoisers
 
-By default *NRD* is used in common mode. But it can also be used in occlusion-only and SH modes in the sample. To change the behavior `NRD_MODE` macro needs to be changed from `NORMAL` to `OCCLUSION` or `SH` in two places: `NRDSample.cpp` and `Shared.hlsli`.
+By default *NRD* is used in common mode. But it can also be used in occlusion-only and SH (spherical harmonic) modes in the sample. To change the behavior `NRD_MODE` macro needs to be changed from `NORMAL` to `OCCLUSION` or `SH` in two places: `NRDSample.cpp` and `Shared.hlsli`.
 
 Notes:
-- RELAX doesn't support AO / SO denoising. If RELAX is the current denoiser, ambient term will be automatically ignored, bypassing settings in the UI In such cases the default behavior can be returned by pressing the `Default settings` button or choosing a new test, if `--testMode` is set in the command line.
+- RELAX doesn't support AO / SO denoising. If RELAX is the current denoiser, ambient term will be flat, but energy correct.

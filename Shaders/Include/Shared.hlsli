@@ -128,9 +128,10 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     uint gNisOutputViewportHeight;
 };
 
-NRI_RESOURCE( SamplerState, gLinearMipmapLinearSampler, s, 1, 0 );
-NRI_RESOURCE( SamplerState, gNearestMipmapNearestSampler, s, 2, 0 );
-NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
+NRI_RESOURCE( SamplerState, gLinearMipmapLinearSampler, s, 0, 0 );
+NRI_RESOURCE( SamplerState, gLinearMipmapNearestSampler, s, 1, 0 );
+NRI_RESOURCE( SamplerState, gLinearSampler, s, 2, 0 );
+NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 0 );
 
 //=============================================================================================
 // DENOISER PART
@@ -208,10 +209,10 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 3, 0 );
 //=============================================================================================
 
 // Taken out from NRD
-float GetSpecMagicCurve( float roughness, float power = 0.25 )
+float GetSpecMagicCurve( float roughness )
 {
     float f = 1.0 - exp2( -200.0 * roughness * roughness );
-    f *= STL::Math::Pow01( roughness, power );
+    f *= STL::Math::Pow01( roughness, 0.5 );
 
     return f;
 }

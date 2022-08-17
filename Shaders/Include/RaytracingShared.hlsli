@@ -13,7 +13,7 @@ struct PrimitiveData
     half2 t2;
     half2 b0s_b1s;
     half2 b2s_worldToUvUnits;
-    half2 padding;
+    float curvature;
 };
 
 struct InstanceData
@@ -32,6 +32,8 @@ NRI_RESOURCE( RaytracingAccelerationStructure, gLightTlas, t, 1, 2 );
 NRI_RESOURCE( StructuredBuffer<InstanceData>, gIn_InstanceData, t, 2, 2 );
 NRI_RESOURCE( StructuredBuffer<PrimitiveData>, gIn_PrimitiveData, t, 3, 2 );
 NRI_RESOURCE( Texture2D<float4>, gIn_Textures[], t, 4, 2 );
+
+#define TEX_SAMPLER                         gLinearMipmapLinearSampler
 
 #define FLAG_FIRST_BIT                      20 // this + number of CPU flags must be <= 24
 #define INSTANCE_ID_MASK                    ( ( 1 << FLAG_FIRST_BIT ) - 1 )
@@ -82,6 +84,7 @@ struct GeometryProps // TODO: half
     float2 uv;
     float mip;
     float tmin;
+    float curvature;
     uint textureOffsetAndFlags;
     uint instanceIndex;
 
@@ -121,6 +124,7 @@ struct MaterialProps // TODO: half
     float3 baseColor;
     float roughness;
     float metalness;
+    float curvature;
 };
 
 float2 GetConeAngleFromAngularRadius( float mip, float tanConeAngle )
@@ -182,22 +186,24 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
     float3 mips = GetRealMip( baseTexture, geometryProps.mip );
 
     // Base color
-    float4 color = gIn_Textures[ baseTexture ].SampleLevel( gLinearMipmapLinearSampler, geometryProps.uv, mips.z );
+    float4 color = gIn_Textures[ baseTexture ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.z );
     color.xyz *= geometryProps.IsTransparent( ) ? 1.0 : STL::Math::PositiveRcp( color.w ); // Correct handling of BC1 with pre-multiplied alpha
     float3 baseColor = saturate( color.xyz );
 
     // Roughness and metalness
-    float3 materialProps = gIn_Textures[ baseTexture + 1 ].SampleLevel( gLinearMipmapLinearSampler, geometryProps.uv, mips.z ).xyz;
+    float3 materialProps = gIn_Textures[ baseTexture + 1 ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.z ).xyz;
     float roughness = materialProps.y;
     float metalness = materialProps.z;
 
     // Normal
-    float2 packedNormal = gIn_Textures[ baseTexture + 2 ].SampleLevel( gLinearMipmapLinearSampler, geometryProps.uv, mips.y ).xy;
-    packedNormal = gUseNormalMap ? packedNormal : ( 127.0 / 255.0 );
-    float3 N = STL::Geometry::TransformLocalNormal( packedNormal, geometryProps.T, geometryProps.N );
+    float2 packedNormal = gIn_Textures[ baseTexture + 2 ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.y ).xy;
+    float3 N = gUseNormalMap ? STL::Geometry::TransformLocalNormal( packedNormal, geometryProps.T, geometryProps.N ) : geometryProps.N;
+
+    // Estimate curvature
+    float curvature = length( STL::Geometry::UnpackLocalNormal( packedNormal ).xy ) * float( gUseNormalMap );
 
     // Emission
-    float3 Lemi = gIn_Textures[ baseTexture + 3 ].SampleLevel( gLinearMipmapLinearSampler, geometryProps.uv, mips.x ).xyz;
+    float3 Lemi = gIn_Textures[ baseTexture + 3 ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.x ).xyz;
     Lemi *= ( baseColor + 0.01 ) / ( max( baseColor, max( baseColor, baseColor ) ) + 0.01 );
     Lemi = geometryProps.IsForcedEmission( ) ? geometryProps.GetForcedEmissionColor( ) : Lemi;
     Lemi *= gEmissionIntensity * float( geometryProps.IsEmissive( ) );
@@ -262,6 +268,7 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
     props.baseColor = baseColor;
     props.roughness = roughness;
     props.metalness = metalness;
+    props.curvature = geometryProps.curvature + curvature;
 
     return props;
 }
@@ -341,7 +348,7 @@ float3 GetAmbientBRDF( GeometryProps geometryProps, MaterialProps materialProps,
         /* Alpha test */ \
         uint baseTexture = instanceData.baseTextureIndex + 0; \
         float3 mips = GetRealMip( baseTexture, mip ); \
-        float alpha = gIn_Textures[ baseTexture ].SampleLevel( gLinearMipmapLinearSampler, uv, mips.x ).w; \
+        float alpha = gIn_Textures[ baseTexture ].SampleLevel( TEX_SAMPLER, uv, mips.x ).w; \
         \
         if( alpha > 0.5 ) \
             rayQuery.CommitNonOpaqueTriangleHit( ); \
@@ -448,6 +455,9 @@ GeometryProps CastRay( float3 rayOrigin, float3 rayDirection, float Tmin, float 
         T.xyz = STL::Geometry::RotateVector( mObjectToWorld, T.xyz );
         T.xyz = normalize( T.xyz );
         props.T = T;
+
+        // Curvature
+        props.curvature = primitiveData.curvature;
 
         // Handling object scale embedded into the transformation matrix (assuming uniform scale)
         float invObjectScale = STL::Math::Rsqrt( STL::Math::LengthSquared( mObjectToWorld[ 0 ] ) );

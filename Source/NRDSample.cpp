@@ -512,7 +512,7 @@ struct PrimitiveData
     uint32_t t2oct;
     uint32_t b0s_b1s;
     uint32_t b2s_worldToUvUnits;
-    uint32_t padding;
+    float curvature;
 };
 
 struct InstanceData
@@ -2303,7 +2303,7 @@ void Sample::CreatePipelines()
     nri::PipelineLayout* pipelineLayout = nullptr;
     nri::Pipeline* pipeline = nullptr;
 
-    nri::SamplerDesc samplerDescs[3] = {};
+    nri::SamplerDesc samplerDescs[4] = {};
     {
         samplerDescs[0].addressModes = {nri::AddressMode::REPEAT, nri::AddressMode::REPEAT};
         samplerDescs[0].minification = nri::Filter::LINEAR;
@@ -2312,20 +2312,25 @@ void Sample::CreatePipelines()
         samplerDescs[0].mipMax = 16.0f;
 
         samplerDescs[1].addressModes = {nri::AddressMode::REPEAT, nri::AddressMode::REPEAT};
-        samplerDescs[1].minification = nri::Filter::NEAREST;
-        samplerDescs[1].magnification = nri::Filter::NEAREST;
+        samplerDescs[1].minification = nri::Filter::LINEAR;
+        samplerDescs[1].magnification = nri::Filter::LINEAR;
         samplerDescs[1].mip = nri::Filter::NEAREST;
         samplerDescs[1].mipMax = 16.0f;
 
         samplerDescs[2].addressModes = {nri::AddressMode::CLAMP_TO_EDGE, nri::AddressMode::CLAMP_TO_EDGE};
         samplerDescs[2].minification = nri::Filter::LINEAR;
         samplerDescs[2].magnification = nri::Filter::LINEAR;
+
+        samplerDescs[3].addressModes = {nri::AddressMode::CLAMP_TO_EDGE, nri::AddressMode::CLAMP_TO_EDGE};
+        samplerDescs[3].minification = nri::Filter::NEAREST;
+        samplerDescs[3].magnification = nri::Filter::NEAREST;
     }
 
     const nri::StaticSamplerDesc staticSamplersDesc[] =
     {
-        { samplerDescs[0], 1, nri::ShaderStage::ALL },
-        { samplerDescs[1], 2, nri::ShaderStage::ALL },
+        { samplerDescs[0], 0, nri::ShaderStage::ALL },
+        { samplerDescs[1], 1, nri::ShaderStage::ALL },
+        { samplerDescs[2], 2, nri::ShaderStage::ALL },
         { samplerDescs[2], 3, nri::ShaderStage::ALL },
     };
 
@@ -3093,7 +3098,7 @@ void Sample::UploadStaticData()
 
             data.b0s_b1s = Packed::sf2_to_h2(v0.tangent[3], v1.tangent[3]);
             data.b2s_worldToUvUnits = Packed::sf2_to_h2(v2.tangent[3], primitive.worldToUvUnits);
-            data.padding = 0;
+            data.curvature = primitive.curvature;
         }
     }
 
@@ -3445,19 +3450,20 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
     m_AmbientAccumFrameNum = Min(m_AmbientAccumFrameNum, maxAccumFrameNum);
 
     const float3& sunDirection = GetSunDirection();
-    float emissionIntensity = m_Settings.emissionIntensity * float(m_Settings.emission);
 
     uint32_t rectW = uint32_t(m_ScreenResolution.x * m_Settings.resolutionScale + 0.5f);
     uint32_t rectH = uint32_t(m_ScreenResolution.y * m_Settings.resolutionScale + 0.5f);
     uint32_t rectWprev = uint32_t(m_ScreenResolution.x * m_PrevSettings.resolutionScale + 0.5f);
     uint32_t rectHprev = uint32_t(m_ScreenResolution.y * m_PrevSettings.resolutionScale + 0.5f);
 
+    float emissionIntensity = m_Settings.emissionIntensity * float(m_Settings.emission);
+    float baseMipBias = ((m_Settings.TAA || m_Settings.DLSS) ? -1.0f : 0.0f) + log2f(m_Settings.resolutionScale);
+
     float2 outputSize = float2( float(m_OutputResolution.x), float(m_OutputResolution.y) );
     float2 screenSize = float2( float(m_ScreenResolution.x), float(m_ScreenResolution.y) );
     float2 rectSize = float2( float(rectW), float(rectH) );
     float2 rectSizePrev = float2( float(rectWprev), float(rectHprev) );
     float2 jitter = (m_Settings.cameraJitter ? m_Camera.state.viewportJitter : 0.0f) / rectSize;
-    float baseMipBias = ((m_Settings.TAA || m_Settings.DLSS) ? -1.0f : 0.0f) + log2f(m_Settings.resolutionScale);
 
     float3 viewDir = float3(m_Camera.state.mViewToWorld.GetCol2().xmm) * (CAMERA_LEFT_HANDED ? -1.0f : 1.0f);
 
