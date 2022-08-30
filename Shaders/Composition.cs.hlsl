@@ -123,8 +123,8 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     else
     {
     #if( NRD_MODE == OCCLUSION )
-        diff = REBLUR_BackEnd_UnpackRadianceAndNormHitDist( diff ).xxxx;
-        spec = REBLUR_BackEnd_UnpackRadianceAndNormHitDist( spec ).xxxx;
+        diff = diff.xxxx;
+        spec = spec.xxxx;
     #elif( NRD_MODE == SH )
         float4 diffSh = gIn_DiffSh.SampleLevel( gLinearSampler, upsampleUv, 0 );
         float4 specSh = gIn_SpecSh.SampleLevel( gLinearSampler, upsampleUv, 0 );
@@ -148,6 +148,16 @@ void main( int2 pixelPos : SV_DispatchThreadId )
             spec.xyz = NRD_SH_ResolveColor( sh, D );
         else
             spec.xyz = NRD_SH_ExtractColor( sh );
+    #elif( NRD_MODE == DIRECTIONAL_OCCLUSION )
+        NRD_SH sh = REBLUR_BackEnd_UnpackDirectionalOcclusion( diff );
+        diff.w = NRD_SH_ExtractColor( sh ).x;
+
+        if( gSH )
+            diff.w = NRD_SH_ResolveColor( sh, N ).x;
+
+        // or if needed...
+        //float3 bentNormal = NRD_SH_ExtractDirection( sh );
+        //float ao = NRD_SH_ExtractColor( sh ).x; // or just sh.normHitDist;
     #else
         diff = REBLUR_BackEnd_UnpackRadianceAndNormHitDist( diff );
         spec = REBLUR_BackEnd_UnpackRadianceAndNormHitDist( spec );

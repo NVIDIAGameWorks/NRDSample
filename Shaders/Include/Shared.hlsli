@@ -144,7 +144,7 @@ NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 0 );
 // SETTINGS
 //=============================================================================================
 
-#define NRD_MODE                            NORMAL // NORMAL, OCCLUSION, SH
+#define NRD_MODE                            NORMAL // NORMAL, OCCLUSION, SH, DIRECTIONAL_OCCLUSION
 
 #define USE_SIMPLEX_LIGHTING_MODEL          0
 #define USE_IMPORTANCE_SAMPLING             1
@@ -169,6 +169,7 @@ NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 0 );
 #define NORMAL                              0
 #define OCCLUSION                           1
 #define SH                                  2
+#define DIRECTIONAL_OCCLUSION               3
 
 // Denoiser
 #define REBLUR                              0

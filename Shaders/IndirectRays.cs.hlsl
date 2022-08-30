@@ -241,40 +241,53 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                 if( isDiffuse )
                 {
+                    // Generate a ray
+                #if( NRD_MODE == DIRECTIONAL_OCCLUSION )
+                    float3 rayLocal = STL::ImportanceSampling::Uniform::GetRay( rnd );
+                    rayDirection = STL::Geometry::RotateVectorInverse( mLocalBasis, rayLocal );
+
+                    pdf = STL::ImportanceSampling::Uniform::GetPDF( );
+                #else
                     float3 rayLocal = STL::ImportanceSampling::Cosine::GetRay( rnd );
                     rayDirection = STL::Geometry::RotateVectorInverse( mLocalBasis, rayLocal );
 
+                    float NoL = saturate( dot( materialProps.N, rayDirection ) );
+                    pdf = STL::ImportanceSampling::Cosine::GetPDF( NoL );
+                #endif
+
+                    // Throughput
+                #if( NRD_MODE == DIRECTIONAL_OCCLUSION )
+                    throughput = 1.0; // cast a ray in any case
+                #else
                     throughput = albedo;
 
                     float3 H = normalize( -geometryProps.rayDirection + rayDirection );
                     float VoH = abs( dot( -geometryProps.rayDirection, H ) );
                     float3 F = STL::BRDF::FresnelTerm_Schlick( Rf0, VoH );
                     throughput *= 1.0 - F;
-
-                    // Optional
-                    float NoL = saturate( dot( materialProps.N, rayDirection ) );
-                    pdf = STL::ImportanceSampling::Cosine::GetPDF( NoL );
+                #endif
                 }
                 else
                 {
+                    // Generate a ray
                     float trimmingFactor = NRD_GetTrimmingFactor( materialProps.roughness, gTrimmingParams );
                     float3 Vlocal = STL::Geometry::RotateVector( mLocalBasis, -geometryProps.rayDirection );
+
                     float3 Hlocal = STL::ImportanceSampling::VNDF::GetRay( rnd, materialProps.roughness, Vlocal, trimmingFactor );
                     float3 H = STL::Geometry::RotateVectorInverse( mLocalBasis, Hlocal );
                     rayDirection = reflect( geometryProps.rayDirection, H );
 
-                    // It's a part of VNDF sampling - see http://jcgt.org/published/0007/04/01/paper.pdf ( paragraph "Usage in Monte Carlo renderer" )
+                    float NoV = abs( dot( materialProps.N, -geometryProps.rayDirection ) );
+                    float NoH = saturate( dot( materialProps.N, H ) );
+                    pdf = STL::ImportanceSampling::VNDF::GetPDF( NoV, NoH, materialProps.roughness );
+
+                    // Throughput ( see paragraph "Usage in Monte Carlo renderer" from http://jcgt.org/published/0007/04/01/paper.pdf )
                     float NoL = saturate( dot( materialProps.N, rayDirection ) );
                     throughput = STL::BRDF::GeometryTerm_Smith( materialProps.roughness, NoL );
 
                     float VoH = abs( dot( -geometryProps.rayDirection, H ) );
                     float3 F = STL::BRDF::FresnelTerm_Schlick( Rf0, VoH );
                     throughput *= F;
-
-                    // Optional
-                    float NoV = abs( dot( materialProps.N, -geometryProps.rayDirection ) );
-                    float NoH = saturate( dot( materialProps.N, H ) );
-                    pdf = STL::ImportanceSampling::VNDF::GetPDF( NoV, NoH, materialProps.roughness );
                 }
 
                 // Allow low roughness specular to take data from the previous frame
@@ -399,25 +412,37 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
             Lsum = STL::Color::ColorizeZucconi( mipNorm );
         }
 
+        // Normalize hit distances for NRD before averaging
+        float diffNormHitDist = accumulatedHitDist;
+        float specNormHitDist = accumulatedHitDist;
+
+        if( gDenoiserType != RELAX )
+        {
+            float viewZ = STL::Geometry::AffineTransform( gWorldToView, desc.geometryProps.X ).z;
+
+            diffNormHitDist = REBLUR_FrontEnd_GetNormHitDist( accumulatedHitDist, viewZ, gHitDistParams, 1.0 );
+            specNormHitDist = REBLUR_FrontEnd_GetNormHitDist( accumulatedHitDist, viewZ, gHitDistParams, desc.materialProps.roughness );
+        }
+
         // Accumulate diffuse and specular separately for denoising
         float w = NRD_GetSampleWeight( Lsum );
 
         float diffWeight = float( isDiffuse0 ) * w;
         result.diffRadianceAndHitDist.xyz += Lsum * diffWeight;
-        result.diffRadianceAndHitDist.w += accumulatedHitDist * diffWeight;
+        result.diffRadianceAndHitDist.w += diffNormHitDist * diffWeight;
         diffSum += diffWeight;
 
         float specWeight = float( !isDiffuse0 ) * w;
         result.specRadianceAndHitDist.xyz += Lsum * specWeight;
-        result.specRadianceAndHitDist.w += accumulatedHitDist * specWeight;
+        result.specRadianceAndHitDist.w += specNormHitDist * specWeight;
         specSum += specWeight;
     }
 
-    // Radiance already divided by sampling probability, we need to average across all paths
+    // Radiance is already divided by sampling probability, we need to average across all paths
     result.diffRadianceAndHitDist.xyz /= float( desc.pathNum );
     result.specRadianceAndHitDist.xyz /= float( desc.pathNum );
 
-    // Hit distance and sampling direction are not divided by sampling probability, we need to average across diffuse-only ( or specular-only ) paths
+    // Others are not divided by sampling probability, we need to average across diffuse / specular only paths
     result.diffRadianceAndHitDist.w /= diffSum;
     result.diffDirectionAndPdf /= diffSum;
 
@@ -546,20 +571,21 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     }
     else
     {
-        float diffNormHitDist = REBLUR_FrontEnd_GetNormHitDist( result.diffRadianceAndHitDist.w, viewZ, gHitDistParams, 1.0 );
-        float specNormHitDist = REBLUR_FrontEnd_GetNormHitDist( result.specRadianceAndHitDist.w, viewZ, gHitDistParams, materialProps0.roughness );
-
     #if( NRD_MODE == OCCLUSION )
-        result.diffRadianceAndHitDist = diffNormHitDist;
-        result.specRadianceAndHitDist = specNormHitDist;
+        result.diffRadianceAndHitDist = result.diffRadianceAndHitDist.w;
+        result.specRadianceAndHitDist = result.specRadianceAndHitDist.w;
     #elif( NRD_MODE == SH )
-        result.diffRadianceAndHitDist = REBLUR_FrontEnd_PackSh( result.diffRadianceAndHitDist.xyz, diffNormHitDist, result.diffDirectionAndPdf.xyz, result.diffDirectionAndPdf.w, result.diffDirectionAndPdf, USE_SANITIZATION );
-        result.specRadianceAndHitDist = REBLUR_FrontEnd_PackSh( result.specRadianceAndHitDist.xyz, specNormHitDist, result.specDirectionAndPdf.xyz, result.specDirectionAndPdf.w, result.specDirectionAndPdf, USE_SANITIZATION );
+        result.diffRadianceAndHitDist = REBLUR_FrontEnd_PackSh( result.diffRadianceAndHitDist.xyz, result.diffRadianceAndHitDist.w, result.diffDirectionAndPdf.xyz, result.diffDirectionAndPdf.w, result.diffDirectionAndPdf, USE_SANITIZATION );
+        result.specRadianceAndHitDist = REBLUR_FrontEnd_PackSh( result.specRadianceAndHitDist.xyz, result.specRadianceAndHitDist.w, result.specDirectionAndPdf.xyz, result.specDirectionAndPdf.w, result.specDirectionAndPdf, USE_SANITIZATION );
+    #elif( NRD_MODE == DIRECTIONAL_OCCLUSION )
+        result.diffRadianceAndHitDist = REBLUR_FrontEnd_PackDirectionalOcclusion( result.diffDirectionAndPdf.xyz, result.diffRadianceAndHitDist.w, USE_SANITIZATION );
+        result.specRadianceAndHitDist = 0;
     #else
-        result.diffRadianceAndHitDist = REBLUR_FrontEnd_PackRadianceAndNormHitDist( result.diffRadianceAndHitDist.xyz, diffNormHitDist, USE_SANITIZATION );
-        result.diffDirectionAndPdf = NRD_FrontEnd_PackDirectionAndPdf( result.diffDirectionAndPdf.xyz, result.diffDirectionAndPdf.w );
+        result.diffRadianceAndHitDist = REBLUR_FrontEnd_PackRadianceAndNormHitDist( result.diffRadianceAndHitDist.xyz, result.diffRadianceAndHitDist.w, USE_SANITIZATION );
+        result.specRadianceAndHitDist = REBLUR_FrontEnd_PackRadianceAndNormHitDist( result.specRadianceAndHitDist.xyz, result.specRadianceAndHitDist.w, USE_SANITIZATION );
 
-        result.specRadianceAndHitDist = REBLUR_FrontEnd_PackRadianceAndNormHitDist( result.specRadianceAndHitDist.xyz, specNormHitDist, USE_SANITIZATION );
+        // Optional
+        result.diffDirectionAndPdf = NRD_FrontEnd_PackDirectionAndPdf( result.diffDirectionAndPdf.xyz, result.diffDirectionAndPdf.w );
         result.specDirectionAndPdf = NRD_FrontEnd_PackDirectionAndPdf( result.specDirectionAndPdf.xyz, result.specDirectionAndPdf.w );
     #endif
     }
