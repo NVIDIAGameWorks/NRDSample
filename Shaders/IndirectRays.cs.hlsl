@@ -270,7 +270,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 else
                 {
                     // Generate a ray
-                    float trimmingFactor = NRD_GetTrimmingFactor( materialProps.roughness, gTrimmingParams );
+                    float trimmingFactor = gTrimmingParams.x * STL::Math::SmoothStep( gTrimmingParams.y, gTrimmingParams.z, materialProps.roughness );
                     float3 Vlocal = STL::Geometry::RotateVector( mLocalBasis, -geometryProps.rayDirection );
 
                     float3 Hlocal = STL::ImportanceSampling::VNDF::GetRay( rnd, materialProps.roughness, Vlocal, trimmingFactor );
@@ -486,6 +486,9 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     {
         gOut_Diff[ outPixelPos ] = 0;
         gOut_Spec[ outPixelPos ] = 0;
+
+        gOut_DiffDirectionPdf[ outPixelPos ] = 0;
+        gOut_SpecDirectionPdf[ outPixelPos ] = 0;
 
         return;
     }

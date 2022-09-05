@@ -51,6 +51,22 @@ constexpr float NEAR_Z                      = 0.001f; // m
 constexpr bool CAMERA_RELATIVE              = true;
 constexpr bool CAMERA_LEFT_HANDED           = true;
 
+// Important tests, sensitive to regressions or just testing base functionality
+std::vector<uint32_t> checkMeTests =
+{{
+        1, 6, 8, 9, 10, 12, 13, 14, 23, 27, 28,
+        29, 31, 32, 35, 43, 44, 47, 53, 59, 60,
+        62, 67, 75, 79, 95, 109, 110, 114, 120,
+        124, 126, 127, 139, 140, 145, 148, 155,
+        156, 157, 160, 161, 162,
+}};
+
+// Tests, where IQ improvement would be "nice to have"
+std::vector<uint32_t> improveMeTests =
+{{
+        3, 76, 96, 134, 150, 153, 158,
+}};
+
 //=================================================================================
 
 constexpr uint32_t TEXTURES_PER_MATERIAL = 4;
@@ -602,7 +618,6 @@ private:
 
     inline float3 GetSpecularLobeTrimming() const
     {
-        // See NRDSettings.h - it's a good start
         return m_Settings.specularLobeTrimming ? float3(0.95f, 0.04f, 0.11f) : float3(1.0f, 0.0f, 0.0001f);
     }
 
@@ -1772,11 +1787,19 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             if (i % 14 != 0)
                                 ImGui::SameLine();
 
-                            bool cmp = i == m_LastSelectedTest;
-                            if (cmp)
-                                ImGui::PushStyleColor(ImGuiCol_Text, UI_GREEN);
+                            bool isColorChanged = false;
+                            if(std::find(improveMeTests.begin(), improveMeTests.end(), i + 1) != improveMeTests.end())
+                            {
+                                ImGui::PushStyleColor(ImGuiCol_Text, UI_RED);
+                                isColorChanged = true;
+                            }
+                            else if(std::find(checkMeTests.begin(), checkMeTests.end(), i + 1) != checkMeTests.end())
+                            {
+                                ImGui::PushStyleColor(ImGuiCol_Text, UI_YELLOW);
+                                isColorChanged = true;
+                            }
 
-                            if (ImGui::Button(s, ImVec2(25.0f, 0.0f)) || isTestChanged)
+                            if (ImGui::Button(i == m_LastSelectedTest ? "*" : s, ImVec2(25.0f, 0.0f)) || isTestChanged)
                             {
                                 uint32_t test = isTestChanged ? m_LastSelectedTest : i;
                                 FILE* fp = fopen(path.c_str(), "rb");
@@ -1809,7 +1832,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 isTestChanged = false;
                             }
 
-                            if (cmp)
+                            if (isColorChanged)
                                 ImGui::PopStyleColor();
                         }
 
@@ -3717,7 +3740,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
         bool isFastHistoryEnabled = m_Settings.maxAccumulatedFrameNum > m_Settings.maxFastAccumulatedFrameNum;
 
         float fps = 1000.0f / m_Timer.GetSmoothedElapsedTime();
-        float maxAccumulatedFrameNum = Clamp(ACCUMULATION_TIME * fps, 1.0f, float(MAX_HISTORY_FRAME_NUM));
+        float maxAccumulatedFrameNum = Clamp(ACCUMULATION_TIME * fps, 5.0f, float(MAX_HISTORY_FRAME_NUM));
         float maxFastAccumulatedFrameNum = isFastHistoryEnabled ? (maxAccumulatedFrameNum / 5.0f) : float(MAX_HISTORY_FRAME_NUM);
 
         m_Settings.maxAccumulatedFrameNum = int32_t(maxAccumulatedFrameNum + 0.5f);
@@ -3978,9 +4001,6 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
             if (m_Settings.denoiser == REBLUR || m_Settings.denoiser == REFERENCE)
             {
-                const float3 trimmingParams = GetSpecularLobeTrimming();
-                m_ReblurSettings.specularLobeTrimmingParameters = {trimmingParams.x, trimmingParams.y, trimmingParams.z};
-
                 nrd::HitDistanceParameters hitDistanceParameters = {};
                 hitDistanceParameters.A = m_Settings.hitDistScale * m_Settings.meterToUnitsMultiplier;
                 m_ReblurSettings.hitDistanceParameters = hitDistanceParameters;
