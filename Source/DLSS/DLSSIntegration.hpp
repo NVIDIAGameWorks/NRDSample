@@ -1,5 +1,7 @@
 #include "DLSSIntegration.h"
 
+static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 86, "Unsupported NRI version!");
+
 // An ugly temp workaround until DLSS fix the problem
 #ifndef _WIN32
 
@@ -81,15 +83,14 @@ static inline NVSDK_NGX_PerfQuality_Value DLSS_ConvertQuality(DlssQuality qualit
     return NVSDK_NGX_PerfQuality_Value_UltraPerformance;
 }
 
-inline NVSDK_NGX_Resource_VK DlssIntegration::SetupVulkanTexture(nri::Texture* texture, nri::Descriptor* descriptor, uint32_t physicalDeviceIndex, bool isStorage)
+inline NVSDK_NGX_Resource_VK DlssIntegration::SetupVulkanTexture(const DlssTexture& texture, bool isStorage)
 {
-    nri::TextureVulkanDesc textureDesc = {};
-    NRI.GetTextureVK(*texture, physicalDeviceIndex, textureDesc);
-
-    VkImageSubresourceRange subresource = {};
-    const VkImageView view = (VkImageView)NRI.GetTextureDescriptorVK(*descriptor, physicalDeviceIndex, subresource);
-
-    return NVSDK_NGX_Create_ImageView_Resource_VK(view, (VkImage)textureDesc.vkImage, subresource, (VkFormat)textureDesc.vkFormat, textureDesc.size[0], textureDesc.size[1], isStorage);
+    VkImage image = (VkImage)NRI.GetTextureNativeObject(*texture.texture, 0);
+    VkImageView view = (VkImageView)NRI.GetDescriptorNativeObject(*texture.descriptor, 0);
+    VkImageSubresourceRange subresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkFormat format = (VkFormat)nri::ConvertNRIFormatToVK(texture.format);
+    
+    return NVSDK_NGX_Create_ImageView_Resource_VK(view, image, subresource, format, texture.dims.Width, texture.dims.Height, isStorage);
 }
 
 bool DlssIntegration::InitializeLibrary(nri::Device& device, const char* appDataPath, uint64_t applicationId)
@@ -98,12 +99,8 @@ bool DlssIntegration::InitializeLibrary(nri::Device& device, const char* appData
     m_Device = &device;
 
     uint32_t nriResult = (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&NRI);
-    if (NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::D3D12)
-        nriResult |= (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::WrapperD3D12Interface), (nri::WrapperD3D12Interface*)&NRI);
-    else if (NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::VULKAN)
+    if (NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::VULKAN)
         nriResult |= (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::WrapperVKInterface), (nri::WrapperVKInterface*)&NRI);
-    else if (NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::D3D11)
-        nriResult |= (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::WrapperD3D11Interface), (nri::WrapperD3D11Interface*)&NRI);
 
     if ((nri::Result)nriResult != nri::Result::SUCCESS)
         return false;
@@ -117,19 +114,19 @@ bool DlssIntegration::InitializeLibrary(nri::Device& device, const char* appData
     NVSDK_NGX_Result result = NVSDK_NGX_Result::NVSDK_NGX_Result_Fail;
     if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D12)
     {
-        ID3D12Device* d3d12Device = NRI.GetDeviceD3D12(*m_Device);
+        ID3D12Device* d3d12Device = (ID3D12Device*)NRI.GetDeviceNativeObject(*m_Device);
         result = NVSDK_NGX_D3D12_Init(m_ApplicationId, path, d3d12Device);
     }
     else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VULKAN)
     {
-        VkDevice vkDevice = (VkDevice)NRI.GetDeviceVK(*m_Device);
-        VkPhysicalDevice vkPhysicalDevice = (VkPhysicalDevice)NRI.GetPhysicalDeviceVK(*m_Device);
-        VkInstance vkInstance = (VkInstance)NRI.GetInstanceVK(*m_Device);
+        VkDevice vkDevice = (VkDevice)NRI.GetDeviceNativeObject(*m_Device);
+        VkPhysicalDevice vkPhysicalDevice = (VkPhysicalDevice)NRI.GetVkPhysicalDevice(*m_Device);
+        VkInstance vkInstance = (VkInstance)NRI.GetVkInstance(*m_Device);
         result = NVSDK_NGX_VULKAN_Init(m_ApplicationId, path, vkInstance, vkPhysicalDevice, vkDevice);
     }
     else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D11)
     {
-        ID3D11Device* d3d11Device = NRI.GetDeviceD3D11(*m_Device);
+        ID3D11Device* d3d11Device = (ID3D11Device*)NRI.GetDeviceNativeObject(*m_Device);
         result = NVSDK_NGX_D3D11_Init(m_ApplicationId, path, d3d11Device);
     }
 
@@ -216,17 +213,17 @@ bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInit
         const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
         if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D12)
         {
-            ID3D12GraphicsCommandList* d3d12CommandList = NRI.GetCommandBufferD3D12(*commandBuffer);
+            ID3D12GraphicsCommandList* d3d12CommandList = (ID3D12GraphicsCommandList*)NRI.GetCommandBufferNativeObject(*commandBuffer);
             result = NGX_D3D12_CREATE_DLSS_EXT(d3d12CommandList, creationNodeMask, visibilityNodeMask, &m_DLSS, m_NgxParameters, &dlssCreateParams);
         }
         else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VULKAN)
         {
-            VkCommandBuffer vkCommandBuffer = (VkCommandBuffer)NRI.GetCommandBufferVK(*commandBuffer);
+            VkCommandBuffer vkCommandBuffer = (VkCommandBuffer)NRI.GetCommandBufferNativeObject(*commandBuffer);
             result = NGX_VULKAN_CREATE_DLSS_EXT(vkCommandBuffer, creationNodeMask, visibilityNodeMask, &m_DLSS, m_NgxParameters, &dlssCreateParams);
         }
         else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D11)
         {
-            ID3D11DeviceContext* d3d11DeviceContext = NRI.GetCommandBufferD3D11(*commandBuffer);
+            ID3D11DeviceContext* d3d11DeviceContext = (ID3D11DeviceContext*)NRI.GetCommandBufferNativeObject(*commandBuffer);
             result = NGX_D3D11_CREATE_DLSS_EXT(d3d11DeviceContext, &m_DLSS, m_NgxParameters, &dlssCreateParams);
         }
     }
@@ -255,10 +252,10 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
     NVSDK_NGX_Result result = NVSDK_NGX_Result_Fail;
     if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D12)
     {
-        ID3D12Resource* resourceInput = NRI.GetTextureD3D12(*desc.texInput);
-        ID3D12Resource* resourceMv = NRI.GetTextureD3D12(*desc.texMv);
-        ID3D12Resource* resourceDepth = NRI.GetTextureD3D12(*desc.texDepth);
-        ID3D12Resource* resourceOutput = NRI.GetTextureD3D12(*desc.texOutput);
+        ID3D12Resource* resourceInput = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texInput.texture, 0);
+        ID3D12Resource* resourceMv = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texMv.texture, 0);
+        ID3D12Resource* resourceDepth = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texDepth.texture, 0);
+        ID3D12Resource* resourceOutput = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texOutput.texture, 0);
 
         NVSDK_NGX_D3D12_DLSS_Eval_Params dlssEvalParams = {};
         dlssEvalParams.Feature.pInColor = resourceInput;
@@ -266,28 +263,28 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
         dlssEvalParams.Feature.InSharpness = desc.sharpness;
         dlssEvalParams.pInDepth = resourceDepth;
         dlssEvalParams.pInMotionVectors = resourceMv;
-        dlssEvalParams.InRenderSubrectDimensions = desc.renderOrScaledResolution;
+        dlssEvalParams.InRenderSubrectDimensions = desc.currentRenderResolution;
         dlssEvalParams.InJitterOffsetX = desc.jitter[0];
         dlssEvalParams.InJitterOffsetY = desc.jitter[1];
         dlssEvalParams.InReset = desc.reset;
         dlssEvalParams.InMVScaleX = desc.motionVectorScale[0];
         dlssEvalParams.InMVScaleY = desc.motionVectorScale[1];
 
-        if (desc.texExposure)
+        if (desc.texExposure.texture)
         {
-            ID3D12Resource* resourceExposure = NRI.GetTextureD3D12(*desc.texExposure);
+            ID3D12Resource* resourceExposure = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texExposure.texture, 0);
             dlssEvalParams.pInExposureTexture = resourceExposure;
         }
 
-        ID3D12GraphicsCommandList* d3dCommandList = NRI.GetCommandBufferD3D12(*commandBuffer);
+        ID3D12GraphicsCommandList* d3dCommandList = (ID3D12GraphicsCommandList*)NRI.GetCommandBufferNativeObject(*commandBuffer);
         result = NGX_D3D12_EVALUATE_DLSS_EXT(d3dCommandList, m_DLSS, m_NgxParameters, &dlssEvalParams);
     }
     else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VULKAN)
     {
-        NVSDK_NGX_Resource_VK resourceInput = SetupVulkanTexture(desc.texInput, desc.descriptorInput, desc.physicalDeviceIndex, false);
-        NVSDK_NGX_Resource_VK resourceMv = SetupVulkanTexture(desc.texMv, desc.descriptorMv, desc.physicalDeviceIndex, false);
-        NVSDK_NGX_Resource_VK resourceDepth = SetupVulkanTexture(desc.texDepth, desc.descriptorDepth, desc.physicalDeviceIndex, false);
-        NVSDK_NGX_Resource_VK resourceOutput = SetupVulkanTexture(desc.texOutput, desc.descriptorOutput, desc.physicalDeviceIndex, true);
+        NVSDK_NGX_Resource_VK resourceInput = SetupVulkanTexture(desc.texInput, false);
+        NVSDK_NGX_Resource_VK resourceMv = SetupVulkanTexture(desc.texMv, false);
+        NVSDK_NGX_Resource_VK resourceDepth = SetupVulkanTexture(desc.texDepth, false);
+        NVSDK_NGX_Resource_VK resourceOutput = SetupVulkanTexture(desc.texOutput, true);
 
         NVSDK_NGX_VK_DLSS_Eval_Params dlssEvalParams = {};
         dlssEvalParams.Feature.pInColor = &resourceInput;
@@ -295,7 +292,7 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
         dlssEvalParams.Feature.InSharpness = desc.sharpness;
         dlssEvalParams.pInDepth = &resourceDepth;
         dlssEvalParams.pInMotionVectors = &resourceMv;
-        dlssEvalParams.InRenderSubrectDimensions = desc.renderOrScaledResolution;
+        dlssEvalParams.InRenderSubrectDimensions = desc.currentRenderResolution;
         dlssEvalParams.InJitterOffsetX = desc.jitter[0];
         dlssEvalParams.InJitterOffsetY = desc.jitter[1];
         dlssEvalParams.InReset = desc.reset;
@@ -303,21 +300,21 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
         dlssEvalParams.InMVScaleY = desc.motionVectorScale[1];
 
         NVSDK_NGX_Resource_VK resourceExposure;
-        if (desc.texExposure)
+        if (desc.texExposure.texture)
         {
-            resourceExposure = SetupVulkanTexture(desc.texExposure, desc.descriptorExposure, desc.physicalDeviceIndex, false);
+            resourceExposure = SetupVulkanTexture(desc.texExposure, false);
             dlssEvalParams.pInExposureTexture = &resourceExposure;
         }
 
-        VkCommandBuffer vkCommandbuffer = (VkCommandBuffer)NRI.GetCommandBufferVK(*commandBuffer);
+        VkCommandBuffer vkCommandbuffer = (VkCommandBuffer)NRI.GetCommandBufferNativeObject(*commandBuffer);
         result = NGX_VULKAN_EVALUATE_DLSS_EXT(vkCommandbuffer, m_DLSS, m_NgxParameters, &dlssEvalParams);
     }
     else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D11)
     {
-        ID3D11Resource* resourceInput = NRI.GetTextureD3D11(*desc.texInput);
-        ID3D11Resource* resourceMv = NRI.GetTextureD3D11(*desc.texMv);
-        ID3D11Resource* resourceDepth = NRI.GetTextureD3D11(*desc.texDepth);
-        ID3D11Resource* resourceOutput = NRI.GetTextureD3D11(*desc.texOutput);
+        ID3D11Resource* resourceInput = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texInput.texture, 0);
+        ID3D11Resource* resourceMv = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texMv.texture, 0);
+        ID3D11Resource* resourceDepth = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texDepth.texture, 0);
+        ID3D11Resource* resourceOutput = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texOutput.texture, 0);
 
         NVSDK_NGX_D3D11_DLSS_Eval_Params dlssEvalParams = {};
         dlssEvalParams.Feature.pInColor = resourceInput;
@@ -325,20 +322,20 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
         dlssEvalParams.Feature.InSharpness = desc.sharpness;
         dlssEvalParams.pInDepth = resourceDepth;
         dlssEvalParams.pInMotionVectors = resourceMv;
-        dlssEvalParams.InRenderSubrectDimensions = desc.renderOrScaledResolution;
+        dlssEvalParams.InRenderSubrectDimensions = desc.currentRenderResolution;
         dlssEvalParams.InJitterOffsetX = desc.jitter[0];
         dlssEvalParams.InJitterOffsetY = desc.jitter[1];
         dlssEvalParams.InReset = desc.reset;
         dlssEvalParams.InMVScaleX = desc.motionVectorScale[0];
         dlssEvalParams.InMVScaleY = desc.motionVectorScale[1];
 
-        if (desc.texExposure)
+        if (desc.texExposure.texture)
         {
-            ID3D11Resource* resourceExposure = NRI.GetTextureD3D11(*desc.texExposure);
+            ID3D11Resource* resourceExposure = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texExposure.texture, 0);
             dlssEvalParams.pInExposureTexture = resourceExposure;
         }
 
-        ID3D11DeviceContext* d3d11DeviceContext = NRI.GetCommandBufferD3D11(*commandBuffer);
+        ID3D11DeviceContext* d3d11DeviceContext = (ID3D11DeviceContext*)NRI.GetCommandBufferNativeObject(*commandBuffer);
         result = NGX_D3D11_EVALUATE_DLSS_EXT(d3d11DeviceContext, m_DLSS, m_NgxParameters, &dlssEvalParams);
     }
 

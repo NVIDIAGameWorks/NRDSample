@@ -16,13 +16,14 @@ NRI_RESOURCE( Texture2D<float>, gIn_Downsampled_ViewZ, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_Normal_Roughness, t, 2, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_BaseColor_Metalness, t, 3, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_DirectLighting, t, 4, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 5, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 6, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 7, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_TransparentLighting, t, 5, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 6, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 7, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 8, 1 );
 
 #if( NRD_MODE == SH )
-    NRI_RESOURCE( Texture2D<float4>, gIn_DiffSh, t, 8, 1 );
-    NRI_RESOURCE( Texture2D<float4>, gIn_SpecSh, t, 9, 1 );
+    NRI_RESOURCE( Texture2D<float4>, gIn_DiffSh, t, 9, 1 );
+    NRI_RESOURCE( Texture2D<float4>, gIn_SpecSh, t, 10, 1 );
 #endif
 
 // Outputs
@@ -64,6 +65,14 @@ float2 GetUpsampleUv( float2 pixelUv, float zReal )
     return uv;
 }
 
+float3 AddTransparentLighting( float3 Lsum, float3 Ltransparent )
+{
+    float mask = dot( Ltransparent, 1.0 );
+    Lsum = mask == 0.0 ? Lsum : Ltransparent;
+
+    return Lsum;
+}
+
 [numthreads( 16, 16, 1)]
 void main( int2 pixelPos : SV_DispatchThreadId )
 {
@@ -76,6 +85,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
 
     // Early out - sky
     float3 Ldirect = gIn_DirectLighting[ pixelPos ];
+    float3 Ltransparent = gIn_TransparentLighting[ pixelPos ];
     float viewZ = gIn_ViewZ[ pixelPos ];
 
     float4 normalAndRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos ] );
@@ -89,7 +99,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     {
         Ldirect *= float( gOnScreen == SHOW_FINAL );
 
-        gOut_Composed[ pixelPos ] = float4( Ldirect, z );
+        gOut_Composed[ pixelPos ] = float4( AddTransparentLighting( Ldirect, Ltransparent ), z );
         gOut_ComposedDiff[ pixelPos ] = float4( 0, 0, 0, z );
         gOut_ComposedSpec[ pixelPos ] = float4( 0, 0, 0, z );
 
@@ -189,6 +199,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     Lspec += ambient * spec.w * Fenv * specAmbientAmount;
 
     float3 Lsum = Ldirect + Ldiff + Lspec;
+    Lsum = AddTransparentLighting( Lsum, Ltransparent );
 
     // Debug
     if( gOnScreen == SHOW_DENOISED_DIFFUSE )
@@ -214,6 +225,6 @@ void main( int2 pixelPos : SV_DispatchThreadId )
 
     // Output
     gOut_Composed[ pixelPos ] = float4( Lsum, z );
-    gOut_ComposedDiff[ pixelPos ] = float4( Ldiff, z );
+    gOut_ComposedDiff[ pixelPos ] = float4( Ldirect + Ldiff, z );
     gOut_ComposedSpec[ pixelPos ] = float4( Lspec, z );
 }

@@ -11,12 +11,11 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #include "Shared.hlsli"
 
 NRI_RESOURCE( Texture2D<float3>, gIn_ObjectMotion, t, 0, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_TransparentLayer, t, 1, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_ComposedLighting_ViewZ, t, 2, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_ComposedLighting_ViewZ, t, 1, 1 );
 
-NRI_RESOURCE( RWTexture2D<float>, gOut_ViewZ, u, 3, 1 );
-NRI_RESOURCE( RWTexture2D<float2>, gOut_SurfaceMotion, u, 4, 1 );
-NRI_RESOURCE( RWTexture2D<float3>, gOut_FinalImage, u, 5, 1 );
+NRI_RESOURCE( RWTexture2D<float>, gOut_ViewZ, u, 0, 1 );
+NRI_RESOURCE( RWTexture2D<float2>, gOut_SurfaceMotion, u, 1, 1 );
+NRI_RESOURCE( RWTexture2D<float3>, gOut_FinalImage, u, 2, 1 );
 
 [numthreads( 16, 16, 1 )]
 void main( uint2 pixelPos : SV_DispatchThreadId )
@@ -40,7 +39,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     STL::Rng::Initialize( pixelPos, gFrameIndex );
 
     float3 Lsum = gIn_ComposedLighting_ViewZ[ pixelPos ].xyz;
-    Lsum = ApplyPostLightingComposition( pixelPos, Lsum, gIn_TransparentLayer, false );
+    Lsum = ApplyExposure( Lsum, false );
 
     // Output
     gOut_FinalImage[ pixelPos ] = Lsum;

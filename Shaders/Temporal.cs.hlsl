@@ -12,10 +12,9 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 NRI_RESOURCE( Texture2D<float3>, gIn_ObjectMotion, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_ComposedLighting_ViewZ, t, 1, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_TransparentLayer, t, 2, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_History, t, 3, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_History, t, 2, 1 );
 
-NRI_RESOURCE( RWTexture2D<float3>, gOut_History, u, 4, 1 );
+NRI_RESOURCE( RWTexture2D<float3>, gOut_History, u, 0, 1 );
 
 #define BORDER          1
 #define GROUP_X         16
@@ -30,7 +29,7 @@ NRI_RESOURCE( RWTexture2D<float3>, gOut_History, u, 4, 1 );
     for( uint stage = 0; stage < stageNum; stage++ ) \
     { \
         uint virtualIndex = threadIndex + stage * GROUP_X * GROUP_Y; \
-        uint2 newId = uint2( virtualIndex % BUFFER_X, virtualIndex / BUFFER_Y ); \
+        uint2 newId = uint2( virtualIndex % BUFFER_X, virtualIndex / BUFFER_X ); \
         if( stage == 0 || virtualIndex < BUFFER_X * BUFFER_Y ) \
             Preload( newId, groupBase + newId ); \
     } \
@@ -43,7 +42,7 @@ void Preload( uint2 sharedPos, int2 globalPos )
     globalPos = clamp( globalPos, 0, gRectSize - 1.0 );
 
     float4 color_viewZ = gIn_ComposedLighting_ViewZ[ globalPos ];
-    color_viewZ.xyz = ApplyPostLightingComposition( globalPos, color_viewZ.xyz, gIn_TransparentLayer );
+    color_viewZ.xyz = ApplyExposure( color_viewZ.xyz );
     color_viewZ.w = abs( color_viewZ.w ) * STL::Math::Sign( gNearZ ) / NRD_FP16_VIEWZ_SCALE;
 
     s_Data[ sharedPos.y ][ sharedPos.x ] = color_viewZ;

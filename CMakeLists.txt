@@ -73,8 +73,8 @@ if ((CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64") OR (CMAKE_SYSTEM_PROCESSOR MATCHE
 endif()
 
 # Shader compilation
-set(NRD_USE_OCT_NORMAL_ENCODING "1" CACHE STRING "NRD_USE_OCT_NORMAL_ENCODING")
-set(NRD_USE_MATERIAL_ID "1" CACHE STRING "NRD_USE_MATERIAL_ID")
+set(NRD_NORMAL_ENCODING "2" CACHE STRING "Normal encoding variant (0-4, matches NRD_NORMAL_ENCODING from NRD)")
+set(NRD_ROUGHNESS_ENCODING "1" CACHE STRING "Roughness encoding variant (0-2, matches NRD_ROUGHNESS_ENCODING from NRD)")
 
 if (NOT DISABLE_SHADER_COMPILATION)
     # Include path for DXC and FXC (used in ShaderCompilation.cmake)
@@ -167,7 +167,7 @@ target_include_directories(NRDSample PRIVATE "External/NRIFramework/Include")
 target_include_directories(NRDSample PRIVATE "External/NRIFramework/External/NRI/Include")
 target_include_directories(NRDSample PRIVATE "External/NRIFramework/External")
 target_include_directories(NRDSample PRIVATE "External/NRD/Include" "External/NRD/Integration")
-target_compile_definitions(NRDSample PRIVATE ${PLATFORM_DEFINITIONS} PROJECT_NAME=NRDSample NRD_USE_OCT_NORMAL_ENCODING=${NRD_USE_OCT_NORMAL_ENCODING})
+target_compile_definitions(NRDSample PRIVATE ${PLATFORM_DEFINITIONS} PROJECT_NAME=NRDSample NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING} NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING})
 
 if (NOT DISABLE_SHADER_COMPILATION)
     add_dependencies(NRDSample NRDSampleShaders)

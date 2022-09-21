@@ -45,7 +45,6 @@ void main( uint2 tilePos : SV_GroupId, uint2 pixelPos : SV_DispatchThreadId, uin
     mipAndCone = GetConeAngleFromRoughness( geometryProps.mip, 1.0 );
 
     float3 BRDF = GetAmbientBRDF( geometryProps, materialProps, true );
-    BRDF *= float( !geometryProps.IsSky() );
 
     // Accumulate bounces not handled by the main tracer
     float3 Lsum = 0.0;
@@ -70,7 +69,6 @@ void main( uint2 tilePos : SV_GroupId, uint2 pixelPos : SV_DispatchThreadId, uin
 
         // Update BRDF
         BRDF *= GetAmbientBRDF( geometryProps, materialProps, true );
-        BRDF *= float( !geometryProps.IsSky() );
     }
 
     Lsum /= STL::ImportanceSampling::Uniform::GetPDF( );

@@ -2,10 +2,8 @@
 
 // IMPORTANT: these files must be included beforehand
 //    NRIDescs.hpp
-//    Extensions/NRIDeviceCreation.h
-//    Extensions/NRIWrapperD3D11.h
-//    Extensions/NRIWrapperD3D12.h
 //    Extensions/NRIWrapperVK.h
+//    Extensions/NRIDeviceCreation.h
 
 #include <assert.h>
 
@@ -48,29 +46,30 @@ struct DlssInitDesc
     bool enableAutoExposure = false;
 };
 
+struct DlssTexture
+{
+    nri::Texture* texture = nullptr;
+    nri::Descriptor* descriptor = nullptr;
+    nri::Format format = nri::Format::UNKNOWN;
+    NVSDK_NGX_Dimensions dims = {};
+};
+
 struct DlssDispatchDesc
 {
-    // Output - required state SHADER_RESOURCE_STORAGE, output resolution
-    nri::Texture* texOutput = nullptr;
+    // Output - required state SHADER_RESOURCE_STORAGE
+    DlssTexture texOutput = {};
 
-    // Inputs - required state SHADER_RESOURCE, render resolution
-    nri::Texture* texInput = nullptr;
-    nri::Texture* texMv = nullptr;
-    nri::Texture* texDepth = nullptr;
-    nri::Texture* texExposure = nullptr; // (optional) 1x1
+    // Inputs - required state SHADER_RESOURCE
+    DlssTexture texInput = {};
+    DlssTexture texMv = {};
+    DlssTexture texDepth = {};
+    DlssTexture texExposure = {}; // (optional) 1x1
 
-    // For VULKAN
-    nri::Descriptor* descriptorOutput = nullptr;
-    nri::Descriptor* descriptorInput = nullptr;
-    nri::Descriptor* descriptorMv = nullptr;
-    nri::Descriptor* descriptorDepth = nullptr;
-    nri::Descriptor* descriptorExposure = nullptr;
-
-    NVSDK_NGX_Dimensions renderOrScaledResolution = {};
+    // Settings
+    NVSDK_NGX_Dimensions currentRenderResolution = {};
     float jitter[2] = {0.0f, 0.0f};
     float motionVectorScale[2] = {1.0f, 1.0f};
     float sharpness = 0.0f;
-    uint32_t physicalDeviceIndex = 0;
     bool reset = false;
 };
 
@@ -107,14 +106,12 @@ public:
 
 private:
 
-    inline NVSDK_NGX_Resource_VK SetupVulkanTexture(nri::Texture* texture, nri::Descriptor* descriptor, uint32_t physicalDeviceIndex, bool isStorage);
+    inline NVSDK_NGX_Resource_VK SetupVulkanTexture(const DlssTexture& texture, bool isStorage);
 
 private:
 
     struct NRIInterface
         : public nri::CoreInterface
-        , public nri::WrapperD3D11Interface
-        , public nri::WrapperD3D12Interface
         , public nri::WrapperVKInterface
     {};
 

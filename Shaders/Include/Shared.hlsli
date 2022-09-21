@@ -134,7 +134,7 @@ NRI_RESOURCE( SamplerState, gLinearSampler, s, 2, 0 );
 NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 0 );
 
 //=============================================================================================
-// DENOISER PART
+// NRD
 //=============================================================================================
 
 #define NRD_HEADER_ONLY
@@ -149,7 +149,7 @@ NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 0 );
 #define USE_SIMPLEX_LIGHTING_MODEL          0
 #define USE_IMPORTANCE_SAMPLING             1
 #define USE_SANITIZATION                    0 // NRD sample is NAN/INF free
-#define USE_SIMULATED_MATERIAL_ID_TEST      0 // for NRD_USE_MATERIAL_ID support debugging
+#define USE_SIMULATED_MATERIAL_ID_TEST      0 // for "material ID" support debugging
 
 #define BRDF_ENERGY_THRESHOLD               0.003
 #define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
@@ -159,7 +159,8 @@ NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 0 );
 #define TAA_MOTION_MAX_REUSE                0.1
 #define MAX_MIP_LEVEL                       11.0
 #define IMPORTANCE_SAMPLE_NUM               16
-#define GLASS_TINT                          float3( 0.9, 0.9, 1.0 )
+#define GLASS_THICKNESS                     0.003 // m
+#define GLASS_TINT                          float3( 0.95, 0.95, 0.99 )
 
 //=============================================================================================
 // CONSTANTS
@@ -218,19 +219,15 @@ float GetSpecMagicCurve( float roughness )
     return f;
 }
 
-float3 ApplyPostLightingComposition( uint2 pixelPos, float3 Lsum, Texture2D<float4> gIn_TransparentLayer, bool convertToLDR = true )
+// IMPORTANT: requires STL::Rng::Initialize
+float3 ApplyExposure( float3 Lsum, bool convertToLDR = true )
 {
-    // Transparent layer ( non-reference mode )
-    float4 transparentLayer = ( gTransparent && !gReference ) ? gIn_TransparentLayer[ pixelPos ] : 0;
-    Lsum = Lsum * ( 1.0 - transparentLayer.w ) * ( transparentLayer.w != 0.0 ? GLASS_TINT : 1.0 ) + transparentLayer.xyz;
-
     // Exposure
     if( gOnScreen <= SHOW_DENOISED_SPECULAR )
     {
         Lsum *= gExposure;
 
         // Dithering
-        // IMPORTANT: requires STL::Rng::Initialize
         float rnd = STL::Rng::GetFloat2( ).x;
         float luma = STL::Color::Luminance( Lsum );
         float amplitude = lerp( 0.4, 1.0 / 1024.0, STL::Math::Sqrt01( luma ) );
@@ -238,16 +235,13 @@ float3 ApplyPostLightingComposition( uint2 pixelPos, float3 Lsum, Texture2D<floa
         Lsum *= dither;
     }
 
-    if( convertToLDR )
-    {
-        // Tonemap
-        if( gOnScreen == SHOW_FINAL )
-            Lsum = STL::Color::HdrToLinear_Uncharted( Lsum );
+    // Tonemap
+    if( convertToLDR && gOnScreen == SHOW_FINAL )
+        Lsum = STL::Color::HdrToLinear_Uncharted( Lsum );
 
-        // Conversion
-        if( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR )
-            Lsum = STL::Color::LinearToSrgb( Lsum );
-    }
+    // Conversion
+    if( convertToLDR && ( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR ) )
+        Lsum = STL::Color::LinearToSrgb( Lsum );
 
     return Lsum;
 }

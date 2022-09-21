@@ -44,11 +44,11 @@ NRI_RESOURCE( Texture2D<float4>, gIn_Textures[], t, 4, 2 );
 #define FLAG_EMISSION                       0x04
 #define FLAG_FORCED_EMISSION                0x08
 
-// Local flags
-#define FLAG_BACKFACE                       0x10
-#define FLAG_UNUSED1                        0x20
-#define FLAG_UNUSED2                        0x40
-#define FLAG_UNUSED3                        0x80
+// Local flags // TODO: all unused
+#define FLAG_UNUSED1                        0x10
+#define FLAG_UNUSED2                        0x20
+#define FLAG_UNUSED3                        0x40
+#define FLAG_UNUSED4                        0x80
 
 #define GEOMETRY_ALL                        ( FLAG_OPAQUE_OR_ALPHA_OPAQUE | FLAG_EMISSION | FLAG_FORCED_EMISSION | FLAG_TRANSPARENT )
 #define GEOMETRY_ONLY_EMISSIVE              ( FLAG_EMISSION | FLAG_FORCED_EMISSION )
@@ -75,7 +75,7 @@ float3 _GetXoffset( float3 X, float3 offsetDirection )
     return X;// + offsetDirection * ( 0.003 + length( X - gCameraOrigin ) * 0.0005 );
 }
 
-struct GeometryProps // TODO: half
+struct GeometryProps
 {
     float3 X;
     float3 rayDirection;
@@ -100,9 +100,6 @@ struct GeometryProps // TODO: half
     bool IsForcedEmission( )
     { return ( textureOffsetAndFlags & ( ( FLAG_FORCED_EMISSION ) << FLAG_FIRST_BIT ) ) != 0; }
 
-    bool IsBackFace( )
-    { return ( textureOffsetAndFlags & ( ( FLAG_BACKFACE ) << FLAG_FIRST_BIT ) ) != 0; }
-
     uint GetBaseTexture( )
     { return textureOffsetAndFlags & INSTANCE_ID_MASK; }
 
@@ -116,7 +113,7 @@ struct GeometryProps // TODO: half
     { return tmin == INF; }
 };
 
-struct MaterialProps // TODO: half
+struct MaterialProps
 {
     float3 Ldirect; // unshadowed
     float3 Lemi;
@@ -282,18 +279,41 @@ float3 GetAmbientBRDF( GeometryProps geometryProps, MaterialProps materialProps,
     float3 albedo, Rf0;
     STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
 
-    float3 ambBRDF;
+    float3 Fenv = Rf0;
     if( !approximate )
     {
         float NoV = abs( dot( materialProps.N, -geometryProps.rayDirection ) );
-        float3 Fenv = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, materialProps.roughness );
-
-        ambBRDF = albedo * ( 1.0 - Fenv ) + Fenv;
+        Fenv = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, materialProps.roughness );
     }
-    else
-        ambBRDF = albedo * ( 1.0 - Rf0 ) + Rf0;
+
+    float3 ambBRDF = albedo * ( 1.0 - Fenv ) + Fenv;
+    ambBRDF *= float( !geometryProps.IsSky() );
 
     return ambBRDF;
+}
+
+float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps materialProps, bool useMagicBoost = false )
+{
+    float3 albedo, Rf0;
+    STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
+
+    float smc = GetSpecMagicCurve( materialProps.roughness );
+    float NoV = abs( dot( materialProps.N, -geometryProps.rayDirection ) );
+    float3 Fenv = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, materialProps.roughness );
+
+    float lumSpec = STL::Color::Luminance( Fenv );
+    float lumDiff = STL::Color::Luminance( albedo * ( 1.0 - Fenv ) );
+
+    // Boost diffuse if roughness is high
+    if( useMagicBoost )
+    {
+        lumDiff = lerp( lumDiff, 1.0, smc );
+        lumSpec = lerp( lumSpec, 0.0, smc );
+    }
+
+    float diffProb = lumDiff / ( lumDiff + lumSpec + 1e-6 );
+
+    return diffProb;
 }
 
 //====================================================================================================================================
