@@ -62,10 +62,12 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float gEmissionIntensity;
     float3 gViewDirection;
     float gOrthoMode;
+    float2 gWindowSize;
+    float2 gInvWindowSize;
     float2 gOutputSize;
     float2 gInvOutputSize;
-    float2 gScreenSize;
-    float2 gInvScreenSize;
+    float2 gRenderSize;
+    float2 gInvRenderSize;
     float2 gRectSize;
     float2 gInvRectSize;
     float2 gRectSizePrev;
@@ -128,10 +130,10 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     uint gNisOutputViewportHeight;
 };
 
-NRI_RESOURCE( SamplerState, gLinearMipmapLinearSampler, s, 0, 0 );
-NRI_RESOURCE( SamplerState, gLinearMipmapNearestSampler, s, 1, 0 );
-NRI_RESOURCE( SamplerState, gLinearSampler, s, 2, 0 );
-NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 0 );
+NRI_RESOURCE( SamplerState, gLinearMipmapLinearSampler, s, 0, 1 );
+NRI_RESOURCE( SamplerState, gLinearMipmapNearestSampler, s, 1, 1 );
+NRI_RESOURCE( SamplerState, gLinearSampler, s, 2, 1 );
+NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 1 );
 
 //=============================================================================================
 // NRD

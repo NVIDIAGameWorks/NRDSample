@@ -44,20 +44,30 @@ constexpr float NEAR_Z                      = 0.001f; // m
 constexpr bool CAMERA_RELATIVE              = true;
 constexpr bool CAMERA_LEFT_HANDED           = true;
 
+//=================================================================================
 // Important tests, sensitive to regressions or just testing base functionality
+//=================================================================================
+
 const std::vector<uint32_t> interior_checkMeTests =
 {{
-    1, 6, 8, 9, 10, 12, 13, 14, 23, 27, 28,
-    29, 31, 32, 35, 43, 44, 47, 53, 59, 60,
-    62, 67, 75, 76, 79, 95, 109, 110, 114,
-    120, 124, 126, 127, 133, 134, 139, 140,
-    145, 148, 155, 156, 157, 160, 161, 162,
+    1, 6, 8, 9, 10, 12, 13, 14, 23, 27, 28, 29, 31, 32, 35, 43, 44, 47, 53, 59,
+    60, 62, 67, 75, 76, 79, 81, 95, 96, 107, 109, 111, 110, 114, 120, 124, 126,
+    127, 132, 133, 134, 139, 140, 145, 148, 150, 155, 156, 157, 160, 161, 162,
+    168
 }};
 
+//=================================================================================
 // Tests, where IQ improvement would be "nice to have"
-const std::vector<uint32_t> interior_improveMeTests =
+//=================================================================================
+
+const std::vector<uint32_t> REBLUR_interior_improveMeTests =
 {{
-    3, 96, 150, 153, 158,
+    3, 153, 158, 169
+}};
+
+const std::vector<uint32_t> RELAX_interior_improveMeTests =
+{{
+    6, 114, 144, 148, 156, 159
 }};
 
 //=================================================================================
@@ -165,6 +175,8 @@ enum class Texture : uint32_t
     NisData2,
     MaterialTextures,
 
+    MAX_NUM,
+
     // Aliases
     DlssInput = Unfiltered_Diff
 };
@@ -180,7 +192,9 @@ enum class Pipeline : uint32_t
     Upsample,
     UpsampleNis,
     PreDlss,
-    AfterDlss
+    AfterDlss,
+
+    MAX_NUM,
 };
 
 enum class Descriptor : uint32_t
@@ -263,6 +277,8 @@ enum class Descriptor : uint32_t
     NisData2,
     MaterialTextures,
 
+    MAX_NUM,
+
     // Aliases
     DlssInput_Texture = Unfiltered_Diff_Texture,
     DlssInput_StorageTexture = Unfiltered_Diff_StorageTexture
@@ -283,7 +299,9 @@ enum class DescriptorSet : uint32_t
     UpsampleNis1b,
     PreDlss1,
     AfterDlss1,
-    RayTracing2
+    RayTracing2,
+
+    MAX_NUM
 };
 
 struct NRIInterface
@@ -316,10 +334,12 @@ struct GlobalConstantBufferData
     float4 gCameraOrigin_gMipBias;
     float4 gTrimmingParams_gEmissionIntensity;
     float4 gViewDirection_gIsOrtho;
+    float2 gWindowSize;
+    float2 gInvWindowSize;
     float2 gOutputSize;
     float2 gInvOutputSize;
-    float2 gScreenSize;
-    float2 gInvScreenSize;
+    float2 gRenderSize;
+    float2 gInvRenderSize;
     float2 gRectSize;
     float2 gInvRectSize;
     float2 gRectSizePrev;
@@ -403,7 +423,7 @@ struct Settings
     float       animationProgress                  = 0.0f;
     float       animationSpeed                     = 0.0f;
     float       hitDistScale                       = 3.0f;
-    float       disocclusionThreshold              = 0.5f;
+    float       disocclusionThreshold              = 1.0f;
     float       resolutionScale                    = 1.0f;
     float       sharpness                          = 0.15f;
 
@@ -550,6 +570,16 @@ public:
 
     ~Sample();
 
+    void InitCmdLine(cmdline::parser& cmdLine) override
+    {
+        cmdLine.add<int32_t>("dlssQuality", 'd', "DLSS quality: [-1: 3]", false, -1, cmdline::range(-1, 3));
+    }
+
+    void ReadCmdLine(cmdline::parser& cmdLine) override
+    {
+        m_DlssQuality = cmdLine.get<int32_t>("dlssQuality");
+    }
+
     bool Initialize(nri::GraphicsAPI graphicsAPI);
     void PrepareFrame(uint32_t frameIndex);
     void RenderFrame(uint32_t frameIndex);
@@ -649,8 +679,7 @@ private:
     const std::vector<uint32_t>* m_improveMeTests = nullptr;
     Timer m_Timer;
     float3 m_PrevLocalPos = {};
-    uint2 m_OutputResolution = {};
-    uint2 m_ScreenResolution = {};
+    uint2 m_RenderResolution = {};
     utils::Scene m_Scene;
     nrd::RelaxDiffuseSpecularSettings m_RelaxSettings = {};
     nrd::ReblurSettings m_ReblurSettings = {};
@@ -663,6 +692,7 @@ private:
     uint32_t m_DefaultInstancesOffset = 0;
     uint32_t m_LastSelectedTest = uint32_t(-1);
     uint32_t m_TestNum = uint32_t(-1);
+    int32_t m_DlssQuality = int32_t(-1);
     float m_UiWidth = 0.0f;
     float m_AmbientAccumFrameNum = 0.0f;
     float m_MinResolutionScale = 0.5f;
@@ -674,6 +704,9 @@ private:
 
 Sample::~Sample()
 {
+    if (!m_Device)
+        return;
+
     NRI.WaitForIdle(*m_CommandQueue);
 
     m_DLSS.Shutdown();
@@ -756,18 +789,18 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
 
     m_DeviceDesc = &NRI.GetDeviceDesc(*m_Device);
     m_ConstantBufferSize = helper::Align(sizeof(GlobalConstantBufferData), m_DeviceDesc->constantBufferOffsetAlignment);
-    m_OutputResolution = uint2(GetWindowWidth(), GetWindowHeight());
-    m_ScreenResolution = m_OutputResolution;
+    m_RenderResolution = GetOutputResolution();
 
-    if (m_DlssQuality != uint32_t(-1))
+    if (m_DlssQuality != -1)
     {
         if (m_DLSS.InitializeLibrary(*m_Device, ""))
         {
             DlssSettings dlssSettings = {};
-            if (m_DLSS.GetOptimalSettings({m_OutputResolution.x, m_OutputResolution.y}, (DlssQuality)m_DlssQuality, dlssSettings))
+            DlssInitDesc dlssInitDesc = {};
+            dlssInitDesc.outputResolution = { GetOutputResolution().x, GetOutputResolution().y };
+
+            if (m_DLSS.GetOptimalSettings(dlssInitDesc.outputResolution, (DlssQuality)m_DlssQuality, dlssSettings))
             {
-                DlssInitDesc dlssInitDesc = {};
-                dlssInitDesc.outputResolution = {m_OutputResolution.x, m_OutputResolution.y};
                 dlssInitDesc.quality = (DlssQuality)m_DlssQuality;
                 dlssInitDesc.isContentHDR = true;
 
@@ -777,10 +810,10 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
                 float sy = float(dlssSettings.minRenderResolution.Height) / float(dlssSettings.renderResolution.Height);
                 float minResolutionScale = sy > sx ? sy : sx;
 
-                m_ScreenResolution = {dlssSettings.renderResolution.Width, dlssSettings.renderResolution.Height};
+                m_RenderResolution = {dlssSettings.renderResolution.Width, dlssSettings.renderResolution.Height};
                 m_MinResolutionScale = minResolutionScale;
 
-                printf("DLSS: render resolution (%u, %u)\n", m_ScreenResolution.x, m_ScreenResolution.y);
+                printf("Render resolution (%u, %u)\n", m_RenderResolution.x, m_RenderResolution.y);
 
                 m_Settings.sharpness = dlssSettings.sharpness;
                 m_Settings.DLSS = true;
@@ -789,7 +822,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
             {
                 m_DLSS.Shutdown();
 
-                printf("DLSS: unsupported mode!\n");
+                printf("Unsupported DLSS mode!\n");
             }
         }
     }
@@ -830,7 +863,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
                 denoiserCreationDesc.requestedMethodNum = 1;
 
                 NrdIntegration denoiser(2);
-                NRI_ABORT_ON_FALSE( denoiser.Initialize(*m_Device, NRI, NRI, denoiserCreationDesc) );
+                NRI_ABORT_ON_FALSE( denoiser.Initialize(denoiserCreationDesc, *m_Device, NRI, NRI) );
                 printf("| %10s | %36s | %16.2f | %16.2f | %16.2f |\n", i == 0 ? resolution : "", methodName, denoiser.GetTotalMemoryUsageInMb(), denoiser.GetPersistentMemoryUsageInMb(), denoiser.GetAliasableMemoryUsageInMb());
                 denoiser.Destroy();
             }
@@ -860,26 +893,26 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
         {
     #if( NRD_MODE == OCCLUSION )
         #if( NRD_COMBINED == 1 )
-            { nrd::Method::REBLUR_DIFFUSE_SPECULAR_OCCLUSION, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
+            { nrd::Method::REBLUR_DIFFUSE_SPECULAR_OCCLUSION, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
         #else
-            { nrd::Method::REBLUR_DIFFUSE_OCCLUSION, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
-            { nrd::Method::REBLUR_SPECULAR_OCCLUSION, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
+            { nrd::Method::REBLUR_DIFFUSE_OCCLUSION, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+            { nrd::Method::REBLUR_SPECULAR_OCCLUSION, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
         #endif
     #elif( NRD_MODE == SH )
         #if( NRD_COMBINED == 1 )
-            { nrd::Method::REBLUR_DIFFUSE_SPECULAR_SH, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
+            { nrd::Method::REBLUR_DIFFUSE_SPECULAR_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
         #else
-            { nrd::Method::REBLUR_DIFFUSE_SH, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
-            { nrd::Method::REBLUR_SPECULAR_SH, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
+            { nrd::Method::REBLUR_DIFFUSE_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+            { nrd::Method::REBLUR_SPECULAR_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
         #endif
     #elif( NRD_MODE == DIRECTIONAL_OCCLUSION )
-            { nrd::Method::REBLUR_DIFFUSE_DIRECTIONAL_OCCLUSION, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
+            { nrd::Method::REBLUR_DIFFUSE_DIRECTIONAL_OCCLUSION, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
     #else
         #if( NRD_COMBINED == 1 )
-            { nrd::Method::REBLUR_DIFFUSE_SPECULAR, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
+            { nrd::Method::REBLUR_DIFFUSE_SPECULAR, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
         #else
-            { nrd::Method::REBLUR_DIFFUSE, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
-            { nrd::Method::REBLUR_SPECULAR, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
+            { nrd::Method::REBLUR_DIFFUSE, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+            { nrd::Method::REBLUR_SPECULAR, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
         #endif
     #endif
         };
@@ -895,10 +928,10 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
         const nrd::MethodDesc methodDescs[] =
         {
             #if( NRD_COMBINED == 1 )
-                { nrd::Method::RELAX_DIFFUSE_SPECULAR, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
+                { nrd::Method::RELAX_DIFFUSE_SPECULAR, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
             #else
-                { nrd::Method::RELAX_DIFFUSE, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
-                { nrd::Method::RELAX_SPECULAR, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
+                { nrd::Method::RELAX_DIFFUSE, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+                { nrd::Method::RELAX_SPECULAR, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
             #endif
         };
 
@@ -913,7 +946,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     {
         const nrd::MethodDesc methodDescs[] =
         {
-            { nrd::Method::SIGMA_SHADOW_TRANSLUCENCY, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
+            { nrd::Method::SIGMA_SHADOW_TRANSLUCENCY, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
         };
 
         nrd::DenoiserCreationDesc denoiserCreationDesc = {};
@@ -926,7 +959,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     {
         const nrd::MethodDesc methodDescs[] =
         {
-            { nrd::Method::REFERENCE, (uint16_t)m_ScreenResolution.x, (uint16_t)m_ScreenResolution.y },
+            { nrd::Method::REFERENCE, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
         };
 
         nrd::DenoiserCreationDesc denoiserCreationDesc = {};
@@ -940,7 +973,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
 
     m_DefaultSettings = m_Settings;
 
-    return CreateUserInterface(*m_Device, NRI, NRI, m_OutputResolution.x, m_OutputResolution.y, swapChainFormat);
+    return CreateUserInterface(*m_Device, NRI, NRI, swapChainFormat);
 }
 
 void Sample::SetupAnimatedObjects()
@@ -986,13 +1019,13 @@ void Sample::PrepareFrame(uint32_t frameIndex)
         m_Settings.emission = !m_Settings.emission;
     if (IsKeyToggled(Key::Space))
         m_Settings.pauseAnimation = !m_Settings.pauseAnimation;
-    if (IsKeyToggled(Key::PageDown))
+    if (IsKeyToggled(Key::PageDown) || IsKeyToggled(Key::Num3))
     {
         m_Settings.denoiser++;
         if (m_Settings.denoiser > DENOISER_MAX_NUM - 1)
             m_Settings.denoiser = 0;
     }
-    if (IsKeyToggled(Key::PageUp))
+    if (IsKeyToggled(Key::PageUp) || IsKeyToggled(Key::Num9))
     {
         m_Settings.denoiser--;
         if (m_Settings.denoiser < 0)
@@ -1003,7 +1036,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
     if (!IsKeyPressed(Key::LAlt) && m_ShowUi)
     {
-        ImGui::SetNextWindowPos(ImVec2(m_Settings.windowAlignment ? 5.0f : m_OutputResolution.x - m_UiWidth - 5.0f, 5.0f));
+        ImGui::SetNextWindowPos(ImVec2(m_Settings.windowAlignment ? 5.0f : GetOutputResolution().x - m_UiWidth - 5.0f, 5.0f));
         ImGui::SetNextWindowSize(ImVec2(0.0f, 0.0f));
         ImGui::Begin("Settings [Tab]", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
         {
@@ -1011,9 +1044,9 @@ void Sample::PrepareFrame(uint32_t frameIndex)
             snprintf(buf, sizeof(buf), "%.1f FPS (%.2f ms)", 1000.0f / avgFrameTime, avgFrameTime);
 
             ImVec4 colorFps = UI_GREEN;
-            if (avgFrameTime > 1000.0f / 60.0f)
+            if (avgFrameTime > 1000.0f / 59.5f)
                 colorFps = UI_YELLOW;
-            if (avgFrameTime > 1000.0f / 30.0f)
+            if (avgFrameTime > 1000.0f / 29.5f)
                 colorFps = UI_RED;
 
             float lo = avgFrameTime * 0.5f;
@@ -1381,10 +1414,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 isSame = false;
                             else if (m_ReblurSettings.historyFixStrideBetweenSamples != defaults.historyFixStrideBetweenSamples)
                                 isSame = false;
-                            else if (m_ReblurSettings.minConvergedStateBaseRadiusScale != defaults.minConvergedStateBaseRadiusScale)
-                                isSame = false;
-                            else if (m_ReblurSettings.maxAdaptiveRadiusScale != defaults.maxAdaptiveRadiusScale)
-                                isSame = false;
                             else if (m_ReblurSettings.lobeAngleFraction != defaults.lobeAngleFraction)
                                 isSame = false;
                             else if (m_ReblurSettings.roughnessFraction != defaults.roughnessFraction)
@@ -1412,8 +1441,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 m_ReblurSettings.blurRadius = 0.0f;
                                 m_ReblurSettings.diffusePrepassBlurRadius = 0.0f;
                                 m_ReblurSettings.specularPrepassBlurRadius = 0.0f;
-                                m_ReblurSettings.minConvergedStateBaseRadiusScale = 0.0f;
-                                m_ReblurSettings.maxAdaptiveRadiusScale = 0.0f;
                                 m_ReblurSettings.antilagHitDistanceSettings.enable = false;
                                 m_ReblurSettings.antilagIntensitySettings.enable = false;
                             }
@@ -1473,8 +1500,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         #endif
 
                             ImGui::SliderFloat("Blur base radius (px)", &m_ReblurSettings.blurRadius, 0.0f, 60.0f, "%.1f");
-                            ImGui::SliderFloat("Min radius scale", &m_ReblurSettings.minConvergedStateBaseRadiusScale, 0.0f, 1.0f, "%.2f");
-                            ImGui::SliderFloat("Max radius scale", &m_ReblurSettings.maxAdaptiveRadiusScale, 0.0f, 10.0f, "%.2f");
                             ImGui::SliderFloat("Lobe fraction", &m_ReblurSettings.lobeAngleFraction, 0.0f, 1.0f, "%.2f");
                             ImGui::SliderFloat("Roughness fraction", &m_ReblurSettings.roughnessFraction, 0.0f, 1.0f, "%.2f");
                             ImGui::SliderFloat("History fix stride", &m_ReblurSettings.historyFixStrideBetweenSamples, 0.0f, 20.0f, "%.1f");
@@ -1696,6 +1721,8 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     ImGui::PushID("TESTS");
                     if (isUnfolded)
                     {
+                        float buttonWidth = 25.0f * float(GetWindowResolution().x) / float(GetOutputResolution().x);
+
                         char s[64];
                         std::string sceneName = std::string( utils::GetFileName(m_SceneFile) );
                         size_t dotPos = sceneName.find_last_of(".");
@@ -1790,7 +1817,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 isColorChanged = true;
                             }
 
-                            if (ImGui::Button(i == m_LastSelectedTest ? "*" : s, ImVec2(25.0f, 0.0f)) || isTestChanged)
+                            if (ImGui::Button(i == m_LastSelectedTest ? "*" : s, ImVec2(buttonWidth, 0.0f)) || isTestChanged)
                             {
                                 uint32_t test = isTestChanged ? m_LastSelectedTest : i;
                                 FILE* fp = fopen(path.c_str(), "rb");
@@ -1888,7 +1915,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
     CameraDesc desc = {};
     desc.limits = cameraLimits;
-    desc.aspectRatio = float( GetWindowWidth() ) / float( GetWindowHeight() );
+    desc.aspectRatio = float(GetOutputResolution().x ) / float(GetOutputResolution().y );
     desc.horizontalFov = RadToDeg( Atan( Tan( DegToRad( m_Settings.camFov ) * 0.5f ) *  desc.aspectRatio * 9.0f / 16.0f ) * 2.0f ); // recalculate to ultra-wide if needed
     desc.nearZ = NEAR_Z * m_Settings.meterToUnitsMultiplier;
     desc.farZ = 10000.0f * m_Settings.meterToUnitsMultiplier;
@@ -2021,16 +2048,19 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     }
 
     // Print out information
-    if (m_PrevSettings.resolutionScale != m_Settings.resolutionScale || m_PrevSettings.tracingMode != m_Settings.tracingMode || m_PrevSettings.rpp != m_Settings.rpp)
+    if (m_PrevSettings.resolutionScale != m_Settings.resolutionScale ||
+        m_PrevSettings.tracingMode != m_Settings.tracingMode ||
+        m_PrevSettings.rpp != m_Settings.rpp ||
+        frameIndex == 0)
     {
         std::array<uint32_t, 4> rppScale = {2, 1, 2, 2};
         std::array<float, 4> wScale = {1.0f, 1.0f, 0.5f, 0.5f};
         std::array<float, 4> hScale = {1.0f, 1.0f, 1.0f, 0.5f};
 
-        uint32_t pw = uint32_t(m_ScreenResolution.x * m_Settings.resolutionScale + 0.5f);
-        uint32_t ph = uint32_t(m_ScreenResolution.y * m_Settings.resolutionScale + 0.5f);
-        uint32_t iw = uint32_t(m_ScreenResolution.x * m_Settings.resolutionScale * wScale[m_Settings.tracingMode] + 0.5f);
-        uint32_t ih = uint32_t(m_ScreenResolution.y * m_Settings.resolutionScale * hScale[m_Settings.tracingMode] + 0.5f);
+        uint32_t pw = uint32_t(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
+        uint32_t ph = uint32_t(m_RenderResolution.y * m_Settings.resolutionScale + 0.5f);
+        uint32_t iw = uint32_t(m_RenderResolution.x * m_Settings.resolutionScale * wScale[m_Settings.tracingMode] + 0.5f);
+        uint32_t ih = uint32_t(m_RenderResolution.y * m_Settings.resolutionScale * hScale[m_Settings.tracingMode] + 0.5f);
         uint32_t rayNum = m_Settings.rpp * rppScale[m_Settings.tracingMode];
         float rpp = float( iw  * ih * rayNum ) / float( pw * ph );
 
@@ -2040,11 +2070,26 @@ void Sample::PrepareFrame(uint32_t frameIndex)
             "Primary rays  : %ux%u\n"
             "Indirect rays : %ux%u x %u ray(s)\n"
             "Indirect rpp  : %.2f\n",
-            m_OutputResolution.x, m_OutputResolution.y,
+            GetOutputResolution().x, GetOutputResolution().y,
             pw, ph,
             iw, ih, rayNum,
             rpp
         );
+    }
+
+    if (m_PrevSettings.denoiser != m_Settings.denoiser || frameIndex == 0)
+    {
+        m_checkMeTests = nullptr;
+        m_improveMeTests = nullptr;
+
+        if (m_SceneFile.find("BistroInterior") != std::string::npos)
+        {
+            m_checkMeTests = &interior_checkMeTests;
+            if (m_Settings.denoiser == REBLUR)
+                m_improveMeTests = &REBLUR_interior_improveMeTests;
+            else if (m_Settings.denoiser == RELAX)
+                m_improveMeTests = &RELAX_interior_improveMeTests;
+        }
     }
 }
 
@@ -2055,9 +2100,9 @@ void Sample::CreateSwapChain(nri::Format& swapChainFormat)
     swapChainDesc.window = GetWindow();
     swapChainDesc.commandQueue = m_CommandQueue;
     swapChainDesc.format = nri::SwapChainFormat::BT709_G22_8BIT;
-    swapChainDesc.verticalSyncInterval = m_SwapInterval;
-    swapChainDesc.width = (uint16_t)m_OutputResolution.x;
-    swapChainDesc.height = (uint16_t)m_OutputResolution.y;
+    swapChainDesc.verticalSyncInterval = m_VsyncInterval;
+    swapChainDesc.width = (uint16_t)GetWindowResolution().x;
+    swapChainDesc.height = (uint16_t)GetWindowResolution().y;
     swapChainDesc.textureNum = SWAP_CHAIN_TEXTURE_NUM;
 
     NRI_ABORT_ON_FAILURE(NRI.CreateSwapChain(*m_Device, swapChainDesc, m_SwapChain));
@@ -2077,6 +2122,10 @@ void Sample::CreateSwapChain(nri::Format& swapChainFormat)
 
         backBuffer = {};
         backBuffer.texture = swapChainTextures[i];
+
+        char name[32];
+        snprintf(name, sizeof(name), "SwapChain texture #%u", i);
+        NRI.SetTextureDebugName(*backBuffer.texture, name);
 
         nri::Texture2DViewDesc textureViewDesc = {backBuffer.texture, nri::Texture2DViewType::COLOR_ATTACHMENT, swapChainFormat};
         NRI_ABORT_ON_FAILURE(NRI.CreateTexture2DView(textureViewDesc, backBuffer.colorAttachment));
@@ -2194,8 +2243,8 @@ void Sample::CreateResources(nri::Format swapChainFormat)
 {
     std::vector<DescriptorDesc> descriptorDescs;
 
-    const uint16_t w = (uint16_t)m_ScreenResolution.x;
-    const uint16_t h = (uint16_t)m_ScreenResolution.y;
+    const uint16_t w = (uint16_t)m_RenderResolution.x;
+    const uint16_t h = (uint16_t)m_RenderResolution.y;
     const uint64_t instanceDataSize = (m_Scene.instances.size() + ANIMATED_INSTANCE_MAX_NUM) * sizeof(InstanceData);
     const uint64_t worldScratchBufferSize = NRI.GetAccelerationStructureBuildScratchBufferSize(*m_WorldTlas);
     const uint64_t lightScratchBufferSize = NRI.GetAccelerationStructureBuildScratchBufferSize(*m_LightTlas);
@@ -2272,9 +2321,9 @@ void Sample::CreateResources(nri::Format swapChainFormat)
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::Composed_ViewZ", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
-    CreateTexture(descriptorDescs, "Texture::DlssOutput", nri::Format::R11_G11_B10_UFLOAT, m_OutputResolution.x, m_OutputResolution.y, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::DlssOutput", nri::Format::R11_G11_B10_UFLOAT, GetOutputResolution().x, GetOutputResolution().y, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
-    CreateTexture(descriptorDescs, "Texture::Final", swapChainFormat, (uint16_t)m_OutputResolution.x, (uint16_t)m_OutputResolution.y, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::Final", swapChainFormat, (uint16_t)GetWindowResolution().x, (uint16_t)GetWindowResolution().y, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::COPY_SOURCE);
 
     // History
@@ -2380,7 +2429,7 @@ void Sample::CreatePipelines()
         { samplerDescs[0], 0, nri::ShaderStage::ALL },
         { samplerDescs[1], 1, nri::ShaderStage::ALL },
         { samplerDescs[2], 2, nri::ShaderStage::ALL },
-        { samplerDescs[2], 3, nri::ShaderStage::ALL },
+        { samplerDescs[3], 3, nri::ShaderStage::ALL },
     };
 
     const nri::DescriptorRangeDesc descriptorRanges0[] =
@@ -2405,8 +2454,8 @@ void Sample::CreatePipelines()
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
         {
-            { descriptorRanges0, helper::GetCountOf(descriptorRanges0), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
-            { descriptorRanges1, helper::GetCountOf(descriptorRanges1) },
+            { descriptorRanges0, helper::GetCountOf(descriptorRanges0) },
+            { descriptorRanges1, helper::GetCountOf(descriptorRanges1), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
             { descriptorRanges2, helper::GetCountOf(descriptorRanges2) }
         };
 
@@ -2435,8 +2484,8 @@ void Sample::CreatePipelines()
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
         {
-            { descriptorRanges0, helper::GetCountOf(descriptorRanges0), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
-            { descriptorRanges1, helper::GetCountOf(descriptorRanges1) },
+            { descriptorRanges0, helper::GetCountOf(descriptorRanges0) },
+            { descriptorRanges1, helper::GetCountOf(descriptorRanges1), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
             { descriptorRanges2, helper::GetCountOf(descriptorRanges2) }
         };
 
@@ -2465,8 +2514,8 @@ void Sample::CreatePipelines()
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
         {
-            { descriptorRanges0, helper::GetCountOf(descriptorRanges0), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
-            { descriptorRanges1, helper::GetCountOf(descriptorRanges1) },
+            { descriptorRanges0, helper::GetCountOf(descriptorRanges0) },
+            { descriptorRanges1, helper::GetCountOf(descriptorRanges1), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
         };
 
         nri::PipelineLayoutDesc pipelineLayoutDesc = {};
@@ -2498,8 +2547,8 @@ void Sample::CreatePipelines()
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
         {
-            { descriptorRanges0, helper::GetCountOf(descriptorRanges0), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
-            { descriptorRanges1, helper::GetCountOf(descriptorRanges1) },
+            { descriptorRanges0, helper::GetCountOf(descriptorRanges0) },
+            { descriptorRanges1, helper::GetCountOf(descriptorRanges1), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
             { descriptorRanges2, helper::GetCountOf(descriptorRanges2) }
         };
 
@@ -2532,8 +2581,8 @@ void Sample::CreatePipelines()
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
         {
-            { descriptorRanges0, helper::GetCountOf(descriptorRanges0), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
-            { descriptorRanges1, helper::GetCountOf(descriptorRanges1) },
+            { descriptorRanges0, helper::GetCountOf(descriptorRanges0) },
+            { descriptorRanges1, helper::GetCountOf(descriptorRanges1), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
         };
 
         nri::PipelineLayoutDesc pipelineLayoutDesc = {};
@@ -2561,8 +2610,8 @@ void Sample::CreatePipelines()
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
         {
-            { descriptorRanges0, helper::GetCountOf(descriptorRanges0), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
-            { descriptorRanges1, helper::GetCountOf(descriptorRanges1) },
+            { descriptorRanges0, helper::GetCountOf(descriptorRanges0) },
+            { descriptorRanges1, helper::GetCountOf(descriptorRanges1), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
         };
 
         nri::PipelineLayoutDesc pipelineLayoutDesc = {};
@@ -2590,8 +2639,8 @@ void Sample::CreatePipelines()
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
         {
-            { descriptorRanges0, helper::GetCountOf(descriptorRanges0), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
-            { descriptorRanges1, helper::GetCountOf(descriptorRanges1) },
+            { descriptorRanges0, helper::GetCountOf(descriptorRanges0) },
+            { descriptorRanges1, helper::GetCountOf(descriptorRanges1), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
         };
 
         nri::PipelineLayoutDesc pipelineLayoutDesc = {};
@@ -2619,8 +2668,8 @@ void Sample::CreatePipelines()
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
         {
-            { descriptorRanges0, helper::GetCountOf(descriptorRanges0), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
-            { descriptorRanges1, helper::GetCountOf(descriptorRanges1) },
+            { descriptorRanges0, helper::GetCountOf(descriptorRanges0) },
+            { descriptorRanges1, helper::GetCountOf(descriptorRanges1), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
         };
 
         nri::PipelineLayoutDesc pipelineLayoutDesc = {};
@@ -2648,8 +2697,8 @@ void Sample::CreatePipelines()
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
         {
-            { descriptorRanges0, helper::GetCountOf(descriptorRanges0), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
-            { descriptorRanges1, helper::GetCountOf(descriptorRanges1) },
+            { descriptorRanges0, helper::GetCountOf(descriptorRanges0) },
+            { descriptorRanges1, helper::GetCountOf(descriptorRanges1), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
         };
 
         nri::PipelineLayoutDesc pipelineLayoutDesc = {};
@@ -2677,8 +2726,8 @@ void Sample::CreatePipelines()
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
         {
-            { descriptorRanges0, helper::GetCountOf(descriptorRanges0), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
-            { descriptorRanges1, helper::GetCountOf(descriptorRanges1) },
+            { descriptorRanges0, helper::GetCountOf(descriptorRanges0) },
+            { descriptorRanges1, helper::GetCountOf(descriptorRanges1), staticSamplersDesc, helper::GetCountOf(staticSamplersDesc) },
         };
 
         nri::PipelineLayoutDesc pipelineLayoutDesc = {};
@@ -2703,10 +2752,10 @@ void Sample::CreateDescriptorSets()
     nri::DescriptorSet* descriptorSet = nullptr;
 
     nri::DescriptorPoolDesc descriptorPoolDesc = {};
-    descriptorPoolDesc.descriptorSetMaxNum = 128;
-    descriptorPoolDesc.staticSamplerMaxNum = 4 * BUFFERED_FRAME_MAX_NUM;
-    descriptorPoolDesc.storageTextureMaxNum = 128;
-    descriptorPoolDesc.textureMaxNum = 128 + uint32_t(m_Scene.materials.size()) * TEXTURES_PER_MATERIAL;
+    descriptorPoolDesc.descriptorSetMaxNum = uint32_t(DescriptorSet::MAX_NUM) + BUFFERED_FRAME_MAX_NUM;
+    descriptorPoolDesc.staticSamplerMaxNum = uint32_t(DescriptorSet::MAX_NUM) * 4;
+    descriptorPoolDesc.storageTextureMaxNum = uint32_t(Descriptor::MAX_NUM);
+    descriptorPoolDesc.textureMaxNum = uint32_t(Descriptor::MAX_NUM) + uint32_t(m_Scene.materials.size()) * TEXTURES_PER_MATERIAL;
     descriptorPoolDesc.accelerationStructureMaxNum = 16;
     descriptorPoolDesc.bufferMaxNum = 16;
     descriptorPoolDesc.structuredBufferMaxNum = 16;
@@ -3503,16 +3552,17 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
 
     const float3& sunDirection = GetSunDirection();
 
-    uint32_t rectW = uint32_t(m_ScreenResolution.x * m_Settings.resolutionScale + 0.5f);
-    uint32_t rectH = uint32_t(m_ScreenResolution.y * m_Settings.resolutionScale + 0.5f);
-    uint32_t rectWprev = uint32_t(m_ScreenResolution.x * m_PrevSettings.resolutionScale + 0.5f);
-    uint32_t rectHprev = uint32_t(m_ScreenResolution.y * m_PrevSettings.resolutionScale + 0.5f);
+    uint32_t rectW = uint32_t(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
+    uint32_t rectH = uint32_t(m_RenderResolution.y * m_Settings.resolutionScale + 0.5f);
+    uint32_t rectWprev = uint32_t(m_RenderResolution.x * m_PrevSettings.resolutionScale + 0.5f);
+    uint32_t rectHprev = uint32_t(m_RenderResolution.y * m_PrevSettings.resolutionScale + 0.5f);
 
     float emissionIntensity = m_Settings.emissionIntensity * float(m_Settings.emission);
     float baseMipBias = ((m_Settings.TAA || m_Settings.DLSS) ? -1.0f : 0.0f) + log2f(m_Settings.resolutionScale);
 
-    float2 outputSize = float2( float(m_OutputResolution.x), float(m_OutputResolution.y) );
-    float2 screenSize = float2( float(m_ScreenResolution.x), float(m_ScreenResolution.y) );
+    float2 renderSize = float2(float(m_RenderResolution.x), float(m_RenderResolution.y));
+    float2 outputSize = float2(float(GetOutputResolution().x), float(GetOutputResolution().y));
+    float2 windowSize = float2(float(GetWindowResolution().x), float(GetWindowResolution().y));
     float2 rectSize = float2( float(rectW), float(rectH) );
     float2 rectSizePrev = float2( float(rectWprev), float(rectHprev) );
     float2 jitter = (m_Settings.cameraJitter ? m_Camera.state.viewportJitter : 0.0f) / rectSize;
@@ -3553,14 +3603,16 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
         data->gSunDirection_gExposure                       = sunDirection;
         data->gSunDirection_gExposure.w                     = m_Settings.exposure;
         data->gCameraOrigin_gMipBias                        = m_Camera.state.position;
-        data->gCameraOrigin_gMipBias.w                      = baseMipBias + log2f(float(m_ScreenResolution.x) / float(m_OutputResolution.x));
+        data->gCameraOrigin_gMipBias.w                      = baseMipBias + log2f(renderSize.x / outputSize.x);
         data->gTrimmingParams_gEmissionIntensity            = GetSpecularLobeTrimming();
         data->gTrimmingParams_gEmissionIntensity.w          = emissionIntensity;
         data->gViewDirection_gIsOrtho                       = float4( viewDir.x, viewDir.y, viewDir.z, m_Camera.m_IsOrtho );
+        data->gWindowSize                                   = windowSize;
+        data->gInvWindowSize                                = float2(1.0f, 1.0f) / windowSize;
         data->gOutputSize                                   = outputSize;
         data->gInvOutputSize                                = float2(1.0f, 1.0f) / outputSize;
-        data->gScreenSize                                   = screenSize;
-        data->gInvScreenSize                                = float2(1.0f, 1.0f) / screenSize;
+        data->gRenderSize                                   = renderSize;
+        data->gInvRenderSize                                = float2(1.0f, 1.0f) / renderSize;
         data->gRectSize                                     = rectSize;
         data->gInvRectSize                                  = float2(1.0f, 1.0f) / rectSize;
         data->gRectSizePrev                                 = rectSizePrev;
@@ -3575,9 +3627,9 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
         data->gIndirectDiffuse                              = m_Settings.indirectDiffuse ? 1.0f : 0.0f;
         data->gIndirectSpecular                             = m_Settings.indirectSpecular ? 1.0f : 0.0f;
         data->gTanSunAngularRadius                          = Tan( DegToRad( m_Settings.sunAngularDiameter * 0.5f ) );
-        data->gTanPixelAngularRadius                        = Tan( 0.5f * DegToRad(m_Settings.camFov) / m_OutputResolution.x );
+        data->gTanPixelAngularRadius                        = Tan( 0.5f * DegToRad(m_Settings.camFov) / outputSize.x );
         data->gDebug                                        = m_Settings.debug;
-        data->gTransparent                                  = ( m_HasTransparentObjects && NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION && ( m_Settings.onScreen == 0 || m_Settings.onScreen == 2 ) ) ? 1.0f : 0.0f;
+        data->gTransparent                                  = ( m_HasTransparentObjects && m_Settings.tracingMode != RESOLUTION_QUARTER && NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION && ( m_Settings.onScreen == 0 || m_Settings.onScreen == 2 ) ) ? 1.0f : 0.0f;
         data->gReference                                    = m_Settings.denoiser == REFERENCE ? 1.0f : 0.0f;
         data->gUsePrevFrame                                 = m_Settings.usePrevFrame;
         data->gMinProbability                               = minProbability;
@@ -3599,8 +3651,8 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
         NVScalerUpdateConfig
         (
             config, m_Settings.sharpness + Lerp( (1.0f - m_Settings.sharpness) * 0.25f, 0.0f, (m_Settings.resolutionScale - 0.5f) * 2.0f ),
-            0, 0, rectW, rectH, m_ScreenResolution.x, m_ScreenResolution.y,
-            0, 0, m_OutputResolution.x, m_OutputResolution.y, m_OutputResolution.x, m_OutputResolution.y,
+            0, 0, rectW, rectH, m_RenderResolution.x, m_RenderResolution.y,
+            0, 0, GetWindowResolution().x, GetWindowResolution().y, GetWindowResolution().x, GetWindowResolution().y,
             NISHDRMode::None
         );
 
@@ -3647,9 +3699,6 @@ void Sample::LoadScene()
 
     if (m_SceneFile.find("BistroInterior") != std::string::npos)
     {
-        m_checkMeTests = &interior_checkMeTests;
-        m_improveMeTests = &interior_improveMeTests;
-
         m_Settings.exposure = 80.0f;
         m_Settings.emissionIntensity = 1.0f;
         m_Settings.emission = true;
@@ -3734,14 +3783,14 @@ void Sample::RenderFrame(uint32_t frameIndex)
     }
 
     // Sizes
-    uint32_t rectW = uint32_t(m_ScreenResolution.x * m_Settings.resolutionScale + 0.5f);
-    uint32_t rectH = uint32_t(m_ScreenResolution.y * m_Settings.resolutionScale + 0.5f);
+    uint32_t rectW = uint32_t(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
+    uint32_t rectH = uint32_t(m_RenderResolution.y * m_Settings.resolutionScale + 0.5f);
     uint32_t rectGridW = (rectW + 15) / 16;
     uint32_t rectGridH = (rectH + 15) / 16;
-    uint32_t outputGridW = (m_OutputResolution.x + 15) / 16;
-    uint32_t outputGridH = (m_OutputResolution.y + 15) / 16;
-    uint32_t screenGridW = (m_ScreenResolution.x + 15) / 16;
-    uint32_t screenGridH = (m_ScreenResolution.y + 15) / 16;
+    uint32_t windowGridW = (GetWindowResolution().x + 15) / 16;
+    uint32_t windowGridH = (GetWindowResolution().y + 15) / 16;
+    uint32_t screenGridW = (m_RenderResolution.x + 15) / 16;
+    uint32_t screenGridH = (m_RenderResolution.y + 15) / 16;
 
     // NRD settings
     if (m_Settings.adaptiveAccumulation)
@@ -3982,8 +4031,8 @@ void Sample::RenderFrame(uint32_t frameIndex)
             const nri::DescriptorSet* descriptorSets[] = { frame.globalConstantBufferDescriptorSet, Get(DescriptorSet::IndirectRays1), Get(DescriptorSet::RayTracing2) };
             NRI.CmdSetDescriptorSets(commandBuffer, 0, helper::GetCountOf(descriptorSets), descriptorSets, nullptr);
 
-            uint32_t rectWmod = uint32_t(m_ScreenResolution.x * resolutionScaleQuarter + 0.5f);
-            uint32_t rectHmod = uint32_t(m_ScreenResolution.y * resolutionScaleQuarter + 0.5f);
+            uint32_t rectWmod = uint32_t(m_RenderResolution.x * resolutionScaleQuarter + 0.5f);
+            uint32_t rectHmod = uint32_t(m_RenderResolution.y * resolutionScaleQuarter + 0.5f);
             uint32_t rectGridWmod = (rectWmod + 15) / 16;
             uint32_t rectGridHmod = (rectHmod + 15) / 16;
 
@@ -4005,7 +4054,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
             float radiusResolutionScale = 1.0f;
             if (m_Settings.adaptRadiusToResolution)
-                radiusResolutionScale = float( resolutionScaleQuarter * m_ScreenResolution.y ) / 1440.0f;
+                radiusResolutionScale = float( resolutionScaleQuarter * m_RenderResolution.y ) / 1440.0f;
 
             if (m_Settings.denoiser == REBLUR || m_Settings.denoiser == REFERENCE)
             {
@@ -4013,7 +4062,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 hitDistanceParameters.A = m_Settings.hitDistScale * m_Settings.meterToUnitsMultiplier;
                 m_ReblurSettings.hitDistanceParameters = hitDistanceParameters;
 
-                float resolutionScale = float( m_ScreenResolution.x * resolutionScaleQuarter ) / float( m_OutputResolution.x );
+                float resolutionScale = float( m_RenderResolution.x * resolutionScaleQuarter ) / float( GetOutputResolution().x );
                 float antilagMaxThresholdScale = 0.25f + 0.75f / (1.0f + (m_Settings.rpp - 1) * 0.25f);
 
                 nrd::AntilagHitDistanceSettings defaultAntilagHitDistanceSettings = {};
@@ -4243,10 +4292,10 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
 
                 DlssDispatchDesc dlssDesc = {};
-                dlssDesc.texOutput = {Get(Texture::DlssOutput), Get(Descriptor::DlssOutput_StorageTexture), GetFormat(Texture::DlssOutput), {m_OutputResolution.x, m_OutputResolution.y}};
-                dlssDesc.texInput = {Get(Texture::DlssInput), Get(Descriptor::DlssInput_Texture), GetFormat(Texture::DlssInput), {m_ScreenResolution.x, m_ScreenResolution.y}};
-                dlssDesc.texMv = {Get(Texture::Unfiltered_ShadowData), Get(Descriptor::Unfiltered_ShadowData_Texture), GetFormat(Texture::Unfiltered_ShadowData), {m_ScreenResolution.x, m_ScreenResolution.y}};
-                dlssDesc.texDepth = {Get(Texture::ViewZ), Get(Descriptor::ViewZ_Texture), GetFormat(Texture::ViewZ), {m_ScreenResolution.x, m_ScreenResolution.y}};
+                dlssDesc.texOutput = {Get(Texture::DlssOutput), Get(Descriptor::DlssOutput_StorageTexture), GetFormat(Texture::DlssOutput), {GetOutputResolution().x, GetOutputResolution().y}};
+                dlssDesc.texInput = {Get(Texture::DlssInput), Get(Descriptor::DlssInput_Texture), GetFormat(Texture::DlssInput), {m_RenderResolution.x, m_RenderResolution.y}};
+                dlssDesc.texMv = {Get(Texture::Unfiltered_ShadowData), Get(Descriptor::Unfiltered_ShadowData_Texture), GetFormat(Texture::Unfiltered_ShadowData), {m_RenderResolution.x, m_RenderResolution.y}};
+                dlssDesc.texDepth = {Get(Texture::ViewZ), Get(Descriptor::ViewZ_Texture), GetFormat(Texture::ViewZ), {m_RenderResolution.x, m_RenderResolution.y}};
                 dlssDesc.sharpness = m_Settings.sharpness;
                 dlssDesc.currentRenderResolution = {rectW, rectH};
                 dlssDesc.motionVectorScale[0] = 1.0f;
@@ -4280,7 +4329,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 const nri::DescriptorSet* descriptorSets[] = { frame.globalConstantBufferDescriptorSet, Get(DescriptorSet::AfterDlss1) };
                 NRI.CmdSetDescriptorSets(commandBuffer, 0, helper::GetCountOf(descriptorSets), descriptorSets, nullptr);
 
-                NRI.CmdDispatch(commandBuffer, outputGridW, outputGridH, 1);
+                NRI.CmdDispatch(commandBuffer, windowGridW, windowGridH, 1);
             }
         }
         else
@@ -4337,8 +4386,8 @@ void Sample::RenderFrame(uint32_t frameIndex)
                     NRI.CmdSetDescriptorSets(commandBuffer, 0, helper::GetCountOf(descriptorSets), descriptorSets, nullptr);
 
                     // See NIS_Config.h
-                    outputGridW = (m_OutputResolution.x + 31) / 32;
-                    outputGridH = (m_OutputResolution.y + 31) / 32;
+                    windowGridW = (GetWindowResolution().x + 31) / 32;
+                    windowGridH = (GetWindowResolution().y + 31) / 32;
                 }
                 else
                 {
@@ -4349,7 +4398,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                     NRI.CmdSetDescriptorSets(commandBuffer, 0, helper::GetCountOf(descriptorSets), descriptorSets, nullptr);
                 }
 
-                NRI.CmdDispatch(commandBuffer, outputGridW, outputGridH, 1);
+                NRI.CmdDispatch(commandBuffer, windowGridW, windowGridH, 1);
             }
         }
 
@@ -4405,3 +4454,10 @@ void Sample::RenderFrame(uint32_t frameIndex)
 }
 
 SAMPLE_MAIN(Sample, 0);
+
+#if defined(_WIN32)
+    extern "C"
+    {
+        _declspec(dllexport) uint32_t NvOptimusEnablement = 0x00000001;
+    }
+#endif

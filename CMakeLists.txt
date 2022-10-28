@@ -86,7 +86,6 @@ if (NOT DISABLE_SHADER_COMPILATION)
     # List HLSL shaders and headers
     file(GLOB_RECURSE HLSL_FILES "Shaders/*.hlsl" "Shaders/*.hlsli")
     file(GLOB_RECURSE HLSL_MATHLIB_HEADER_FILES "${MATHLIB_INCLUDE_PATH}/*.hlsli")
-    file(GLOB_RECURSE HLSL_NRD_HEADER_FILES "${NRD_SHADER_HEADER_INCLUDE_PATH}/*.hlsli")
 
     file(MAKE_DIRECTORY ${SHADER_OUTPUT_PATH})
     include(ShaderCompilation.cmake)

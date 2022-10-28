@@ -42,10 +42,10 @@
       "Command": "VSYNC",
       "Items": [
         {
-          "Command": "--swapInterval=0"
+          "Command": "--vsyncInterval=0"
         },
         {
-          "Command": "--swapInterval=1"
+          "Command": "--vsyncInterval=1"
         }
       ]
     },

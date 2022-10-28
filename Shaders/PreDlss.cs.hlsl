@@ -20,7 +20,7 @@ NRI_RESOURCE( RWTexture2D<float3>, gOut_FinalImage, u, 2, 1 );
 [numthreads( 16, 16, 1 )]
 void main( uint2 pixelPos : SV_DispatchThreadId )
 {
-    float2 pixelUv = ( float2( pixelPos ) + 0.5 ) * gInvScreenSize;
+    float2 pixelUv = ( float2( pixelPos ) + 0.5 ) * gInvRenderSize;
 
     // ViewZ to depth
     float viewZ = gOut_ViewZ[ pixelPos ];
@@ -30,9 +30,9 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     // Object to surface motion
     float3 X = STL::Geometry::AffineTransform( gViewToWorld, Xv );
-    float3 motionVector = gIn_ObjectMotion[ pixelPos ] * ( gIsWorldSpaceMotionEnabled ? 1.0 : gInvScreenSize.xyy );
+    float3 motionVector = gIn_ObjectMotion[ pixelPos ] * ( gIsWorldSpaceMotionEnabled ? 1.0 : gInvRenderSize.xyy );
     float2 pixelUvPrev = STL::Geometry::GetPrevUvFromMotion( pixelUv, X, gWorldToClipPrev, motionVector, gIsWorldSpaceMotionEnabled );
-    float2 pixelMotion = ( pixelUvPrev - pixelUv ) * gScreenSize;
+    float2 pixelMotion = ( pixelUvPrev - pixelUv ) * gRenderSize;
     gOut_SurfaceMotion[ pixelPos ] = pixelMotion;
 
     // Post lighting composition

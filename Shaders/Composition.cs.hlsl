@@ -34,7 +34,7 @@ NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedSpec, u, 2, 1 );
 float2 GetUpsampleUv( float2 pixelUv, float zReal )
 {
     // Set to 1 if you don't use a quarter part of the full texture
-    float2 RESOLUTION_SCALE = 0.5 * gRectSize * gInvScreenSize;
+    float2 RESOLUTION_SCALE = 0.5 * gRectSize * gInvRenderSize;
 
     float4 zLow = gIn_Downsampled_ViewZ.GatherRed( gNearestSampler, pixelUv * RESOLUTION_SCALE );
     float4 delta = abs( zReal - zLow ) / zReal;
@@ -52,7 +52,7 @@ float2 GetUpsampleUv( float2 pixelUv, float zReal )
     float2 invTexSize = 2.0 * gInvRectSize;
     float2 uvNearest = floor( ( pixelUv + d00.xy ) / invTexSize ) * invTexSize + gInvRectSize;
 
-    float2 uv = pixelUv * gRectSize / gScreenSize;
+    float2 uv = pixelUv * gRectSize / gRenderSize;
     if( gTracingMode == RESOLUTION_QUARTER )
     {
         float4 cmp = step( 0.01, delta );
@@ -67,7 +67,7 @@ float2 GetUpsampleUv( float2 pixelUv, float zReal )
 
 float3 AddTransparentLighting( float3 Lsum, float3 Ltransparent )
 {
-    float mask = dot( Ltransparent, 1.0 );
+    float mask = dot( Ltransparent, 1.0 ) * gTransparent;
     Lsum = mask == 0.0 ? Lsum : Ltransparent;
 
     return Lsum;

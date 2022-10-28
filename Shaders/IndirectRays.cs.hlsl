@@ -44,11 +44,11 @@ float GetRadianceFromPreviousFrame( GeometryProps geometryProps, uint2 pixelPos,
     float4 clipPrev = STL::Geometry::ProjectiveTransform( gWorldToClipPrev, geometryProps.X ); // Not Xprev because confidence is based on viewZ
     float2 uvPrev = ( clipPrev.xy / clipPrev.w ) * float2( 0.5, -0.5 ) + 0.5 - gJitter;
 
-    float4 data = gIn_PrevComposedDiff_PrevViewZ.SampleLevel( gNearestSampler, uvPrev * gRectSizePrev * gInvScreenSize, 0 );
+    float4 data = gIn_PrevComposedDiff_PrevViewZ.SampleLevel( gNearestSampler, uvPrev * gRectSizePrev * gInvRenderSize, 0 );
     float prevViewZ = abs( data.w ) / NRD_FP16_VIEWZ_SCALE;
 
     prevLdiff = data.xyz;
-    prevLspec = gIn_PrevComposedSpec_PrevViewZ.SampleLevel( gNearestSampler, uvPrev * gRectSizePrev * gInvScreenSize, 0 ).xyz;
+    prevLspec = gIn_PrevComposedSpec_PrevViewZ.SampleLevel( gNearestSampler, uvPrev * gRectSizePrev * gInvRenderSize, 0 ).xyz;
 
     // Initial state
     float weight = 1.0;

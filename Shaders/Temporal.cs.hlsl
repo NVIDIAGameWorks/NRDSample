@@ -116,7 +116,7 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
 
     // History clamping
     float2 pixelPosPrev = saturate( pixelUvPrev ) * gRectSizePrev;
-    float3 history = BicubicFilterNoCorners( gIn_History, gLinearSampler, pixelPosPrev, gInvScreenSize, TAA_HISTORY_SHARPNESS ).xyz;
+    float3 history = BicubicFilterNoCorners( gIn_History, gLinearSampler, pixelPosPrev, gInvRenderSize, TAA_HISTORY_SHARPNESS ).xyz;
     float3 historyClamped = STL::Color::ClampAabb( m1, sigma, history );
 
     // History weight
@@ -136,7 +136,7 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     float verticalLine = saturate( 1.0 - abs( pixelUv.x - gSeparator ) * gRectSize.x / 3.5 );
     verticalLine = saturate( verticalLine / 0.5 );
     verticalLine *= float( gSeparator != 0.0 );
-    verticalLine *= float( gScreenSize.x == gRectSize.x );
+    verticalLine *= float( gRenderSize.x == gRectSize.x );
 
     const float3 nvColor = float3( 118.0, 185.0, 0.0 ) / 255.0;
     result = lerp( result, nvColor * verticalLine, verticalLine );

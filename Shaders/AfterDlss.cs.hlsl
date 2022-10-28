@@ -17,16 +17,18 @@ NRI_RESOURCE( RWTexture2D<float3>, gOut_Image, u, 1, 1 );
 [numthreads( 16, 16, 1 )]
 void main( uint2 pixelPos : SV_DispatchThreadId )
 {
-    float2 pixelUv = ( float2( pixelPos ) + 0.5 ) * gInvOutputSize;
-    float3 Lsum = gIn_Image.SampleLevel( gLinearSampler, pixelUv, 0 );
+    float2 pixelUv = float2( pixelPos + 0.5 ) * gInvWindowSize;
+
+    // Upsampling
+    float3 upsampled = BicubicFilterNoCorners( gIn_Image, gLinearSampler, pixelUv * gOutputSize, gInvOutputSize, 0.66 ).xyz;
 
     // Tonemap
     if( gOnScreen == SHOW_FINAL )
-        Lsum = STL::Color::HdrToLinear_Uncharted( Lsum );
+        upsampled = STL::Color::HdrToLinear_Uncharted( upsampled );
 
     // Conversion
     if( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR )
-        Lsum = STL::Color::LinearToSrgb( Lsum );
+        upsampled = STL::Color::LinearToSrgb( upsampled );
 
-    gOut_Image[ pixelPos ] = Lsum;
+    gOut_Image[ pixelPos ] = upsampled;
 }
