@@ -14,7 +14,7 @@ NRI_RESOURCE( Texture2D<float4>, gIn_Image, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_NisData1, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_NisData2, t, 2, 1 );
 
-NRI_RESOURCE( RWTexture2D<float4>, gOut_Image, u, 3, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_Image, u, 0, 1 );
 
 // Strange stuff #1
 #define samplerLinearClamp          gLinearSampler

@@ -59,6 +59,9 @@
           "Command": "--debugNRI"
         },
         {
+          "Command": "--debugNRD"
+        },
+        {
           "Command": "--ignoreDPI"
         },
         {

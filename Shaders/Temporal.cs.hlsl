@@ -10,7 +10,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 #include "Shared.hlsli"
 
-NRI_RESOURCE( Texture2D<float3>, gIn_ObjectMotion, t, 0, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_Mv, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_ComposedLighting_ViewZ, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_History, t, 2, 1 );
 
@@ -110,7 +110,7 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     float2 offset = float2( offseti ) * gInvRectSize;
     float3 Xvnearest = STL::Geometry::ReconstructViewPosition( pixelUv + offset, gCameraFrustum, viewZnearest, gOrthoMode );
     float3 Xnearest = STL::Geometry::AffineTransform( gViewToWorld, Xvnearest );
-    float3 mvNearest = gIn_ObjectMotion[ pixelPos + offseti ] * ( gIsWorldSpaceMotionEnabled ? 1.0 : gInvRectSize.xyy );
+    float3 mvNearest = gIn_Mv[ pixelPos + offseti ] * ( gIsWorldSpaceMotionEnabled ? 1.0 : gInvRectSize.xyy );
     float2 pixelUvPrev = STL::Geometry::GetPrevUvFromMotion( pixelUv + offset, Xnearest, gWorldToClipPrev, mvNearest, gIsWorldSpaceMotionEnabled );
     pixelUvPrev -= offset;
 

@@ -144,6 +144,6 @@ echo 4 - Zero day
     goto CHOOSE_SCENE
 
 :RUN
-start "NRD sample" "%DIR_BIN%\NRDSample.exe" --width=%WIDTH% --height=%HEIGHT% --api=%API% --vsyncInterval=%VSYNC% --scene=%SCENE% --dlssQuality=%DLSS%
+start "NRD sample" "%DIR_BIN%\NRDSample.exe" --width=%WIDTH% --height=%HEIGHT% --api=%API% --vsyncInterval=%VSYNC% --scene=%SCENE% --dlssQuality=%DLSS% --debugNRD
 
 exit /b

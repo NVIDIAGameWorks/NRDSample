@@ -8,7 +8,7 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
-#include "SampleBase.h"
+#include "NRIFRamework.h"
 
 #include "Extensions/NRIRayTracing.h"
 #include "Extensions/NRIWrapperD3D11.h"
@@ -52,8 +52,8 @@ const std::vector<uint32_t> interior_checkMeTests =
 {{
     1, 6, 8, 9, 10, 12, 13, 14, 23, 27, 28, 29, 31, 32, 35, 43, 44, 47, 53, 59,
     60, 62, 67, 75, 76, 79, 81, 95, 96, 107, 109, 111, 110, 114, 120, 124, 126,
-    127, 132, 133, 134, 139, 140, 145, 148, 150, 155, 156, 157, 160, 161, 162,
-    168
+    127, 132, 133, 134, 139, 140, 142, 145, 148, 150, 155, 156, 157, 160, 161,
+    162, 168
 }};
 
 //=================================================================================
@@ -67,7 +67,7 @@ const std::vector<uint32_t> REBLUR_interior_improveMeTests =
 
 const std::vector<uint32_t> RELAX_interior_improveMeTests =
 {{
-    6, 114, 144, 148, 156, 159
+    6, 21, 114, 144, 148, 156, 159
 }};
 
 //=================================================================================
@@ -116,6 +116,13 @@ enum Resolution : int32_t
     RESOLUTION_QUARTER
 };
 
+enum MvType : int32_t
+{
+    MV_2D,
+    MV_25D,
+    MV_3D,
+};
+
 enum class Buffer : uint32_t
 {
     GlobalConstants,
@@ -152,6 +159,7 @@ enum class Texture : uint32_t
     Unfiltered_Diff,
     Unfiltered_Spec,
     Unfiltered_Shadow_Translucency,
+    Validation,
     Composed_ViewZ,
     DlssOutput,
     Final,
@@ -243,6 +251,8 @@ enum class Descriptor : uint32_t
     Unfiltered_Spec_StorageTexture,
     Unfiltered_Shadow_Translucency_Texture,
     Unfiltered_Shadow_Translucency_StorageTexture,
+    Validation_Texture,
+    Validation_StorageTexture,
     Composed_ViewZ_Texture,
     Composed_ViewZ_StorageTexture,
     DlssOutput_Texture,
@@ -372,6 +382,7 @@ struct GlobalConstantBufferData
     uint32_t gBounceNum;
     uint32_t gTaa;
     uint32_t gSH;
+    uint32_t gValidation;
 
     // NIS
     float gNisDetectRatio;
@@ -438,11 +449,12 @@ struct Settings
     int32_t     rpp                                = 1;
     int32_t     bounceNum                          = 1;
     int32_t     tracingMode                        = RESOLUTION_HALF;
+    int32_t     mvType                             = MV_3D;
 
     bool        cameraJitter                       = true;
     bool        limitFps                           = false;
     bool        ambient                            = true;
-    bool        unused                             = false; // TODO: unused
+    bool        unused                             = false;
     bool        indirectDiffuse                    = true;
     bool        indirectSpecular                   = true;
     bool        normalMap                          = true;
@@ -454,7 +466,6 @@ struct Settings
     bool        blink                              = false;
     bool        pauseAnimation                     = true;
     bool        emission                           = false;
-    bool        isMotionVectorInWorldSpace         = true;
     bool        linearMotion                       = true;
     bool        emissiveObjects                    = false;
     bool        importanceSampling                 = true;
@@ -573,11 +584,13 @@ public:
     void InitCmdLine(cmdline::parser& cmdLine) override
     {
         cmdLine.add<int32_t>("dlssQuality", 'd', "DLSS quality: [-1: 3]", false, -1, cmdline::range(-1, 3));
+        cmdLine.add("debugNRD", 0, "enable NRD validation");
     }
 
     void ReadCmdLine(cmdline::parser& cmdLine) override
     {
         m_DlssQuality = cmdLine.get<int32_t>("dlssQuality");
+        m_DebugNRD = cmdLine.exist("debugNRD");
     }
 
     bool Initialize(nri::GraphicsAPI graphicsAPI);
@@ -700,6 +713,8 @@ private:
     bool m_ShowUi = true;
     bool m_ForceHistoryReset = false;
     bool m_SH = true;
+    bool m_DebugNRD = false;
+    bool m_ShowValidationOverlay = true;
 };
 
 Sample::~Sample()
@@ -887,6 +902,8 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     UploadStaticData();
     SetupAnimatedObjects();
 
+    nrd::DenoiserCreationDesc denoiserCreationDesc = {};
+
     // REBLUR
     {
         const nrd::MethodDesc methodDescs[] =
@@ -917,9 +934,9 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     #endif
         };
 
-        nrd::DenoiserCreationDesc denoiserCreationDesc = {};
         denoiserCreationDesc.requestedMethods = methodDescs;
         denoiserCreationDesc.requestedMethodNum = helper::GetCountOf(methodDescs);
+
         NRI_ABORT_ON_FALSE( m_Reblur.Initialize(denoiserCreationDesc, *m_Device, NRI, NRI) );
     }
 
@@ -935,7 +952,6 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
             #endif
         };
 
-        nrd::DenoiserCreationDesc denoiserCreationDesc = {};
         denoiserCreationDesc.requestedMethods = methodDescs;
         denoiserCreationDesc.requestedMethodNum = helper::GetCountOf(methodDescs);
 
@@ -949,9 +965,9 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
             { nrd::Method::SIGMA_SHADOW_TRANSLUCENCY, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
         };
 
-        nrd::DenoiserCreationDesc denoiserCreationDesc = {};
         denoiserCreationDesc.requestedMethods = methodDescs;
         denoiserCreationDesc.requestedMethodNum = helper::GetCountOf(methodDescs);
+
         NRI_ABORT_ON_FALSE( m_Sigma.Initialize(denoiserCreationDesc, *m_Device, NRI, NRI) );
     }
 
@@ -962,14 +978,16 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
             { nrd::Method::REFERENCE, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
         };
 
-        nrd::DenoiserCreationDesc denoiserCreationDesc = {};
         denoiserCreationDesc.requestedMethods = methodDescs;
         denoiserCreationDesc.requestedMethodNum = helper::GetCountOf(methodDescs);
+
         NRI_ABORT_ON_FALSE( m_Reference.Initialize(denoiserCreationDesc, *m_Device, NRI, NRI) );
     }
 
     m_Camera.Initialize(m_Scene.aabb.GetCenter(), m_Scene.aabb.vMin, CAMERA_RELATIVE);
-    m_Scene.UnloadResources();
+
+    m_Scene.UnloadTextureData();
+    m_Scene.UnloadGeometryData();
 
     m_DefaultSettings = m_Settings;
 
@@ -1111,18 +1129,28 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         "Pan",
                     };
 
+                    static const char* mvType[] =
+                    {
+                        "2D",
+                        "2.5D",
+                        "3D",
+                    };
+
                     ImGui::SliderFloat("FOV (deg)", &m_Settings.camFov, 1.0f, 160.0f, "%.1f");
                     ImGui::SliderFloat("Exposure", &m_Settings.exposure, 0.0f, 1000.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
                     ImGui::SliderFloat("Resolution scale (%)", &m_Settings.resolutionScale, m_MinResolutionScale, 1.0f, "%.3f");
                     ImGui::Combo("On screen", &m_Settings.onScreen, onScreenModes, helper::GetCountOf(onScreenModes));
-                    ImGui::Checkbox("3D MV", &m_Settings.isMotionVectorInWorldSpace);
-                    ImGui::SameLine();
                     ImGui::Checkbox("Ortho", &m_Settings.ortho);
                     ImGui::SameLine();
                     ImGui::Checkbox("FPS cap", &m_Settings.limitFps);
                     ImGui::SameLine();
                     ImGui::PushStyleColor(ImGuiCol_Text, (!m_Settings.cameraJitter && (m_Settings.TAA || m_Settings.DLSS)) ? UI_RED : UI_DEFAULT);
                         ImGui::Checkbox("Jitter", &m_Settings.cameraJitter);
+                    ImGui::PopStyleColor();
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth( ImGui::CalcItemWidth() - ImGui::GetCursorPosX() + ImGui::GetStyle().ItemSpacing.x );
+                    ImGui::PushStyleColor(ImGuiCol_Text, (m_Settings.animatedObjects && !m_Settings.pauseAnimation && m_Settings.mvType == MV_2D) ? UI_RED : UI_DEFAULT);
+                        ImGui::Combo("MV", &m_Settings.mvType, mvType, helper::GetCountOf(mvType));
                     ImGui::PopStyleColor();
 
                     ImGui::PushStyleColor(ImGuiCol_Text, m_Settings.motionStartTime > 0.0 ? UI_YELLOW : UI_DEFAULT);
@@ -1226,7 +1254,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     if (isUnfolded)
                     {
                         ImGui::Checkbox("Animate sun", &m_Settings.animateSun);
-                        if (!m_Scene.animations.empty() && m_Scene.animations[m_Settings.activeAnimation].cameraNode.animationNodeID != -1)
+                        if (!m_Scene.animations.empty() && m_Scene.animations[m_Settings.activeAnimation].cameraNode.HasAnimation())
                         {
                             ImGui::SameLine();
                             ImGui::Checkbox("Animate camera", &m_Settings.animateCamera);
@@ -1374,6 +1402,13 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             "3x3",
                             "5x5",
                         };
+
+                        if (m_DebugNRD)
+                        {
+                            ImGui::PushStyleColor(ImGuiCol_Text, m_ShowValidationOverlay ? UI_YELLOW : UI_DEFAULT);
+                            ImGui::Checkbox("Validation overlay", &m_ShowValidationOverlay);
+                            ImGui::PopStyleColor();
+                        }
 
                         if (ImGui::Button("<<"))
                         {
@@ -2124,7 +2159,7 @@ void Sample::CreateSwapChain(nri::Format& swapChainFormat)
         backBuffer.texture = swapChainTextures[i];
 
         char name[32];
-        snprintf(name, sizeof(name), "SwapChain texture #%u", i);
+        snprintf(name, sizeof(name), "Texture::SwapChain#%u", i);
         NRI.SetTextureDebugName(*backBuffer.texture, name);
 
         nri::Texture2DViewDesc textureViewDesc = {backBuffer.texture, nri::Texture2DViewType::COLOR_ATTACHMENT, swapChainFormat};
@@ -2318,6 +2353,8 @@ void Sample::CreateResources(nri::Format swapChainFormat)
     CreateTexture(descriptorDescs, "Texture::Unfiltered_Spec", dataFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::Unfiltered_Shadow_Translucency", nri::Format::RGBA8_UNORM, w, h, 1, 1,
+        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
+    CreateTexture(descriptorDescs, "Texture::Validation", nri::Format::RGBA8_UNORM, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::Composed_ViewZ", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
@@ -2633,8 +2670,8 @@ void Sample::CreatePipelines()
     { // Pipeline::Upsample
         const nri::DescriptorRangeDesc descriptorRanges1[] =
         {
-            { 0, 1, nri::DescriptorType::TEXTURE, nri::ShaderStage::ALL },
-            { 1, 1, nri::DescriptorType::STORAGE_TEXTURE, nri::ShaderStage::ALL }
+            { 0, 2, nri::DescriptorType::TEXTURE, nri::ShaderStage::ALL },
+            { 0, 1, nri::DescriptorType::STORAGE_TEXTURE, nri::ShaderStage::ALL }
         };
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
@@ -2663,7 +2700,7 @@ void Sample::CreatePipelines()
         const nri::DescriptorRangeDesc descriptorRanges1[] =
         {
             { 0, 3, nri::DescriptorType::TEXTURE, nri::ShaderStage::ALL },
-            { 3, 1, nri::DescriptorType::STORAGE_TEXTURE, nri::ShaderStage::ALL }
+            { 0, 1, nri::DescriptorType::STORAGE_TEXTURE, nri::ShaderStage::ALL }
         };
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
@@ -2720,8 +2757,8 @@ void Sample::CreatePipelines()
     { // Pipeline::AfterDlss
         const nri::DescriptorRangeDesc descriptorRanges1[] =
         {
-            { 0, 1, nri::DescriptorType::TEXTURE, nri::ShaderStage::ALL },
-            { 1, 1, nri::DescriptorType::STORAGE_TEXTURE, nri::ShaderStage::ALL }
+            { 0, 2, nri::DescriptorType::TEXTURE, nri::ShaderStage::ALL },
+            { 0, 1, nri::DescriptorType::STORAGE_TEXTURE, nri::ShaderStage::ALL }
         };
 
         const nri::DescriptorSetDesc descriptorSetDesc[] =
@@ -2982,6 +3019,7 @@ void Sample::CreateDescriptorSets()
         const nri::Descriptor* textures[] =
         {
             Get(Descriptor::TaaHistory_Texture),
+            Get(Descriptor::Validation_Texture),
         };
 
         const nri::Descriptor* storageTextures[] =
@@ -3005,6 +3043,7 @@ void Sample::CreateDescriptorSets()
         const nri::Descriptor* textures[] =
         {
             Get(Descriptor::TaaHistoryPrev_Texture),
+            Get(Descriptor::Validation_Texture),
         };
 
         const nri::Descriptor* storageTextures[] =
@@ -3104,6 +3143,7 @@ void Sample::CreateDescriptorSets()
         const nri::Descriptor* textures[] =
         {
             Get(Descriptor::DlssOutput_Texture),
+            Get(Descriptor::Validation_Texture),
         };
 
         const nri::Descriptor* storageTextures[] =
@@ -3639,12 +3679,13 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
         data->gFrameIndex                                   = frameIndex;
         data->gForcedMaterial                               = m_Settings.forcedMaterial;
         data->gUseNormalMap                                 = m_Settings.normalMap ? 1 : 0;
-        data->gIsWorldSpaceMotionEnabled                    = m_Settings.isMotionVectorInWorldSpace ? 1 : 0;
+        data->gIsWorldSpaceMotionEnabled                    = m_Settings.mvType == MV_3D ? 1 : 0;
         data->gTracingMode                                  = m_Settings.tracingMode;
         data->gSampleNum                                    = m_Settings.rpp;
         data->gBounceNum                                    = m_Settings.bounceNum;
         data->gTaa                                          = (m_Settings.denoiser != REFERENCE && m_Settings.TAA) ? 1 : 0;
         data->gSH                                           = m_SH;
+        data->gValidation                                   = m_DebugNRD && m_ShowValidationOverlay;
 
         // NIS
         NISConfig config = {};
@@ -3813,8 +3854,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
     memcpy(commonSettings.viewToClipMatrixPrev, &m_Camera.statePrev.mViewToClip, sizeof(m_Camera.statePrev.mViewToClip));
     memcpy(commonSettings.worldToViewMatrix, &m_Camera.state.mWorldToView, sizeof(m_Camera.state.mWorldToView));
     memcpy(commonSettings.worldToViewMatrixPrev, &m_Camera.statePrev.mWorldToView, sizeof(m_Camera.statePrev.mWorldToView));
-    commonSettings.motionVectorScale[0] = m_Settings.isMotionVectorInWorldSpace ? 1.0f : 1.0f / float(rectW);
-    commonSettings.motionVectorScale[1] = m_Settings.isMotionVectorInWorldSpace ? 1.0f : 1.0f / float(rectH);
+    commonSettings.motionVectorScale[0] = m_Settings.mvType == MV_3D ? 1.0f : 1.0f / float(rectW);
+    commonSettings.motionVectorScale[1] = m_Settings.mvType == MV_3D ? 1.0f : 1.0f / float(rectH);
+    commonSettings.motionVectorScale[2] = m_Settings.mvType != MV_2D ? 1.0f : 0.0f;
     commonSettings.cameraJitter[0] = m_Settings.cameraJitter ? m_Camera.state.viewportJitter.x : 0.0f;
     commonSettings.cameraJitter[1] = m_Settings.cameraJitter ? m_Camera.state.viewportJitter.y : 0.0f;
     commonSettings.resolutionScale[0] = m_Settings.resolutionScale;
@@ -3824,8 +3866,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
     commonSettings.splitScreen = m_Settings.denoiser == REFERENCE ? 1.0f : m_Settings.separator;
     commonSettings.debug = m_Settings.debug;
     commonSettings.frameIndex = frameIndex;
-    commonSettings.accumulationMode = maxAccumulatedFrameNum == 0 ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
-    commonSettings.isMotionVectorInWorldSpace = m_Settings.isMotionVectorInWorldSpace;
+    commonSettings.accumulationMode = resetHistoryFactor == 0.0f ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
+    commonSettings.isMotionVectorInWorldSpace = m_Settings.mvType == MV_3D;
+    commonSettings.enableValidation = m_DebugNRD && m_ShowValidationOverlay;
 
     float resolutionScaleQuarter = m_Settings.resolutionScale * (m_Settings.tracingMode == RESOLUTION_QUARTER ? 0.5f : 1.0f);
 
@@ -3836,6 +3879,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
         NrdIntegration_SetResource(userPool, nrd::ResourceType::IN_MV, {&GetState(Texture::Motion), GetFormat(Texture::Motion)});
         NrdIntegration_SetResource(userPool, nrd::ResourceType::IN_NORMAL_ROUGHNESS, {&GetState(Texture::Normal_Roughness), GetFormat(Texture::Normal_Roughness)});
         NrdIntegration_SetResource(userPool, nrd::ResourceType::IN_VIEWZ, {&GetState(Texture::ViewZ), GetFormat(Texture::ViewZ)});
+
+        // Validation
+        NrdIntegration_SetResource(userPool, nrd::ResourceType::OUT_VALIDATION, {&GetState(Texture::Validation), GetFormat(Texture::Validation)});
 
         // Diffuse
         NrdIntegration_SetResource(userPool, nrd::ResourceType::IN_DIFF_RADIANCE_HITDIST, {&GetState(Texture::Unfiltered_Diff), GetFormat(Texture::Unfiltered_Diff)});
@@ -4316,6 +4362,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 {
                     // Input
                     {Texture::DlssOutput, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                    {Texture::Validation, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                     // Output
                     {Texture::Final, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 };
@@ -4369,6 +4416,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 {
                     // Input
                     {taaDst, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                    {Texture::Validation, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                     // Output
                     {Texture::Final, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 };
@@ -4376,7 +4424,8 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 transitionBarriers.textureNum = BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions.data(), helper::GetCountOf(optimizedTransitions));
                 NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
 
-                bool isNis = m_Settings.NIS && m_Settings.separator == 0.0f;
+                bool isValidation = m_DebugNRD && m_ShowValidationOverlay;
+                bool isNis = m_Settings.NIS && m_Settings.separator == 0.0f && !isValidation;
                 if (isNis)
                 {
                     NRI.CmdSetPipelineLayout(commandBuffer, *GetPipelineLayout(Pipeline::UpsampleNis));

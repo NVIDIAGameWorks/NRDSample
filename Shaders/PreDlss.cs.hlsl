@@ -10,7 +10,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 #include "Shared.hlsli"
 
-NRI_RESOURCE( Texture2D<float3>, gIn_ObjectMotion, t, 0, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_Mv, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_ComposedLighting_ViewZ, t, 1, 1 );
 
 NRI_RESOURCE( RWTexture2D<float>, gOut_ViewZ, u, 0, 1 );
@@ -30,7 +30,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     // Object to surface motion
     float3 X = STL::Geometry::AffineTransform( gViewToWorld, Xv );
-    float3 motionVector = gIn_ObjectMotion[ pixelPos ] * ( gIsWorldSpaceMotionEnabled ? 1.0 : gInvRenderSize.xyy );
+    float3 motionVector = gIn_Mv[ pixelPos ] * ( gIsWorldSpaceMotionEnabled ? 1.0 : gInvRenderSize.xyy );
     float2 pixelUvPrev = STL::Geometry::GetPrevUvFromMotion( pixelUv, X, gWorldToClipPrev, motionVector, gIsWorldSpaceMotionEnabled );
     float2 pixelMotion = ( pixelUvPrev - pixelUv ) * gRenderSize;
     gOut_SurfaceMotion[ pixelPos ] = pixelMotion;

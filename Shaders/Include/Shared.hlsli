@@ -100,6 +100,7 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     uint gBounceNum;
     uint gTaa;
     uint gSH;
+    uint gValidation;
 
     // NIS
     float gNisDetectRatio;

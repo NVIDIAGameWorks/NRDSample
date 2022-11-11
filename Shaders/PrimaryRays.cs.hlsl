@@ -78,35 +78,40 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     GeometryProps geometryProps0 = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, INF, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, ( gOnScreen == SHOW_MESH || gOnScreen == SHOW_NORMAL ) ? GEOMETRY_ALL : GEOMETRY_IGNORE_TRANSPARENT, 0 );
     MaterialProps materialProps0 = GetMaterialProps( geometryProps0 );
 
+    // ViewZ
+    float viewZ = STL::Geometry::AffineTransform( gWorldToView, geometryProps0.X ).z;
+    gOut_ViewZ[ pixelPos ] = geometryProps0.IsSky( ) ? STL::Math::Sign( viewZ ) * INF : viewZ;
+
+    // Motion
+    float3 Xprev = geometryProps0.X;
+    if( !geometryProps0.IsSky( ) )
+    {
+        InstanceData instanceData = gIn_InstanceData[ geometryProps0.instanceIndex ];
+        Xprev = STL::Geometry::AffineTransform( instanceData.mWorldToWorldPrev, geometryProps0.X );
+    }
+
+    float3 motion = Xprev - geometryProps0.X;
+    if( !gIsWorldSpaceMotionEnabled )
+    {
+        float4 clipPrev = STL::Geometry::ProjectiveTransform( gWorldToClipPrev, Xprev );
+        float2 sampleUvPrev = ( clipPrev.xy / clipPrev.w ) * float2( 0.5, -0.5 ) + 0.5;
+
+        motion.xy = ( sampleUvPrev - sampleUv ) * gRectSize;
+        motion.z = STL::Math::Sign( viewZ ) * clipPrev.w - viewZ;
+    }
+
+    gOut_Motion[ pixelPos ] = motion * STL::Math::LinearStep( 0.0, 0.0000005, abs( motion ) ); // TODO: move LinearStep to NRD?
 
     // Early out - sky
     if( geometryProps0.IsSky( ) )
     {
-        float4 clipPrev = STL::Geometry::ProjectiveTransform( gWorldToClipPrev, geometryProps0.X );
-        float2 sampleUvPrev = ( clipPrev.xy / clipPrev.w ) * float2( 0.5, -0.5 ) + 0.5;
-        float2 surfaceMotion = ( sampleUvPrev - sampleUv ) * gRectSize;
-        float3 motion = gIsWorldSpaceMotionEnabled ? 0 : surfaceMotion.xyy;
-
-        gOut_Motion[ pixelPos ] = motion * STL::Math::LinearStep( 0.0, 0.0000005, abs( motion ) ); // TODO: move LinearStep to NRD?
-        gOut_ViewZ[ pixelPos ] = INF * STL::Math::Sign( gNearZ );
         gOut_DirectEmission[ pixelPos ] = materialProps0.Lemi;
         gOut_DirectLighting[ pixelPos ] = 0;
 
         return;
     }
 
-    // Motion
-    InstanceData instanceData = gIn_InstanceData[ geometryProps0.instanceIndex ];
-    float3 Xprev = STL::Geometry::AffineTransform( instanceData.mWorldToWorldPrev, geometryProps0.X );
-    float4 clipPrev = STL::Geometry::ProjectiveTransform( gWorldToClipPrev, Xprev );
-    float2 sampleUvPrev = ( clipPrev.xy / clipPrev.w ) * float2( 0.5, -0.5 ) + 0.5;
-    float2 surfaceMotion = ( sampleUvPrev - sampleUv ) * gRectSize;
-    float3 motion = gIsWorldSpaceMotionEnabled ? ( Xprev - geometryProps0.X ) : surfaceMotion.xyy;
-
-    gOut_Motion[ pixelPos ] = motion * STL::Math::LinearStep( 0.0, 0.0000005, abs( motion ) ); // TODO: move LinearStep to NRD?
-
     // G-buffer
-    float viewZ = STL::Geometry::AffineTransform( gWorldToView, geometryProps0.X ).z;
     float mipNorm = STL::Math::Sqrt01( geometryProps0.mip / MAX_MIP_LEVEL );
 
     float3 albedo, Rf0;
@@ -118,7 +123,6 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
             noDiffuseFlag = noDiffuseFlag || ( frac( geometryProps0.X ).x < 0.05 ? 1 : 0 );
     #endif
 
-    gOut_ViewZ[ pixelPos ] = viewZ;
     gOut_PrimaryMip[ pixelPos ] = mipNorm;
     gOut_Normal_Roughness[ pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( materialProps0.N, materialProps0.roughness, noDiffuseFlag );
     gOut_BaseColor_Metalness[ pixelPos ] = float4( STL::Color::LinearToSrgb( materialProps0.baseColor ), materialProps0.metalness );
