@@ -8,7 +8,7 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
-#include "NRIFRamework.h"
+#include "NRIFramework.h"
 
 #include "Extensions/NRIRayTracing.h"
 #include "Extensions/NRIWrapperD3D11.h"
@@ -593,9 +593,9 @@ public:
         m_DebugNRD = cmdLine.exist("debugNRD");
     }
 
-    bool Initialize(nri::GraphicsAPI graphicsAPI);
-    void PrepareFrame(uint32_t frameIndex);
-    void RenderFrame(uint32_t frameIndex);
+    bool Initialize(nri::GraphicsAPI graphicsAPI) override;
+    void PrepareFrame(uint32_t frameIndex) override;
+    void RenderFrame(uint32_t frameIndex) override;
 
     inline nri::Texture*& Get(Texture index)
     { return m_Textures[(uint32_t)index]; }
