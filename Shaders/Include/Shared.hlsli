@@ -47,11 +47,12 @@ Modifiers:
 
 NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
 {
-    float4x4 gWorldToView;
     float4x4 gViewToWorld;
     float4x4 gViewToClip;
-    float4x4 gWorldToClipPrev;
+    float4x4 gWorldToView;
+    float4x4 gWorldToViewPrev;
     float4x4 gWorldToClip;
+    float4x4 gWorldToClipPrev;
     float4 gHitDistParams;
     float4 gCameraFrustum;
     float3 gSunDirection;
@@ -98,8 +99,9 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     uint gTracingMode;
     uint gSampleNum;
     uint gBounceNum;
-    uint gTaa;
+    uint gTAA;
     uint gSH;
+    uint gPSR;
     uint gValidation;
 
     // NIS
@@ -131,10 +133,10 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     uint gNisOutputViewportHeight;
 };
 
-NRI_RESOURCE( SamplerState, gLinearMipmapLinearSampler, s, 0, 1 );
-NRI_RESOURCE( SamplerState, gLinearMipmapNearestSampler, s, 1, 1 );
-NRI_RESOURCE( SamplerState, gLinearSampler, s, 2, 1 );
-NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 1 );
+NRI_RESOURCE( SamplerState, gLinearMipmapLinearSampler, s, 0, 0 );
+NRI_RESOURCE( SamplerState, gLinearMipmapNearestSampler, s, 1, 0 );
+NRI_RESOURCE( SamplerState, gLinearSampler, s, 2, 0 );
+NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 0 );
 
 //=============================================================================================
 // NRD
@@ -153,8 +155,9 @@ NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 1 );
 #define USE_IMPORTANCE_SAMPLING             1
 #define USE_SANITIZATION                    0 // NRD sample is NAN/INF free
 #define USE_SIMULATED_MATERIAL_ID_TEST      0 // for "material ID" support debugging
+#define USE_PSR                             1
 
-#define BRDF_ENERGY_THRESHOLD               0.003
+#define BRDF_ENERGY_THRESHOLD               0.001
 #define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
 #define TAA_HISTORY_SHARPNESS               0.5 // [0; 1], 0.5 matches Catmull-Rom
 #define TAA_MAX_HISTORY_WEIGHT              0.95
@@ -183,7 +186,6 @@ NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 1 );
 #define RESOLUTION_FULL                     0
 #define RESOLUTION_FULL_PROBABILISTIC       1
 #define RESOLUTION_HALF                     2
-#define RESOLUTION_QUARTER                  3
 
 // What is on screen?
 #define SHOW_FINAL                          0

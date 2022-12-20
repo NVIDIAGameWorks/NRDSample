@@ -50,9 +50,9 @@ else()
     endif()
 endif()
 
-message(STATUS "Using FXC path: '${FXC_PATH}'")
-message(STATUS "Using DXC path: '${DXC_PATH}'")
-message(STATUS "Using DXC (for SPIRV) path: '${DXC_SPIRV_PATH}'")
+message("Using FXC path: '${FXC_PATH}'")
+message("Using DXC path: '${DXC_PATH}'")
+message("Using DXC (for SPIRV) path: '${DXC_SPIRV_PATH}'")
 
 function(get_shader_profile_from_name FILE_NAME DXC_PROFILE FXC_PROFILE ENTRY_POINT)
     get_filename_component(EXTENSION ${FILE_NAME} EXT)

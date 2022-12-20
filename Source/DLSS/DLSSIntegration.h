@@ -12,10 +12,10 @@
 #include "NGX/include/nvsdk_ngx_helpers.h"
 #include "NGX/include/nvsdk_ngx_helpers_vk.h"
 
+#define DLSS_INTEGRATION_MAJOR 1
+#define DLSS_INTEGRATION_MINOR 4
+#define DLSS_INTEGRATION_DATE "1 December 2022"
 #define DLSS_INTEGRATION 1
-#define DLSS_INTEGRATION_MAJOR 3
-#define DLSS_INTEGRATION_MINOR 1
-#define DLSS_INTEGRATION_DATE "23 March 2022"
 
 enum class DlssQuality
 {

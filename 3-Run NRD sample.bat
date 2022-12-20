@@ -8,7 +8,6 @@ if not exist "%DIR_BIN%" (
 
 if not exist "%DIR_BIN%" (
     echo The project is not compiled!
-    pause
     exit /b
 )
 echo Running NRD sample from '%DIR_BIN%'...

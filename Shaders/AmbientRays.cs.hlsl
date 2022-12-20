@@ -37,10 +37,10 @@ void main( uint2 tilePos : SV_GroupId, uint2 pixelPos : SV_DispatchThreadId, uin
     STL::Rng::Initialize( pixelPos, gFrameIndex );
 
     float2 rnd = STL::Sequence::Hammersley2D( pixelPos.y * DISPATCH_W + pixelPos.x, DISPATCH_W * DISPATCH_H );
-    float3 rayDirection = STL::ImportanceSampling::Uniform::GetRay( float2( rnd.x, rnd.y * 2.0 - 1.0 ) );
+    float3 ray = STL::ImportanceSampling::Uniform::GetRay( float2( rnd.x, rnd.y * 2.0 - 1.0 ) );
     float2 mipAndCone = GetConeAngleFromRoughness( 0.0, tan( 1.0 / DISPATCH_W ) );
 
-    GeometryProps geometryProps = CastRay( gCameraOrigin, rayDirection, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
+    GeometryProps geometryProps = CastRay( gCameraOrigin, ray, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
     MaterialProps materialProps = GetMaterialProps( geometryProps );
     mipAndCone = GetConeAngleFromRoughness( geometryProps.mip, 1.0 );
 
@@ -56,10 +56,10 @@ void main( uint2 tilePos : SV_GroupId, uint2 pixelPos : SV_DispatchThreadId, uin
         float2 rnd = STL::Rng::GetFloat2();
         float3 rayLocal = STL::ImportanceSampling::Cosine::GetRay( rnd );
         float3x3 mLocalBasis = STL::Geometry::GetBasis( materialProps.N );
-        float3 rayDirection = STL::Geometry::RotateVectorInverse( mLocalBasis, rayLocal );
+        float3 ray = STL::Geometry::RotateVectorInverse( mLocalBasis, rayLocal );
 
         // Cast ray
-        geometryProps = CastRay( geometryProps.GetXoffset( ), rayDirection, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
+        geometryProps = CastRay( geometryProps.GetXoffset( ), ray, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
         materialProps = GetMaterialProps( geometryProps );
         mipAndCone = GetConeAngleFromAngularRadius( geometryProps.mip, 1.0 );
 

@@ -78,7 +78,7 @@ float3 _GetXoffset( float3 X, float3 offsetDirection )
 struct GeometryProps
 {
     float3 X;
-    float3 rayDirection;
+    float3 V;
     float4 T;
     float3 N;
     float2 uv;
@@ -104,7 +104,7 @@ struct GeometryProps
     { return textureOffsetAndFlags & INSTANCE_ID_MASK; }
 
     float3 GetForcedEmissionColor( )
-    { return ( ( textureOffsetAndFlags >> 2 ) & 0x1 ) ? float3( 1, 0, 0 ) : float3( 0, 1, 0 ); }
+    { return ( ( textureOffsetAndFlags >> 2 ) & 0x1 ) ? float3( 1.0, 0.0, 0.0 ) : float3( 0.0, 1.0, 0.0 ); }
 
     uint GetPackedMaterial( )
     { return asuint( uv.x ); }
@@ -169,7 +169,7 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
 {
     MaterialProps props = ( MaterialProps )0;
 
-    float3 Csky = GetSkyIntensity( geometryProps.rayDirection, gSunDirection, gTanSunAngularRadius );
+    float3 Csky = GetSkyIntensity( -geometryProps.V, gSunDirection, gTanSunAngularRadius );
 
     [branch]
     if( geometryProps.IsSky( ) )
@@ -202,7 +202,6 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
     // Emission
     float3 Lemi = gIn_Textures[ baseTexture + 3 ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.x ).xyz;
     Lemi *= ( baseColor + 0.01 ) / ( max( baseColor, max( baseColor, baseColor ) ) + 0.01 );
-    Lemi = geometryProps.IsForcedEmission( ) ? geometryProps.GetForcedEmissionColor( ) : Lemi;
     Lemi *= gEmissionIntensity * float( geometryProps.IsEmissive( ) );
 
     // Override material
@@ -222,6 +221,15 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
 
     metalness = gMetalnessOverride == 0.0 ? metalness : gMetalnessOverride;
     roughness = gRoughnessOverride == 0.0 ? roughness : gRoughnessOverride;
+
+    // Force emission
+    if( geometryProps.IsForcedEmission( ) )
+    {
+        Lemi = geometryProps.GetForcedEmissionColor( );
+        baseColor = 0.0;
+        roughness = 1.0;
+        metalness = 0.0;
+    }
 
     // Direct lighting ( no shadow )
     float3 Ldirect = 0;
@@ -250,7 +258,7 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
             Ldirect = Kdiff * C;
         #else
             float3 Cdiff, Cspec;
-            STL::BRDF::DirectLighting( N, gSunDirection, -geometryProps.rayDirection, Rf0, roughness, Cdiff, Cspec );
+            STL::BRDF::DirectLighting( N, gSunDirection, geometryProps.V, Rf0, roughness, Cdiff, Cspec );
 
             Ldirect = Cdiff * albedo * Csun + Cspec * Cimp;
         #endif
@@ -282,7 +290,7 @@ float3 GetAmbientBRDF( GeometryProps geometryProps, MaterialProps materialProps,
     float3 Fenv = Rf0;
     if( !approximate )
     {
-        float NoV = abs( dot( materialProps.N, -geometryProps.rayDirection ) );
+        float NoV = abs( dot( materialProps.N, geometryProps.V ) );
         Fenv = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, materialProps.roughness );
     }
 
@@ -297,8 +305,7 @@ float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps mat
     float3 albedo, Rf0;
     STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
 
-    float smc = GetSpecMagicCurve( materialProps.roughness );
-    float NoV = abs( dot( materialProps.N, -geometryProps.rayDirection ) );
+    float NoV = abs( dot( materialProps.N, geometryProps.V ) );
     float3 Fenv = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, materialProps.roughness );
 
     float lumSpec = STL::Color::Luminance( Fenv );
@@ -307,13 +314,14 @@ float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps mat
     // Boost diffuse if roughness is high
     if( useMagicBoost )
     {
+        float smc = GetSpecMagicCurve( materialProps.roughness );
         lumDiff = lerp( lumDiff, 1.0, smc );
         lumSpec = lerp( lumSpec, 0.0, smc );
     }
 
     float diffProb = lumDiff / ( lumDiff + lumSpec + 1e-6 );
 
-    return diffProb;
+    return diffProb < 0.005 ? 0.0 : diffProb;
 }
 
 //====================================================================================================================================
@@ -374,16 +382,16 @@ float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps mat
             rayQuery.CommitNonOpaqueTriangleHit( ); \
     }
 
-bool CastVisibilityRay_AnyHit( float3 rayOrigin, float3 rayDirection, float Tmin, float Tmax, float2 mipAndCone, RaytracingAccelerationStructure accelerationStructure, uint instanceInclusionMask, uint rayFlags )
+bool CastVisibilityRay_AnyHit( float3 origin, float3 direction, float Tmin, float Tmax, float2 mipAndCone, RaytracingAccelerationStructure accelerationStructure, uint instanceInclusionMask, uint rayFlags )
 {
-    RayDesc ray;
-    ray.Origin = rayOrigin;
-    ray.Direction = rayDirection;
-    ray.TMin = Tmin;
-    ray.TMax = Tmax;
+    RayDesc rayDesc;
+    rayDesc.Origin = origin;
+    rayDesc.Direction = direction;
+    rayDesc.TMin = Tmin;
+    rayDesc.TMax = Tmax;
 
     RayQuery< RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH > rayQuery;
-    rayQuery.TraceRayInline( accelerationStructure, rayFlags, instanceInclusionMask, ray );
+    rayQuery.TraceRayInline( accelerationStructure, rayFlags, instanceInclusionMask, rayDesc );
 
     while( rayQuery.Proceed( ) )
         CheckNonOpaqueTriangle( rayQuery, mipAndCone );
@@ -391,16 +399,16 @@ bool CastVisibilityRay_AnyHit( float3 rayOrigin, float3 rayDirection, float Tmin
     return rayQuery.CommittedStatus( ) == COMMITTED_NOTHING;
 }
 
-float CastVisibilityRay_ClosestHit( float3 rayOrigin, float3 rayDirection, float Tmin, float Tmax, float2 mipAndCone, RaytracingAccelerationStructure accelerationStructure, uint instanceInclusionMask, uint rayFlags )
+float CastVisibilityRay_ClosestHit( float3 origin, float3 direction, float Tmin, float Tmax, float2 mipAndCone, RaytracingAccelerationStructure accelerationStructure, uint instanceInclusionMask, uint rayFlags )
 {
-    RayDesc ray;
-    ray.Origin = rayOrigin;
-    ray.Direction = rayDirection;
-    ray.TMin = Tmin;
-    ray.TMax = Tmax;
+    RayDesc rayDesc;
+    rayDesc.Origin = origin;
+    rayDesc.Direction = direction;
+    rayDesc.TMin = Tmin;
+    rayDesc.TMax = Tmax;
 
     RayQuery< RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES > rayQuery;
-    rayQuery.TraceRayInline( accelerationStructure, rayFlags, instanceInclusionMask, ray );
+    rayQuery.TraceRayInline( accelerationStructure, rayFlags, instanceInclusionMask, rayDesc );
 
     while( rayQuery.Proceed( ) )
         CheckNonOpaqueTriangle( rayQuery, mipAndCone );
@@ -408,16 +416,16 @@ float CastVisibilityRay_ClosestHit( float3 rayOrigin, float3 rayDirection, float
     return rayQuery.CommittedStatus( ) == COMMITTED_NOTHING ? INF : rayQuery.CommittedRayT( );
 }
 
-GeometryProps CastRay( float3 rayOrigin, float3 rayDirection, float Tmin, float Tmax, float2 mipAndCone, RaytracingAccelerationStructure accelerationStructure, uint instanceInclusionMask, uint rayFlags )
+GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, float2 mipAndCone, RaytracingAccelerationStructure accelerationStructure, uint instanceInclusionMask, uint rayFlags )
 {
-    RayDesc ray;
-    ray.Origin = rayOrigin;
-    ray.Direction = rayDirection;
-    ray.TMin = Tmin;
-    ray.TMax = Tmax;
+    RayDesc rayDesc;
+    rayDesc.Origin = origin;
+    rayDesc.Direction = direction;
+    rayDesc.TMin = Tmin;
+    rayDesc.TMax = Tmax;
 
     RayQuery< RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES > rayQuery;
-    rayQuery.TraceRayInline( accelerationStructure, rayFlags, instanceInclusionMask, ray );
+    rayQuery.TraceRayInline( accelerationStructure, rayFlags, instanceInclusionMask, rayDesc );
 
     while( rayQuery.Proceed( ) )
         CheckNonOpaqueTriangle( rayQuery, mipAndCone );
@@ -483,7 +491,7 @@ GeometryProps CastRay( float3 rayOrigin, float3 rayDirection, float Tmin, float 
         float invObjectScale = STL::Math::Rsqrt( STL::Math::LengthSquared( mObjectToWorld[ 0 ] ) );
 
         // Mip level (TODO: doesn't take into account integrated AO / SO - i.e. diffuse = lowest mip, but what if we see the sky through a tiny hole?)
-        float NoR = abs( dot( rayDirection, props.N ) );
+        float NoR = abs( dot( direction, props.N ) );
         float a = props.tmin * mipAndCone.y;
         a *= STL::Math::PositiveRcp( NoR );
         a *= primitiveData.b2s_worldToUvUnits.y * invObjectScale;
@@ -494,8 +502,8 @@ GeometryProps CastRay( float3 rayOrigin, float3 rayDirection, float Tmin, float 
         props.mip += mip;
     }
 
-    props.X = rayOrigin + rayDirection * props.tmin;
-    props.rayDirection = rayDirection;
+    props.X = origin + direction * props.tmin;
+    props.V = -direction;
 
     return props;
 }

@@ -124,7 +124,7 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     float2 pixelMotion = pixelUvPrev - pixelUv;
     float motionAmount = saturate( length( pixelMotion ) / TAA_MOTION_MAX_REUSE );
     float historyWeight = lerp( TAA_MAX_HISTORY_WEIGHT, TAA_MIN_HISTORY_WEIGHT, motionAmount );
-    historyWeight *= float( gTaa != 0 && isInScreen );
+    historyWeight *= float( gTAA != 0 && isInScreen );
 
     // Final mix
     float3 result = lerp( input, historyClamped, historyWeight );

@@ -12,58 +12,23 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 // Inputs
 NRI_RESOURCE( Texture2D<float>, gIn_ViewZ, t, 0, 1 );
-NRI_RESOURCE( Texture2D<float>, gIn_Downsampled_ViewZ, t, 1, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Normal_Roughness, t, 2, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_BaseColor_Metalness, t, 3, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_DirectLighting, t, 4, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_TransparentLighting, t, 5, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 6, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 7, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 8, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Normal_Roughness, t, 1, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_BaseColor_Metalness, t, 2, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_DirectLighting, t, 3, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_TransparentLighting, t, 4, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 5, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 6, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 7, 1 );
 
 #if( NRD_MODE == SH )
-    NRI_RESOURCE( Texture2D<float4>, gIn_DiffSh, t, 9, 1 );
-    NRI_RESOURCE( Texture2D<float4>, gIn_SpecSh, t, 10, 1 );
+    NRI_RESOURCE( Texture2D<float4>, gIn_DiffSh, t, 8, 1 );
+    NRI_RESOURCE( Texture2D<float4>, gIn_SpecSh, t, 9, 1 );
 #endif
 
 // Outputs
 NRI_RESOURCE( RWTexture2D<float4>, gOut_Composed, u, 0, 1 );
 NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedDiff, u, 1, 1 );
 NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedSpec, u, 2, 1 );
-
-float2 GetUpsampleUv( float2 pixelUv, float zReal )
-{
-    // Set to 1 if you don't use a quarter part of the full texture
-    float2 RESOLUTION_SCALE = 0.5 * gRectSize * gInvRenderSize;
-
-    float4 zLow = gIn_Downsampled_ViewZ.GatherRed( gNearestSampler, pixelUv * RESOLUTION_SCALE );
-    float4 delta = abs( zReal - zLow ) / zReal;
-
-    float4 offsets = float4( -1.0, 1.0, -1.0, 1.0 ) * gInvRectSize.xxyy;
-    float3 d01 = float3( offsets.xw, delta.x );
-    float3 d11 = float3( offsets.yw, delta.y );
-    float3 d10 = float3( offsets.yz, delta.z );
-    float3 d00 = float3( offsets.xz, delta.w );
-
-    d00 = lerp( d01, d00, step( d00.z, d01.z ) );
-    d00 = lerp( d11, d00, step( d00.z, d11.z ) );
-    d00 = lerp( d10, d00, step( d00.z, d10.z ) );
-
-    float2 invTexSize = 2.0 * gInvRectSize;
-    float2 uvNearest = floor( ( pixelUv + d00.xy ) / invTexSize ) * invTexSize + gInvRectSize;
-
-    float2 uv = pixelUv * gRectSize / gRenderSize;
-    if( gTracingMode == RESOLUTION_QUARTER )
-    {
-        float4 cmp = step( 0.01, delta );
-        cmp.x = saturate( dot( cmp, 1.0 ) );
-
-        uv = lerp( pixelUv, uvNearest, cmp.x );
-        uv *= RESOLUTION_SCALE;
-    }
-
-    return uv;
-}
 
 float3 AddTransparentLighting( float3 Lsum, float3 Ltransparent )
 {
@@ -116,7 +81,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 V = gOrthoMode == 0 ? normalize( gCameraOrigin - X ) : gViewDirection;
 
     // Denoised indirect lighting
-    float2 upsampleUv = GetUpsampleUv( pixelUv, viewZ );
+    float2 upsampleUv = pixelUv * gRectSize / gRenderSize;
 
     float4 diff = gIn_Diff.SampleLevel( gLinearSampler, upsampleUv, 0 );
     float4 spec = gIn_Spec.SampleLevel( gLinearSampler, upsampleUv, 0 );
@@ -182,11 +147,11 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 Fenv = STL::BRDF::EnvironmentTerm_Rtg( Rf0, NoV, roughness );
 
     // Composition
-    float3 diffDemod = ( 1.0 - Fenv ) * albedo;
-    float3 specDemod = Fenv;
+    float3 diffDemod = ( 1.0 - Fenv ) * albedo * 0.99 + 0.01;
+    float3 specDemod = Fenv * 0.99 + 0.01;
 
-    float3 Ldiff = diff.xyz * ( gReference ? 1.0 : diffDemod * 0.99 + 0.01 );
-    float3 Lspec = spec.xyz * ( gReference ? 1.0 : specDemod * 0.99 + 0.01 );
+    float3 Ldiff = diff.xyz * ( gReference ? 1.0 : diffDemod );
+    float3 Lspec = spec.xyz * ( gReference ? 1.0 : specDemod );
 
     // Ambient
     float3 ambient = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );

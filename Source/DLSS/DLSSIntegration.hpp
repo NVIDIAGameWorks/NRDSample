@@ -1,6 +1,6 @@
 #include "DLSSIntegration.h"
 
-static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 86, "Unsupported NRI version!");
+static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 90, "Unsupported NRI version!");
 
 // An ugly temp workaround until DLSS fix the problem
 #ifndef _WIN32
@@ -109,7 +109,6 @@ bool DlssIntegration::InitializeLibrary(nri::Device& device, const char* appData
 
     wchar_t path[512];
     DLSS_ConvertCharToWchar(appDataPath, path, 512);
-    wchar_t* paths[1] = { path };
 
     NVSDK_NGX_Result result = NVSDK_NGX_Result::NVSDK_NGX_Result_Fail;
     if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D12)

@@ -19,11 +19,11 @@ NRI_RESOURCE( Texture2D<uint4>, gIn_Sobol, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 2, 1 );
 
 // Outputs
-NRI_RESOURCE( RWTexture2D<float3>, gOut_Motion, u, 0, 1 );
+NRI_RESOURCE( RWTexture2D<float3>, gOut_Mv, u, 0, 1 );
 NRI_RESOURCE( RWTexture2D<float>, gOut_ViewZ, u, 1, 1 );
 NRI_RESOURCE( RWTexture2D<float4>, gOut_Normal_Roughness, u, 2, 1 );
 NRI_RESOURCE( RWTexture2D<float4>, gOut_BaseColor_Metalness, u, 3, 1 );
-NRI_RESOURCE( RWTexture2D<float>, gOut_PrimaryMip, u, 4, 1 );
+NRI_RESOURCE( RWTexture2D<float2>, gOut_PrimaryMipAndCurvature, u, 4, 1 );
 NRI_RESOURCE( RWTexture2D<float3>, gOut_DirectLighting, u, 5, 1 );
 NRI_RESOURCE( RWTexture2D<float3>, gOut_DirectEmission, u, 6, 1 );
 NRI_RESOURCE( RWTexture2D<float2>, gOut_ShadowData, u, 7, 1 );
@@ -93,14 +93,14 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     float3 motion = Xprev - geometryProps0.X;
     if( !gIsWorldSpaceMotionEnabled )
     {
-        float4 clipPrev = STL::Geometry::ProjectiveTransform( gWorldToClipPrev, Xprev );
-        float2 sampleUvPrev = ( clipPrev.xy / clipPrev.w ) * float2( 0.5, -0.5 ) + 0.5;
+        float viewZprev = STL::Geometry::AffineTransform( gWorldToViewPrev, Xprev ).z;
+        float2 sampleUvPrev = STL::Geometry::GetScreenUv( gWorldToClipPrev, Xprev );
 
         motion.xy = ( sampleUvPrev - sampleUv ) * gRectSize;
-        motion.z = STL::Math::Sign( viewZ ) * clipPrev.w - viewZ;
+        motion.z = viewZprev - viewZ;
     }
 
-    gOut_Motion[ pixelPos ] = motion * STL::Math::LinearStep( 0.0, 0.0000005, abs( motion ) ); // TODO: move LinearStep to NRD?
+    gOut_Mv[ pixelPos ] = motion;
 
     // Early out - sky
     if( geometryProps0.IsSky( ) )
@@ -113,18 +113,18 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     // G-buffer
     float mipNorm = STL::Math::Sqrt01( geometryProps0.mip / MAX_MIP_LEVEL );
+    float curvatureNorm = STL::Math::Sqrt01( materialProps0.curvature / 4.0 );
 
-    float3 albedo, Rf0;
-    STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps0.baseColor, materialProps0.metalness, albedo, Rf0 );
-    uint noDiffuseFlag = STL::Color::Luminance( albedo ) < BRDF_ENERGY_THRESHOLD ? 1 : 0;
+    float diffuseProbability = EstimateDiffuseProbability( geometryProps0, materialProps0 );
+    uint materialID = diffuseProbability > BRDF_ENERGY_THRESHOLD ? 0 : 1;
 
     #if( USE_SIMULATED_MATERIAL_ID_TEST == 1 )
         if( gDebug == 0.0 )
-            noDiffuseFlag = noDiffuseFlag || ( frac( geometryProps0.X ).x < 0.05 ? 1 : 0 );
+            materialID = materialID || ( frac( geometryProps0.X ).x < 0.05 ? 1 : 0 );
     #endif
 
-    gOut_PrimaryMip[ pixelPos ] = mipNorm;
-    gOut_Normal_Roughness[ pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( materialProps0.N, materialProps0.roughness, noDiffuseFlag );
+    gOut_PrimaryMipAndCurvature[ pixelPos ] = float2( mipNorm, curvatureNorm );
+    gOut_Normal_Roughness[ pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( materialProps0.N, materialProps0.roughness, materialID );
     gOut_BaseColor_Metalness[ pixelPos ] = float4( STL::Color::LinearToSrgb( materialProps0.baseColor ), materialProps0.metalness );
 
     // Debug & direct lighting
