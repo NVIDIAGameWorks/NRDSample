@@ -55,7 +55,7 @@ const std::vector<uint32_t> interior_checkMeTests =
     1, 3, 6, 8, 9, 10, 12, 13, 14, 23, 27, 28, 29, 31, 32, 35, 43, 44, 47, 53,
     59, 60, 62, 67, 75, 76, 79, 81, 95, 96, 107, 109, 111, 110, 114, 120, 124,
     126, 127, 132, 133, 134, 139, 140, 142, 145, 148, 150, 155, 156, 157, 160,
-    161, 162, 168, 169
+    161, 162, 164, 168, 169, 171, 172, 173, 174
 }};
 
 //=================================================================================
@@ -64,7 +64,7 @@ const std::vector<uint32_t> interior_checkMeTests =
 
 const std::vector<uint32_t> REBLUR_interior_improveMeTests =
 {{
-    153, 158
+    108, 153, 158
 }};
 
 const std::vector<uint32_t> RELAX_interior_improveMeTests =
@@ -550,8 +550,8 @@ struct InstanceData
 {
     uint32_t basePrimitiveIndex;
     uint32_t baseTextureIndex;
-    uint32_t averageBaseColor;
-    uint32_t unused;
+    uint32_t unused1;
+    uint32_t unused2;
 
     float4 mWorldToWorldPrev0;
     float4 mWorldToWorldPrev1;
@@ -982,6 +982,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
 
 void Sample::PrepareFrame(uint32_t frameIndex)
 {
+    m_ForceHistoryReset = false;
     m_PrevSettings = m_Settings;
     m_Camera.SavePreviousState();
 
@@ -3378,7 +3379,6 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
 
         instanceData->basePrimitiveIndex = basePrimitiveIndex;
         instanceData->baseTextureIndex = instance.materialIndex * TEXTURES_PER_MATERIAL;
-        instanceData->averageBaseColor = packedMaterial;
         instanceData->mWorldToWorldPrev0 = mWorldToWorldPrev.col0;
         instanceData->mWorldToWorldPrev1 = mWorldToWorldPrev.col1;
         instanceData->mWorldToWorldPrev2 = mWorldToWorldPrev.col2;
@@ -3615,18 +3615,13 @@ void Sample::RenderFrame(uint32_t frameIndex)
     float resetHistoryFactor = 1.0f - Smoothstep( 0.0f, 0.2f, Abs(sunCurr - sunPrev) );
 
     if (m_PrevSettings.denoiser != m_Settings.denoiser)
-        resetHistoryFactor = 0.0f;
+        m_ForceHistoryReset = true;
     if (m_PrevSettings.denoiser == REFERENCE && m_PrevSettings.tracingMode != m_Settings.tracingMode)
-        resetHistoryFactor = 0.0f;
+        m_ForceHistoryReset = true;
     if (m_PrevSettings.ortho != m_Settings.ortho)
-        resetHistoryFactor = 0.0f;
+        m_ForceHistoryReset = true;
     if (m_PrevSettings.onScreen != m_Settings.onScreen)
-        resetHistoryFactor = 0.0f;
-    if (m_ForceHistoryReset || frameIndex == 0)
-    {
-        resetHistoryFactor = 0.0f;
-        m_ForceHistoryReset = false;
-    }
+        m_ForceHistoryReset = true;
 
     // Sizes
     uint32_t rectW = uint32_t(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
@@ -3669,7 +3664,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
     commonSettings.splitScreen = m_Settings.denoiser == REFERENCE ? 1.0f : m_Settings.separator;
     commonSettings.debug = m_Settings.debug;
     commonSettings.frameIndex = frameIndex;
-    commonSettings.accumulationMode = resetHistoryFactor == 0.0f ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
+    commonSettings.accumulationMode = m_ForceHistoryReset ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
     commonSettings.isMotionVectorInWorldSpace = m_Settings.mvType == MV_3D;
     commonSettings.isBaseColorMetalnessAvailable = true;
     commonSettings.enableValidation = m_DebugNRD && m_ShowValidationOverlay;
@@ -3740,7 +3735,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
         NrdIntegration_SetResource(userPool, nrd::ResourceType::OUT_RADIANCE, {&GetState(Texture::Composed_ViewZ), GetFormat(Texture::Composed_ViewZ)});
     }
 
-    UpdateConstantBuffer(frameIndex, resetHistoryFactor);
+    UpdateConstantBuffer(frameIndex, m_ForceHistoryReset ? 0.0f : resetHistoryFactor);
 
     NRI.BeginCommandBuffer(commandBuffer, m_DescriptorPool, 0);
     {

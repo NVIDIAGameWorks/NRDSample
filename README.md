@@ -42,14 +42,9 @@ All-in-one repository including all relevant pieces to see [*NRD (NVIDIA Real-ti
 - If [Smart Command Line Arguments extension for Visual Studio](https://marketplace.visualstudio.com/items?itemName=MBulli.SmartCommandlineArguments) is installed, all command line arguments will be loaded into corresponding window
 - The executables can be found in `_Build`. The executable loads resources from `_Data`, therefore please run the samples with working directory set to the project root folder (needed pieces of the command line can be found in `3-Run NRD sample` script)
 
-## Minimum Requirements
+## Requirements
 
-Any Ray Tracing compatible GPU:
-- RTX 3000 series
-- RTX 2000 series
-- GTX 1660 (Ti, S)
-- GTX 1000 series (GPUs with at least 6GB of memory)
-- AMD RX 6000 series
+Any ray tracing compatible GPU.
 
 ## Usage
 
