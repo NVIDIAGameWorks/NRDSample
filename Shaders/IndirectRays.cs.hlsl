@@ -215,7 +215,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
     float3 startLsum = 0.0;
 
     #if( USE_PSR == 1 )
-        float3 bounceNormals[ 8 ]; // TODO: remove array, do it better. Mirror matrix?
+        float3x3 mirrorMatrix = STL::Geometry::GetMirrorMatrix( 0 ); // identity
         int psrBounceIndex = 0;
 
         bool canBePsr = gPSR && desc.materialProps.roughness < 0.005 && desc.materialProps.metalness > 0.995;
@@ -235,8 +235,8 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 //=============================================================================================================================================================
 
                 {
-                    // Save normal at ray origin to get normal of PSR in virtual world space later
-                    bounceNormals[ bounceIndex - 1 ] = materialProps.N;
+                    // Accumulate mirror matrix
+                    mirrorMatrix = mul( STL::Geometry::GetMirrorMatrix( materialProps.N ), mirrorMatrix );
 
                     // Choose a ray
                     float3 ray = reflect( -geometryProps.V, materialProps.N );
@@ -334,9 +334,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                             InstanceData instanceData = gIn_InstanceData[ geometryProps.instanceIndex ];
                             XvirtualPrev = STL::Geometry::AffineTransform( instanceData.mWorldToWorldPrev, Xvirtual );
 
-                            float3 psrNormal = materialProps.N;
-                            for( int b = bounceIndex - 1; b >= 0; b-- )
-                                psrNormal = reflect( psrNormal, bounceNormals[ b ] );
+                            float3 psrNormal = STL::Geometry::RotateVectorInverse( mirrorMatrix, materialProps.N );
 
                             gInOut_BaseColor_Metalness[ desc.pixelPos ] = float4( STL::Color::LinearToSrgb( materialProps.baseColor ), materialProps.metalness );
                             gInOut_Normal_Roughness[ desc.pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( psrNormal, materialProps.roughness, materialID );
@@ -495,8 +493,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                     {
                         float3 psrRay = ray;
                         #if( USE_PSR == 1 )
-                            for( int b = psrBounceIndex - 1; b >= 0; b-- )
-                                psrRay = reflect( psrRay, bounceNormals[ b ] );
+                            ray = STL::Geometry::RotateVectorInverse( mirrorMatrix, ray );
                         #endif
 
                         if( isDiffuse )
