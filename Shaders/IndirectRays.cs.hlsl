@@ -8,10 +8,8 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
-#if( !defined( COMPILER_FXC ) )
-
-#include "Shared.hlsli"
-#include "RaytracingShared.hlsli"
+#include "Include/Shared.hlsli"
+#include "Include/RaytracingShared.hlsli"
 
 // Inputs
 NRI_RESOURCE( Texture2D<float2>, gIn_PrimaryMipAndCurvature, t, 0, 1 );
@@ -103,7 +101,7 @@ float GetRadianceFromPreviousFrame( GeometryProps geometryProps, uint2 pixelPos,
     return weight;
 }
 
-float GetDiffuseLikeMotionAmount( MaterialProps materialProps, bool isDiffuse )
+float GetDiffuseLikeMotionAmount( GeometryProps geometryProps, MaterialProps materialProps )
 {
     /*
     IMPORTANT / TODO: This is just a cheap estimation! Ideally curvature at hits should be applied in the reversed order:
@@ -123,10 +121,10 @@ float GetDiffuseLikeMotionAmount( MaterialProps materialProps, bool isDiffuse )
         - plus, same rules as for primary hits
     */
 
-    float diffuseLikeMotion = lerp( 1.0 - materialProps.metalness, 1.0, GetSpecMagicCurve( materialProps.roughness ) );
-    diffuseLikeMotion = lerp( diffuseLikeMotion, 1.0, STL::Math::Sqrt01( materialProps.curvature ) );
+    float diffProb = EstimateDiffuseProbability( geometryProps, materialProps, true );
+    diffProb = lerp( diffProb, 1.0, STL::Math::Sqrt01( materialProps.curvature ) );
 
-    return isDiffuse ? 1.0 : diffuseLikeMotion;
+    return diffProb;
 }
 
 //========================================================================================
@@ -256,7 +254,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                         break;
 
                     // Estimate surface-based motion amount ( i.e. when specular moves like diffuse )
-                    accumulatedDiffuseLikeMotionForTracking += GetDiffuseLikeMotionAmount( materialProps, false );
+                    accumulatedDiffuseLikeMotionForTracking += GetDiffuseLikeMotionAmount( geometryProps, materialProps );
 
                     //=========================================================================================================================================================
                     // Trace to the next hit
@@ -295,7 +293,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                     float3 prevLdiff, prevLspec;
                     float prevFrameWeight = GetRadianceFromPreviousFrame( geometryProps, desc.pixelPos, prevLdiff, prevLspec );
 
-                    float diffuseLikeMotion = GetDiffuseLikeMotionAmount( materialProps, false );
+                    float diffuseLikeMotion = GetDiffuseLikeMotionAmount( geometryProps, materialProps );
                     prevFrameWeight *= diffuseLikeMotion;
                     prevFrameWeight *= 0.9 * gUsePrevFrame; // TODO: use F( bounceIndex ) bounceIndex = 99 => 1.0
                     prevFrameWeight *= 1.0 - gAmbientAccumSpeed;
@@ -558,7 +556,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 float3 prevLdiff, prevLspec;
                 float prevFrameWeight = GetRadianceFromPreviousFrame( geometryProps, desc.pixelPos, prevLdiff, prevLspec );
 
-                float diffuseLikeMotion = GetDiffuseLikeMotionAmount( materialProps, isDiffuse );
+                float diffuseLikeMotion = isDiffuse ? 1.0 : GetDiffuseLikeMotionAmount( geometryProps, materialProps );
                 prevFrameWeight *= diffuseLikeMotion;
                 prevFrameWeight *= 0.9 * gUsePrevFrame; // TODO: use F( bounceIndex ) bounceIndex = 99 => 1.0
                 prevFrameWeight *= 1.0 - gAmbientAccumSpeed;
@@ -934,8 +932,13 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     if( gDenoiserType == RELAX )
     {
+    #if( NRD_MODE == SH )
+        outDiff = RELAX_FrontEnd_PackSh(result.diffRadiance, result.diffHitDist, result.diffDirection, outDiffSh, USE_SANITIZATION);
+        outSpec = RELAX_FrontEnd_PackSh(result.specRadiance, result.specHitDist, result.specDirection, outSpecSh, USE_SANITIZATION);
+    #else
         outDiff = RELAX_FrontEnd_PackRadianceAndHitDist( result.diffRadiance, result.diffHitDist, USE_SANITIZATION );
         outSpec = RELAX_FrontEnd_PackRadianceAndHitDist( result.specRadiance, result.specHitDist, USE_SANITIZATION );
+    #endif
     }
     else
     {
@@ -981,13 +984,3 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         #endif
     }
 }
-
-#else
-
-[numthreads( 16, 16, 1 )]
-void main( uint2 pixelPos : SV_DispatchThreadId )
-{
-    // no TraceRayInline support
-}
-
-#endif

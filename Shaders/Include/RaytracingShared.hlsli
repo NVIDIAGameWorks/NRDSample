@@ -311,15 +311,11 @@ float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps mat
     float lumSpec = STL::Color::Luminance( Fenv );
     float lumDiff = STL::Color::Luminance( albedo * ( 1.0 - Fenv ) );
 
+    float diffProb = lumDiff / ( lumDiff + lumSpec + 1e-6 );
+
     // Boost diffuse if roughness is high
     if( useMagicBoost )
-    {
-        float smc = GetSpecMagicCurve( materialProps.roughness );
-        lumDiff = lerp( lumDiff, 1.0, smc );
-        lumSpec = lerp( lumSpec, 0.0, smc );
-    }
-
-    float diffProb = lumDiff / ( lumDiff + lumSpec + 1e-6 );
+        diffProb = lerp( diffProb, 1.0, GetSpecMagicCurve( materialProps.roughness ) );
 
     return diffProb < 0.005 ? 0.0 : diffProb;
 }

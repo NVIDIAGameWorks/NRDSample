@@ -8,10 +8,8 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
-#if( !defined( COMPILER_FXC ) )
-
-#include "Shared.hlsli"
-#include "RaytracingShared.hlsli"
+#include "Include/Shared.hlsli"
+#include "Include/RaytracingShared.hlsli"
 
 // Outputs
 NRI_RESOURCE( RWTexture2D<float3>, gOut_Ambient, u, 0, 1 );
@@ -97,13 +95,3 @@ void main( uint2 tilePos : SV_GroupId, uint2 pixelPos : SV_DispatchThreadId, uin
         gOut_Ambient[ tilePos ] = currAmbient;
     }
 }
-
-#else
-
-[numthreads( 16, 16, 1 )]
-void main( uint2 pixelPos : SV_DispatchThreadId )
-{
-    // no TraceRayInline support
-}
-
-#endif

@@ -9,13 +9,20 @@
 
 #include <vulkan/vulkan.h>
 
+#pragma warning(push)
+#pragma warning(disable : 4100)
+
 #include "NGX/include/nvsdk_ngx_helpers.h"
 #include "NGX/include/nvsdk_ngx_helpers_vk.h"
 
+#pragma warning(pop) 
+
 #define DLSS_INTEGRATION_MAJOR 1
-#define DLSS_INTEGRATION_MINOR 4
-#define DLSS_INTEGRATION_DATE "1 December 2022"
+#define DLSS_INTEGRATION_MINOR 5
+#define DLSS_INTEGRATION_DATE "23 March 2023"
 #define DLSS_INTEGRATION 1
+
+static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 93, "Unsupported NRI version!");
 
 enum class DlssQuality
 {
@@ -91,18 +98,7 @@ public:
     void Evaluate(nri::CommandBuffer* commandBuffer, const DlssDispatchDesc& desc); // currently bound nri::DescriptorPool will be lost
     void Shutdown();
 
-    static inline void SetupDeviceExtensions(nri::DeviceCreationDesc& desc)
-    {
-        const char** instanceExt;
-        const char** deviceExt;
-        NVSDK_NGX_VULKAN_RequiredExtensions(
-            &desc.vulkanExtensions.instanceExtensionNum,
-            &instanceExt,
-            &desc.vulkanExtensions.deviceExtensionNum,
-            &deviceExt);
-        desc.vulkanExtensions.instanceExtensions = instanceExt;
-        desc.vulkanExtensions.deviceExtensions = deviceExt;
-    }
+    static void SetupDeviceExtensions(nri::DeviceCreationDesc& desc);
 
 private:
 

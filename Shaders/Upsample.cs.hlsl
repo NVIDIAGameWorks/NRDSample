@@ -8,7 +8,7 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
-#include "Shared.hlsli"
+#include "Include/Shared.hlsli"
 
 NRI_RESOURCE( Texture2D<float3>, gIn_Image, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_Validation, t, 1, 1 );

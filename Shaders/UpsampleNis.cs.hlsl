@@ -8,7 +8,7 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
-#include "Shared.hlsli"
+#include "Include/Shared.hlsli"
 
 NRI_RESOURCE( Texture2D<float4>, gIn_Image, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_NisData1, t, 1, 1 );
@@ -67,7 +67,7 @@ NRI_RESOURCE( RWTexture2D<float4>, gOut_Image, u, 0, 1 );
     #define NIS_HLSL_6_2            1
 #endif
 
-#include "../../External/NGX/NVIDIAImageScaling/NIS/NIS_Scaler.h"
+#include "NVIDIAImageScaling/NIS/NIS_Scaler.h"
 
 [numthreads( NIS_THREAD_GROUP_SIZE, 1, 1 )]
 void main( uint2 blockId : SV_GroupID, uint threadId : SV_GroupThreadID )

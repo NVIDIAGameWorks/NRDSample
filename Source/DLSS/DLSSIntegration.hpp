@@ -8,10 +8,10 @@ static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 90, "Unsupported NR
 NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_Init(unsigned long long InApplicationId, const wchar_t *InApplicationDataPath, ID3D11Device *InDevice, const NVSDK_NGX_FeatureCommonInfo *InFeatureInfo, NVSDK_NGX_Version InSDKVersion)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_Shutdown()
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_Shutdown1(ID3D11Device* device)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_API NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext *InDevCtx, NVSDK_NGX_Feature InFeatureID, const NVSDK_NGX_Parameter *InParameters, NVSDK_NGX_Handle **OutHandle)
+NVSDK_NGX_API NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext *InDevCtx, NVSDK_NGX_Feature InFeatureID, NVSDK_NGX_Parameter *InParameters, NVSDK_NGX_Handle **OutHandle)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_ReleaseFeature(NVSDK_NGX_Handle *InHandle)
@@ -32,10 +32,10 @@ NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_GetCapabilityParameters(NVSDK_NGX_Pa
 NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_Init(unsigned long long InApplicationId, const wchar_t *InApplicationDataPath, ID3D12Device *InDevice, const NVSDK_NGX_FeatureCommonInfo *InFeatureInfo, NVSDK_NGX_Version InSDKVersion)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_Shutdown()
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_Shutdown1(ID3D12Device* device)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_API NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsCommandList *InCmdList, NVSDK_NGX_Feature InFeatureID, const NVSDK_NGX_Parameter *InParameters, NVSDK_NGX_Handle **OutHandle)
+NVSDK_NGX_API NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsCommandList *InCmdList, NVSDK_NGX_Feature InFeatureID, NVSDK_NGX_Parameter *InParameters, NVSDK_NGX_Handle **OutHandle)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
 NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle *InHandle)
@@ -81,6 +81,18 @@ static inline NVSDK_NGX_PerfQuality_Value DLSS_ConvertQuality(DlssQuality qualit
         return NVSDK_NGX_PerfQuality_Value_MaxQuality;
 
     return NVSDK_NGX_PerfQuality_Value_UltraPerformance;
+}
+
+void DlssIntegration::SetupDeviceExtensions(nri::DeviceCreationDesc& desc)
+{
+    static const char* vulkanExts[] = {
+        "VK_NVX_binary_import",
+        "VK_NVX_image_view_handle",
+        "VK_KHR_push_descriptor"
+    };
+
+    desc.vulkanExtensions.deviceExtensions = vulkanExts;
+    desc.vulkanExtensions.deviceExtensionNum = 3;
 }
 
 inline NVSDK_NGX_Resource_VK DlssIntegration::SetupVulkanTexture(const DlssTexture& texture, bool isStorage)
@@ -182,9 +194,6 @@ bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInit
     nri::CommandBuffer* commandBuffer;
     NRI.CreateCommandBuffer(*commandAllocator, commandBuffer);
 
-    nri::DeviceSemaphore* semaphore;
-    NRI.CreateDeviceSemaphore(*m_Device, false, semaphore);
-
     int32_t flags = NVSDK_NGX_DLSS_Feature_Flags_DoSharpening;
     flags |= desc.isMotionVectorAtLowRes ? NVSDK_NGX_DLSS_Feature_Flags_MVLowRes : 0;
     flags |= desc.isContentHDR ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR : 0;
@@ -228,16 +237,20 @@ bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInit
     }
     NRI.EndCommandBuffer(*commandBuffer);
 
-    nri::WorkSubmissionDesc workSubmissionDesc = {};
-    workSubmissionDesc.commandBuffers = &commandBuffer;
-    workSubmissionDesc.commandBufferNum = 1;
+    nri::QueueSubmitDesc queueSubmitDesc = {};
+    queueSubmitDesc.commandBuffers = &commandBuffer;
+    queueSubmitDesc.commandBufferNum = 1;
 
-    NRI.SubmitQueueWork(*commandQueue, workSubmissionDesc, semaphore);
-    NRI.WaitForSemaphore(*commandQueue, *semaphore);
+    NRI.QueueSubmit(*commandQueue, queueSubmitDesc);
+
+    nri::Fence* fence;
+    NRI.CreateFence(*m_Device, 0, fence);
+    NRI.QueueSignal(*commandQueue, *fence, 1);
+    NRI.Wait(*fence, 1);
+    NRI.DestroyFence(*fence);
 
     NRI.DestroyCommandBuffer(*commandBuffer);
     NRI.DestroyCommandAllocator(*commandAllocator);
-    NRI.DestroyDeviceSemaphore(*semaphore);
 
     return NVSDK_NGX_SUCCEED(result);
 }
@@ -355,7 +368,7 @@ void DlssIntegration::Shutdown()
         if (m_DLSS)
             NVSDK_NGX_D3D12_ReleaseFeature(m_DLSS);
 
-        NVSDK_NGX_D3D12_Shutdown();
+        NVSDK_NGX_D3D12_Shutdown1(nullptr);
     }
     else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VULKAN)
     {
@@ -365,7 +378,7 @@ void DlssIntegration::Shutdown()
         if (m_DLSS)
             NVSDK_NGX_VULKAN_ReleaseFeature(m_DLSS);
 
-        NVSDK_NGX_VULKAN_Shutdown();
+        NVSDK_NGX_VULKAN_Shutdown1(nullptr);
     }
     else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D11)
     {
@@ -375,7 +388,7 @@ void DlssIntegration::Shutdown()
         if (m_DLSS)
             NVSDK_NGX_D3D11_ReleaseFeature(m_DLSS);
 
-        NVSDK_NGX_D3D11_Shutdown();
+        NVSDK_NGX_D3D11_Shutdown1(nullptr);
     }
 
     m_NgxParameters = nullptr;

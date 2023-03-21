@@ -8,10 +8,8 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
-#if( !defined( COMPILER_FXC ) )
-
-#include "Shared.hlsli"
-#include "RaytracingShared.hlsli"
+#include "Include/Shared.hlsli"
+#include "Include/RaytracingShared.hlsli"
 
 // Inputs
 NRI_RESOURCE( Texture2D<uint3>, gIn_Scrambling_Ranking_1spp, t, 0, 1 );
@@ -193,13 +191,3 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     gOut_ShadowData[ pixelPos ] = shadowData0;
     gOut_Shadow_Translucency[ pixelPos ] = shadowData1;
 }
-
-#else
-
-[numthreads( 16, 16, 1 )]
-void main( uint2 pixelPos : SV_DispatchThreadId )
-{
-    // no TraceRayInline support
-}
-
-#endif

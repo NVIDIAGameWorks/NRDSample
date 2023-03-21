@@ -8,8 +8,10 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
+#include "MathLib/STL.hlsli"
+#include "NRD/Shaders/Include/NRD.hlsli"
+
 #include "BindingBridge.hlsli"
-#include "STL.hlsli"
 
 //===============================================================
 // GLOSSARY
@@ -24,6 +26,72 @@ Modifiers:
 - v - view space
 - 0..N - hit index ( 0 - primary ray )
 */
+
+//=============================================================================================
+// SETTINGS
+//=============================================================================================
+
+#define NRD_MODE                            NORMAL // NORMAL, OCCLUSION, SH, DIRECTIONAL_OCCLUSION
+
+#define USE_SIMPLEX_LIGHTING_MODEL          0
+#define USE_IMPORTANCE_SAMPLING             1
+#define USE_SANITIZATION                    0 // NRD sample is NAN/INF free
+#define USE_SIMULATED_MATERIAL_ID_TEST      0 // for "material ID" support debugging
+#define USE_PSR                             1
+
+#define BRDF_ENERGY_THRESHOLD               0.001
+#define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
+#define TAA_HISTORY_SHARPNESS               0.5 // [0; 1], 0.5 matches Catmull-Rom
+#define TAA_MAX_HISTORY_WEIGHT              0.95
+#define TAA_MIN_HISTORY_WEIGHT              0.1
+#define TAA_MOTION_MAX_REUSE                0.1
+#define MAX_MIP_LEVEL                       11.0
+#define IMPORTANCE_SAMPLE_NUM               16
+#define GLASS_THICKNESS                     0.003 // m
+#define GLASS_TINT                          float3( 0.95, 0.95, 0.99 )
+
+//=============================================================================================
+// CONSTANTS
+//=============================================================================================
+
+// NRD variant
+#define NORMAL                              0
+#define OCCLUSION                           1
+#define SH                                  2
+#define DIRECTIONAL_OCCLUSION               3
+
+// Denoiser
+#define REBLUR                              0
+#define RELAX                               1
+
+// Resolution
+#define RESOLUTION_FULL                     0
+#define RESOLUTION_FULL_PROBABILISTIC       1
+#define RESOLUTION_HALF                     2
+
+// What is on screen?
+#define SHOW_FINAL                          0
+#define SHOW_DENOISED_DIFFUSE               1
+#define SHOW_DENOISED_SPECULAR              2
+#define SHOW_AMBIENT_OCCLUSION              3
+#define SHOW_SPECULAR_OCCLUSION             4
+#define SHOW_SHADOW                         5
+#define SHOW_BASE_COLOR                     6
+#define SHOW_NORMAL                         7
+#define SHOW_ROUGHNESS                      8
+#define SHOW_METALNESS                      9
+#define SHOW_WORLD_UNITS                    10
+#define SHOW_MESH                           11
+#define SHOW_MIP_PRIMARY                    12
+#define SHOW_MIP_SPECULAR                   13
+
+// Predefined material override
+#define MAT_GYPSUM                          1
+#define MAT_COBALT                          2
+
+// Other
+#define FP16_MAX                            65504.0
+#define INF                                 1e5
 
 //===============================================================
 // FP16
@@ -100,7 +168,7 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     uint gSampleNum;
     uint gBounceNum;
     uint gTAA;
-    uint gSH;
+    uint gResolve;
     uint gPSR;
     uint gValidation;
 
@@ -137,79 +205,6 @@ NRI_RESOURCE( SamplerState, gLinearMipmapLinearSampler, s, 0, 0 );
 NRI_RESOURCE( SamplerState, gLinearMipmapNearestSampler, s, 1, 0 );
 NRI_RESOURCE( SamplerState, gLinearSampler, s, 2, 0 );
 NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 0 );
-
-//=============================================================================================
-// NRD
-//=============================================================================================
-
-#define NRD_HEADER_ONLY
-#include "NRD/Shaders/Include/NRD.hlsli"
-
-//=============================================================================================
-// SETTINGS
-//=============================================================================================
-
-#define NRD_MODE                            NORMAL // NORMAL, OCCLUSION, SH, DIRECTIONAL_OCCLUSION
-
-#define USE_SIMPLEX_LIGHTING_MODEL          0
-#define USE_IMPORTANCE_SAMPLING             1
-#define USE_SANITIZATION                    0 // NRD sample is NAN/INF free
-#define USE_SIMULATED_MATERIAL_ID_TEST      0 // for "material ID" support debugging
-#define USE_PSR                             1
-
-#define BRDF_ENERGY_THRESHOLD               0.001
-#define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
-#define TAA_HISTORY_SHARPNESS               0.5 // [0; 1], 0.5 matches Catmull-Rom
-#define TAA_MAX_HISTORY_WEIGHT              0.95
-#define TAA_MIN_HISTORY_WEIGHT              0.1
-#define TAA_MOTION_MAX_REUSE                0.1
-#define MAX_MIP_LEVEL                       11.0
-#define IMPORTANCE_SAMPLE_NUM               16
-#define GLASS_THICKNESS                     0.003 // m
-#define GLASS_TINT                          float3( 0.95, 0.95, 0.99 )
-
-//=============================================================================================
-// CONSTANTS
-//=============================================================================================
-
-// NRD variant
-#define NORMAL                              0
-#define OCCLUSION                           1
-#define SH                                  2
-#define DIRECTIONAL_OCCLUSION               3
-
-// Denoiser
-#define REBLUR                              0
-#define RELAX                               1
-
-// Resolution
-#define RESOLUTION_FULL                     0
-#define RESOLUTION_FULL_PROBABILISTIC       1
-#define RESOLUTION_HALF                     2
-
-// What is on screen?
-#define SHOW_FINAL                          0
-#define SHOW_DENOISED_DIFFUSE               1
-#define SHOW_DENOISED_SPECULAR              2
-#define SHOW_AMBIENT_OCCLUSION              3
-#define SHOW_SPECULAR_OCCLUSION             4
-#define SHOW_SHADOW                         5
-#define SHOW_BASE_COLOR                     6
-#define SHOW_NORMAL                         7
-#define SHOW_ROUGHNESS                      8
-#define SHOW_METALNESS                      9
-#define SHOW_WORLD_UNITS                    10
-#define SHOW_MESH                           11
-#define SHOW_MIP_PRIMARY                    12
-#define SHOW_MIP_SPECULAR                   13
-
-// Predefined material override
-#define MAT_GYPSUM                          1
-#define MAT_COBALT                          2
-
-// Other
-#define FP16_MAX                            65504.0
-#define INF                                 1e5
 
 //=============================================================================================
 // MISC

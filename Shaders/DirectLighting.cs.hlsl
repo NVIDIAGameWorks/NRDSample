@@ -8,7 +8,7 @@ distribution of this software and related documentation without an express
 license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
-#include "Shared.hlsli"
+#include "Include/Shared.hlsli"
 
 // Inputs
 NRI_RESOURCE( Texture2D<float3>, gIn_DirectEmission, t, 0, 1 );
