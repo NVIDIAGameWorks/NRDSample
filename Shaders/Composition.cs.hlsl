@@ -15,28 +15,17 @@ NRI_RESOURCE( Texture2D<float>, gIn_ViewZ, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_Normal_Roughness, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_BaseColor_Metalness, t, 2, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_DirectLighting, t, 3, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_TransparentLighting, t, 4, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 5, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 6, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 7, 1 );
-
+NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 4, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 5, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 6, 1 );
 #if( NRD_MODE == SH )
-    NRI_RESOURCE( Texture2D<float4>, gIn_DiffSh, t, 8, 1 );
-    NRI_RESOURCE( Texture2D<float4>, gIn_SpecSh, t, 9, 1 );
+    NRI_RESOURCE( Texture2D<float4>, gIn_DiffSh, t, 7, 1 );
+    NRI_RESOURCE( Texture2D<float4>, gIn_SpecSh, t, 8, 1 );
 #endif
 
 // Outputs
-NRI_RESOURCE( RWTexture2D<float4>, gOut_Composed, u, 0, 1 );
-NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedDiff, u, 1, 1 );
-NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedSpec, u, 2, 1 );
-
-float3 AddTransparentLighting( float3 Lsum, float3 Ltransparent )
-{
-    float mask = dot( Ltransparent, 1.0 ) * gTransparent;
-    Lsum = mask == 0.0 ? Lsum : Ltransparent;
-
-    return Lsum;
-}
+NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedDiff, u, 0, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedSpec, u, 1, 1 );
 
 [numthreads( 16, 16, 1)]
 void main( int2 pixelPos : SV_DispatchThreadId )
@@ -48,11 +37,13 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
     float2 sampleUv = pixelUv + gJitter;
 
-    // Early out - sky
-    float3 Ldirect = gIn_DirectLighting[ pixelPos ];
-    float3 Ltransparent = gIn_TransparentLighting[ pixelPos ];
+    // ViewZ
     float viewZ = gIn_ViewZ[ pixelPos ];
 
+    // Direct lighting with emission
+    float3 Ldirect = gIn_DirectLighting[ pixelPos ];
+
+    // Early out - sky
     float4 normalAndRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos ] );
     float3 N = normalAndRoughness.xyz;
     float roughness = normalAndRoughness.w;
@@ -62,10 +53,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
 
     if( abs( viewZ ) == INF )
     {
-        Ldirect *= float( gOnScreen == SHOW_FINAL );
-
-        gOut_Composed[ pixelPos ] = float4( AddTransparentLighting( Ldirect, Ltransparent ), z );
-        gOut_ComposedDiff[ pixelPos ] = float4( 0, 0, 0, z );
+        gOut_ComposedDiff[ pixelPos ] = float4( Ldirect * float( gOnScreen == SHOW_FINAL ), z );
         gOut_ComposedSpec[ pixelPos ] = float4( 0, 0, 0, z );
 
         return;
@@ -211,33 +199,33 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     Ldiff += ambient * diff.w * ( 1.0 - Fenv ) * albedo;
     Lspec += ambient * spec.w * Fenv * specAmbientAmount;
 
-    float3 Lsum = Ldirect + Ldiff + Lspec;
-    Lsum = AddTransparentLighting( Lsum, Ltransparent );
+    // IMPORTANT: we store diffuse and specular separately to be able to use reprojection trick.
+    // Let's assume that direct lighting can always be reprojected as diffuse
+    Ldiff += Ldirect;
 
     // Debug
     if( gOnScreen == SHOW_DENOISED_DIFFUSE )
-        Lsum = diff.xyz;
+        Ldiff = diff.xyz;
     else if( gOnScreen == SHOW_DENOISED_SPECULAR )
-        Lsum = spec.xyz;
+        Ldiff = spec.xyz;
     else if( gOnScreen == SHOW_AMBIENT_OCCLUSION )
-        Lsum = diff.w;
+        Ldiff = diff.w;
     else if( gOnScreen == SHOW_SPECULAR_OCCLUSION )
-        Lsum = spec.w;
+        Ldiff = spec.w;
     else if( gOnScreen == SHOW_BASE_COLOR )
-        Lsum = baseColorMetalness.xyz;
+        Ldiff = baseColorMetalness.xyz;
     else if( gOnScreen == SHOW_NORMAL )
-        Lsum = N * 0.5 + 0.5;
+        Ldiff = N * 0.5 + 0.5;
     else if( gOnScreen == SHOW_ROUGHNESS )
-        Lsum = roughness;
+        Ldiff = roughness;
     else if( gOnScreen == SHOW_METALNESS )
-        Lsum = baseColorMetalness.w;
+        Ldiff = baseColorMetalness.w;
     else if( gOnScreen == SHOW_WORLD_UNITS )
-        Lsum = frac( X * gUnitToMetersMultiplier );
+        Ldiff = frac( X * gUnitToMetersMultiplier );
     else if( gOnScreen != SHOW_FINAL )
-        Lsum = gOnScreen == SHOW_MIP_SPECULAR ? spec.xyz : Ldirect.xyz;
+        Ldiff = gOnScreen == SHOW_MIP_SPECULAR ? spec.xyz : Ldirect.xyz;
 
     // Output
-    gOut_Composed[ pixelPos ] = float4( Lsum, z );
-    gOut_ComposedDiff[ pixelPos ] = float4( Ldirect + Ldiff, z );
+    gOut_ComposedDiff[ pixelPos ] = float4( Ldiff, z );
     gOut_ComposedSpec[ pixelPos ] = float4( Lspec, z );
 }

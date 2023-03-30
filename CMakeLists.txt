@@ -166,7 +166,7 @@ set_source_files_properties(${SHADERS} PROPERTIES VS_TOOL_OVERRIDE "None")
 
 if (WIN32)
     add_custom_target (${PROJECT_NAME}_Shaders ALL
-        COMMAND ShaderMake
+        COMMAND ShaderMake --useAPI
             --binary --flatten --stripReflection --compiler "${DXC_PATH}"
             --sourceDir "Shaders"
             -p DXIL --WX
@@ -179,8 +179,8 @@ if (WIN32)
             -D COMPILER_DXC
             -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
             -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}
-        COMMAND ShaderMake
-            --binary --flatten --stripReflection --compiler "${DXC_SPIRV_PATH}"
+        COMMAND ShaderMake --useAPI
+            --useAPI --binary --flatten --stripReflection --compiler "${DXC_SPIRV_PATH}"
             --sourceDir "Shaders"
             -p SPIRV --WX
             -c Shaders.cfg

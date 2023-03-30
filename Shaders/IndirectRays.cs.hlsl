@@ -23,109 +23,12 @@ NRI_RESOURCE( RWTexture2D<float4>, gInOut_BaseColor_Metalness, u, 1, 1 );
 NRI_RESOURCE( RWTexture2D<float4>, gInOut_Normal_Roughness, u, 2, 1 );
 NRI_RESOURCE( RWTexture2D<float>, gInOut_ViewZ, u, 3, 1 );
 NRI_RESOURCE( RWTexture2D<float3>, gInOut_Mv, u, 4, 1 );
-NRI_RESOURCE( RWTexture2D<float3>, gOut_TransparentLighting, u, 5, 1 );
-NRI_RESOURCE( RWTexture2D<float4>, gOut_Diff, u, 6, 1 );
-NRI_RESOURCE( RWTexture2D<float4>, gOut_Spec, u, 7, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_Diff, u, 5, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_Spec, u, 6, 1 );
 #if( NRD_MODE == SH )
-    NRI_RESOURCE( RWTexture2D<float4>, gOut_DiffSh, u, 8, 1 );
-    NRI_RESOURCE( RWTexture2D<float4>, gOut_SpecSh, u, 9, 1 );
+    NRI_RESOURCE( RWTexture2D<float4>, gOut_DiffSh, u, 7, 1 );
+    NRI_RESOURCE( RWTexture2D<float4>, gOut_SpecSh, u, 8, 1 );
 #endif
-
-//========================================================================================
-// MISC
-//========================================================================================
-
-// TODO: replace with currently denoised frame
-float GetRadianceFromPreviousFrame( GeometryProps geometryProps, uint2 pixelPos, out float3 prevLdiff, out float3 prevLspec, bool isRefraction = false )
-{
-    float4 clipPrev = STL::Geometry::ProjectiveTransform( gWorldToClipPrev, geometryProps.X ); // Not Xprev because confidence is based on viewZ
-    float2 uvPrev = ( clipPrev.xy / clipPrev.w ) * float2( 0.5, -0.5 ) + 0.5 - gJitter;
-
-    float4 data = gIn_PrevComposedDiff_PrevViewZ.SampleLevel( gNearestSampler, uvPrev * gRectSizePrev * gInvRenderSize, 0 );
-    float prevViewZ = abs( data.w ) / NRD_FP16_VIEWZ_SCALE;
-
-    prevLdiff = data.xyz;
-    prevLspec = gIn_PrevComposedSpec_PrevViewZ.SampleLevel( gNearestSampler, uvPrev * gRectSizePrev * gInvRenderSize, 0 ).xyz;
-
-    // Initial state
-    float weight = 1.0;
-    float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
-
-    if( isRefraction )
-    {
-        // Fade-out on screen edges
-        weight *= all( saturate( uvPrev ) == uvPrev );
-        weight *= float( pixelUv.x > gSeparator );
-        weight *= float( uvPrev.x > gSeparator );
-    }
-    else
-    {
-        // Fade-out on screen edges
-        float2 f = STL::Math::LinearStep( 0.0, 0.1, uvPrev ) * STL::Math::LinearStep( 1.0, 0.9, uvPrev );
-        weight *= f.x * f.y;
-        weight *= float( pixelUv.x > gSeparator );
-        weight *= float( uvPrev.x > gSeparator );
-
-        // Confidence - viewZ
-        // No "abs" for clipPrev.w, because if it's negative we have a back-projection!
-        float err = abs( prevViewZ - clipPrev.w ) * STL::Math::PositiveRcp( max( prevViewZ, abs( clipPrev.w ) ) );
-        weight *= STL::Math::LinearStep( 0.02, 0.005, err );
-
-        // Confidence - ignore back-facing
-        // Instead of storing previous normal we can store previous NoL, if signs do not match we hit the surface from the opposite side
-        float NoL = dot( geometryProps.N, gSunDirection );
-        weight *= float( NoL * STL::Math::Sign( data.w ) > 0.0 );
-
-        // Confidence - ignore too short rays
-        float4 clip = STL::Geometry::ProjectiveTransform( gWorldToClip, geometryProps.X );
-        float2 uv = ( clip.xy / clip.w ) * float2( 0.5, -0.5 ) + 0.5 - gJitter;
-        float d = length( ( uv - pixelUv ) * gRectSize );
-        weight *= STL::Math::LinearStep( 1.0, 3.0, d );
-    }
-
-    // Ignore sky
-    weight *= float( !geometryProps.IsSky() );
-
-    // Clear out bad values
-    [flatten]
-    if( any( isnan( prevLdiff ) || isinf( prevLdiff ) || isnan( prevLspec ) || isinf( prevLspec ) ) )
-    {
-        prevLdiff = 0;
-        prevLspec = 0;
-        weight = 0;
-    }
-
-    // Use only if radiance is on the screen
-    weight *= float( gOnScreen < SHOW_AMBIENT_OCCLUSION );
-
-    return weight;
-}
-
-float GetDiffuseLikeMotionAmount( GeometryProps geometryProps, MaterialProps materialProps )
-{
-    /*
-    IMPORTANT / TODO: This is just a cheap estimation! Ideally curvature at hits should be applied in the reversed order:
-
-        hitDist = hitT[ N ];
-        for( uint i = N; i >= 1; i++ )
-            hitDist = ApplyThinLensEquation( hitDist, curvature[ i - 1 ] ); // + lobe spread energy dissipation should be there too!
-
-    Since NRD computes curvature at primary hit ( or PSR ), hit distances must respect the following rules:
-    - For primary hits:
-        - hitT for 1st bounce must be provided "as is" ( NRD applies thin lens equation )
-        - hitT for 2nd+ bounces must be adjusted on the application side by taking into account:
-            - energy dissipation due to lobe spread
-            - curvature at bounces
-    - For PSR:
-        - hitT for bounces up to where PSR is found must be adjusted on the application side by taking into account curvature at each bounce ( it affects the virtual position location )
-        - plus, same rules as for primary hits
-    */
-
-    float diffProb = EstimateDiffuseProbability( geometryProps, materialProps, true );
-    diffProb = lerp( diffProb, 1.0, STL::Math::Sqrt01( materialProps.curvature ) );
-
-    return diffProb;
-}
 
 //========================================================================================
 // TRACE OPAQUE
@@ -291,7 +194,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                     // Reuse previous frame carefully treating specular ( if specular contribution is high it can't be reused because it was computed for a different view vector! )
                     float3 prevLdiff, prevLspec;
-                    float prevFrameWeight = GetRadianceFromPreviousFrame( geometryProps, desc.pixelPos, prevLdiff, prevLspec );
+                    float prevFrameWeight = ReprojectRadiance( true, false, gIn_PrevComposedDiff_PrevViewZ, gIn_PrevComposedSpec_PrevViewZ, geometryProps, desc.pixelPos, prevLdiff, prevLspec );
 
                     float diffuseLikeMotion = GetDiffuseLikeMotionAmount( geometryProps, materialProps );
                     prevFrameWeight *= diffuseLikeMotion;
@@ -323,14 +226,10 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                         float3 Xvirtual = desc.geometryProps.X - desc.geometryProps.V * accumulatedHitDistForTracking;
                         viewZ = STL::Geometry::AffineTransform( gWorldToView, Xvirtual ).z;
 
-                        float3 XvirtualPrev = Xvirtual;
                         if( !geometryProps.IsSky( ) )
                         {
                             float diffuseProbability = EstimateDiffuseProbability( geometryProps, materialProps );
                             uint materialID = diffuseProbability > BRDF_ENERGY_THRESHOLD ? 0 : 1;
-
-                            InstanceData instanceData = gIn_InstanceData[ geometryProps.instanceIndex ];
-                            XvirtualPrev = STL::Geometry::AffineTransform( instanceData.mWorldToWorldPrev, Xvirtual );
 
                             float3 psrNormal = STL::Geometry::RotateVectorInverse( mirrorMatrix, materialProps.N );
 
@@ -340,18 +239,16 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                         else
                             gInOut_DirectLighting[ desc.pixelPos ] = startLsum;
 
-                        float3 motion = XvirtualPrev - Xvirtual;
-                        if( !gIsWorldSpaceMotionEnabled )
-                        {
-                            float2 sampleUvPrev = STL::Geometry::GetScreenUv( gWorldToClipPrev, XvirtualPrev );
-                            float2 sampleUv = STL::Geometry::GetScreenUv( gWorldToClip, Xvirtual );
-                            motion.xy = ( sampleUvPrev - sampleUv ) * gRectSize;
+                        gInOut_ViewZ[ desc.pixelPos ] = geometryProps.IsSky( ) ? STL::Math::Sign( viewZ ) * INF : viewZ;
 
-                            float viewZprev = STL::Geometry::AffineTransform( gWorldToViewPrev, XvirtualPrev ).z;
-                            motion.z = viewZprev - viewZ;
+                        float3 XvirtualPrev = Xvirtual;
+                        if( !geometryProps.IsSky( ) && !geometryProps.IsStatic( ) )
+                        {
+                            InstanceData instanceData = gIn_InstanceData[ geometryProps.instanceIndex ];
+                            XvirtualPrev = STL::Geometry::AffineTransform( instanceData.mWorldToWorldPrev, Xvirtual );
                         }
 
-                        gInOut_ViewZ[ desc.pixelPos ] = geometryProps.IsSky( ) ? STL::Math::Sign( viewZ ) * INF : viewZ;
+                        float3 motion = GetMotion( Xvirtual, XvirtualPrev );
                         gInOut_Mv[ desc.pixelPos ] = motion;
 
                         desc.geometryProps = geometryProps;
@@ -404,7 +301,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                 // Clamp probability to a sane range to guarantee a sample in 3x3 ( or 5x5 ) area
                 float rnd = STL::Rng::GetFloat2( ).x;
-                if( ( gTracingMode == RESOLUTION_FULL_PROBABILISTIC && bounceIndex == 1 ) )
+                if( gTracingMode == RESOLUTION_FULL_PROBABILISTIC && bounceIndex == 1 )
                 {
                     diffuseProbability = float( diffuseProbability != 0.0 ) * clamp( diffuseProbability, gMinProbability, 1.0 - gMinProbability );
                     rnd = STL::Sequence::Bayer4x4( desc.pixelPos, gFrameIndex ) + rnd / 16.0;
@@ -478,7 +375,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                     if( gDisableShadowsAndEnableImportanceSampling && isImportanceSamplingNeeded )
                     {
-                        bool isMiss = CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), ray, 0.0, INF, mipAndCone, gLightTlas, GEOMETRY_ONLY_EMISSIVE, desc.rayFlags );
+                        bool isMiss = CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), ray, 0.0, INF, mipAndCone, gLightTlas, GEOMETRY_ALL, desc.rayFlags );
                         throughputWithImportanceSampling *= float( !isMiss );
                     }
 
@@ -554,7 +451,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                 // Reuse previous frame carefully treating specular ( if specular contribution is high it can't be reused because it was computed for a different view vector! )
                 float3 prevLdiff, prevLspec;
-                float prevFrameWeight = GetRadianceFromPreviousFrame( geometryProps, desc.pixelPos, prevLdiff, prevLspec );
+                float prevFrameWeight = ReprojectRadiance( true, false, gIn_PrevComposedDiff_PrevViewZ, gIn_PrevComposedSpec_PrevViewZ, geometryProps, desc.pixelPos, prevLdiff, prevLspec );
 
                 float diffuseLikeMotion = isDiffuse ? 1.0 : GetDiffuseLikeMotionAmount( geometryProps, materialProps );
                 prevFrameWeight *= diffuseLikeMotion;
@@ -675,110 +572,6 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 }
 
 //========================================================================================
-// TRACE TRANSPARENT
-//========================================================================================
-
-struct TraceTransparentDesc
-{
-    // Geometry properties
-    GeometryProps geometryProps;
-
-    // Ambient to be applied at the end of the path
-    float3 Lamb;
-
-    // Pixel position
-    uint2 pixelPos;
-
-    // Number of paths to trace
-    uint pathNum;
-
-    // Number of bounces to trace ( up to )
-    uint bounceNum;
-
-    // Is reflection or refraction in first segment?
-    bool isReflection;
-};
-
-float3 TraceTransparent( TraceTransparentDesc desc )
-{
-    // TODO: think about spatial only denoiser in NRD. Input is L and BRDF ( transmittance )
-
-    const float eta = STL::BRDF::IOR::Air / STL::BRDF::IOR::Glass;
-    float3 Lsum = 0.0;
-
-    [loop]
-    for( uint path = 0; path < desc.pathNum; path++ )
-    {
-        float3 transmittance = 1.0;
-        GeometryProps geometryProps = desc.geometryProps;
-        bool isReflection = desc.isReflection;
-
-        [loop]
-        for( uint bounce = 0; bounce < desc.bounceNum; bounce++ ) // TODO: stop if transmittance is low
-        {
-            float NoV = abs( dot( geometryProps.N, geometryProps.V ) );
-            float F = STL::BRDF::FresnelTerm_Dielectric( eta, NoV );
-
-            if( bounce == 0 )
-                transmittance *= isReflection ? F : 1.0 - F;
-            else
-                isReflection = STL::Rng::GetFloat2().x < F;
-
-            float3 origin = _GetXoffset( geometryProps.X, isReflection ? geometryProps.N : -geometryProps.N );
-            float3 ray = reflect( -geometryProps.V, geometryProps.N );
-
-            // Emulate thickness to avoid getting wrong refracted directions
-            if( !isReflection )
-            {
-                // Glass is single sided in our scenes. If glass is not single sided, then better assume that primary ray is "air-glass",
-                // the next bounce becomes "glass-air", the next switches to "air-glass" again, etc. ( if glass surface is hit, of course )
-                ray = refract( -geometryProps.V, geometryProps.N, eta );
-
-                float cosa = abs( dot( ray, geometryProps.N ) );
-                float d = GLASS_THICKNESS / max( cosa, 0.05 );
-                origin += ray * d; // TODO: since there is no RT, new origin can go under surface if a thin glass stands on it. It can lead to wrong shadows.
-
-                ray = refract( ray, geometryProps.N, 1.0 / eta );
-
-                transmittance *= GLASS_TINT;
-            }
-
-            uint flags = ( bounce == desc.bounceNum - 1 && !isReflection ) ? GEOMETRY_IGNORE_TRANSPARENT : GEOMETRY_ALL;
-            geometryProps = CastRay( origin, ray, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, 0.0 ), gWorldTlas, flags, 0 );
-
-            // Is opaque hit found?
-            if( !geometryProps.IsTransparent( ) )
-            {
-                MaterialProps materialProps = GetMaterialProps( geometryProps );
-
-                // Compute lighting at hit point
-                float3 L = materialProps.Ldirect;
-                if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
-                    L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), gSunDirection, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness ), gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
-
-                L += materialProps.Lemi;
-
-                // Ambient lighting
-                L += desc.Lamb * GetAmbientBRDF( geometryProps, materialProps );
-
-                // Previous frame
-                float3 prevLdiff, prevLspec;
-                float prevFrameWeight = GetRadianceFromPreviousFrame( geometryProps, desc.pixelPos, prevLdiff, prevLspec, !isReflection );
-
-                L = lerp( L, prevLdiff + prevLspec, prevFrameWeight );
-
-                // Accumulate
-                Lsum += L * transmittance;
-
-                break;
-            }
-        }
-    }
-
-    return Lsum / float( desc.pathNum );
-}
-
-//========================================================================================
 // MAIN
 //========================================================================================
 
@@ -803,41 +596,10 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     float3 Lamb = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
     Lamb *= gAmbient;
 
-    // Transparent lighting // TODO: move after "Composition" to be able to use current final frame
+    // Early out
     float viewZ = gInOut_ViewZ[ pixelPos ];
     float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
 
-    float3 Ltransparent = 0.0;
-    if( gTransparent != 0.0 )
-    {
-        // Primary ray
-        float3 cameraRayOriginv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, gNearZ, gOrthoMode );
-        float3 cameraRayOrigin = STL::Geometry::AffineTransform( gViewToWorld, cameraRayOriginv );
-        float3 cameraRayDirection = gOrthoMode == 0 ? normalize( STL::Geometry::RotateVector( gViewToWorld, cameraRayOriginv ) ) : -gViewDirection;
-
-        float tmin0 = length( Xv );
-        GeometryProps geometryPropsT = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, tmin0, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, GEOMETRY_ONLY_TRANSPARENT, 0 );
-
-        if( abs( viewZ ) != INF && geometryPropsT.tmin < tmin0 )
-        {
-            TraceTransparentDesc desc = ( TraceTransparentDesc )0;
-            desc.geometryProps = geometryPropsT;
-            desc.Lamb = Lamb;
-            desc.pixelPos = pixelPos;
-            desc.pathNum = 1;
-            desc.bounceNum = 10;
-
-            desc.isReflection = true;
-            Ltransparent = TraceTransparent( desc );
-
-            desc.isReflection = false;
-            Ltransparent += TraceTransparent( desc );
-        }
-    }
-
-    gOut_TransparentLighting[ pixelPos ] = Ltransparent;
-
-    // Early out
     uint checkerboard = STL::Sequence::CheckerBoard( pixelPos, gFrameIndex ) != 0;
     if( abs( viewZ ) == INF )
     {
@@ -924,6 +686,11 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
             result.diffRadiance = float3( 0, 10, 0 ) * STL::Color::Luminance( result.diffRadiance );
     #endif
 
+    #if( USE_SIMULATED_FIREFLY_TEST == 1 )
+        const float maxFireflyEnergyScaleFactor = 10000.0;
+        result.diffRadiance /= lerp( 1.0 / maxFireflyEnergyScaleFactor, 1.0, STL::Rng::GetFloat2().x );
+    #endif
+
     // Convert for NRD
     float4 outDiff = 0.0;
     float4 outSpec = 0.0;
@@ -933,8 +700,8 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     if( gDenoiserType == RELAX )
     {
     #if( NRD_MODE == SH )
-        outDiff = RELAX_FrontEnd_PackSh(result.diffRadiance, result.diffHitDist, result.diffDirection, outDiffSh, USE_SANITIZATION);
-        outSpec = RELAX_FrontEnd_PackSh(result.specRadiance, result.specHitDist, result.specDirection, outSpecSh, USE_SANITIZATION);
+        outDiff = RELAX_FrontEnd_PackSh( result.diffRadiance, result.diffHitDist, result.diffDirection, outDiffSh, USE_SANITIZATION );
+        outSpec = RELAX_FrontEnd_PackSh( result.specRadiance, result.specHitDist, result.specDirection, outSpecSh, USE_SANITIZATION );
     #else
         outDiff = RELAX_FrontEnd_PackRadianceAndHitDist( result.diffRadiance, result.diffHitDist, USE_SANITIZATION );
         outSpec = RELAX_FrontEnd_PackRadianceAndHitDist( result.specRadiance, result.specHitDist, USE_SANITIZATION );

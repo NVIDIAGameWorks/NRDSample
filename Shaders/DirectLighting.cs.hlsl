@@ -36,7 +36,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     // Debug
     if( gOnScreen == SHOW_SHADOW )
         Lsum = shadow;
-    else if( gOnScreen >= SHOW_MESH )
+    else if( gOnScreen >= SHOW_INSTANCE_INDEX )
         Lsum = Ldirect;
 
     // Output

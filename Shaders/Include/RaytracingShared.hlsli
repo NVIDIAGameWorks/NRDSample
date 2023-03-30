@@ -1,30 +1,34 @@
 struct PrimitiveData
 {
-    half2 uv0;
-    half2 uv1;
-    half2 uv2;
-    half2 n0;
+    float16_t2 uv0;
+    float16_t2 uv1;
+    float16_t2 uv2;
+    float16_t2 n0;
 
-    half2 n1;
-    half2 n2;
-    half2 t0;
-    half2 t1;
+    float16_t2 n1;
+    float16_t2 n2;
+    float16_t2 t0;
+    float16_t2 t1;
 
-    half2 t2;
-    half2 b0s_b1s;
-    half2 b2s_worldToUvUnits;
+    float16_t2 t2;
+    float16_t2 b0s_b1s;
+    float16_t2 b2s_worldToUvUnits;
     float curvature;
 };
 
 struct InstanceData
 {
-    uint basePrimitiveIndex;
-    uint baseTextureIndex;
-    uint unused1;
-    uint unused2;
-
-    // TODO: move to a separate buffer
     row_major float3x4 mWorldToWorldPrev;
+
+    uint baseTextureIndex;
+    uint basePrimitiveIndex;
+
+    // TODO: static geometry transformation handling
+    uint isStatic;
+
+    // TODO: handling object scale embedded into the transformation matrix (assuming uniform scale)
+    // TODO: sign represents triangle winding
+    float invScale;
 };
 
 NRI_RESOURCE( RaytracingAccelerationStructure, gWorldTlas, t, 0, 2 );
@@ -39,21 +43,16 @@ NRI_RESOURCE( Texture2D<float4>, gIn_Textures[], t, 4, 2 );
 #define INSTANCE_ID_MASK                    ( ( 1 << FLAG_FIRST_BIT ) - 1 )
 
 // CPU flags
-#define FLAG_OPAQUE_OR_ALPHA_OPAQUE         0x01
+#define FLAG_DEFAULT                        0x01
 #define FLAG_TRANSPARENT                    0x02
-#define FLAG_EMISSION                       0x04
-#define FLAG_FORCED_EMISSION                0x08
+#define FLAG_FORCED_EMISSION                0x04
 
-// Local flags // TODO: all unused
-#define FLAG_UNUSED1                        0x10
-#define FLAG_UNUSED2                        0x20
-#define FLAG_UNUSED3                        0x40
-#define FLAG_UNUSED4                        0x80
+// Local flags
+#define FLAG_STATIC                         0x08
 
-#define GEOMETRY_ALL                        ( FLAG_OPAQUE_OR_ALPHA_OPAQUE | FLAG_EMISSION | FLAG_FORCED_EMISSION | FLAG_TRANSPARENT )
-#define GEOMETRY_ONLY_EMISSIVE              ( FLAG_EMISSION | FLAG_FORCED_EMISSION )
+#define GEOMETRY_ALL                        0xFF
 #define GEOMETRY_ONLY_TRANSPARENT           ( FLAG_TRANSPARENT )
-#define GEOMETRY_IGNORE_TRANSPARENT         ( FLAG_OPAQUE_OR_ALPHA_OPAQUE | FLAG_EMISSION | FLAG_FORCED_EMISSION )
+#define GEOMETRY_IGNORE_TRANSPARENT         ( ~FLAG_TRANSPARENT )
 
 //====================================================================================================================================
 // GEOMETRY & MATERIAL PROPERTIES
@@ -71,8 +70,7 @@ float3 _GetXoffset( float3 X, float3 offsetDirection )
         X = abs( X ) < ( 1.0 / 32.0 ) ? b : a;
     #endif
 
-    // TODO: very accurate normal is needed to minimize offset
-    return X;// + offsetDirection * ( 0.003 + length( X - gCameraOrigin ) * 0.0005 );
+    return X;
 }
 
 struct GeometryProps
@@ -91,14 +89,14 @@ struct GeometryProps
     float3 GetXoffset( )
     { return _GetXoffset( X, N ); }
 
-    bool IsTransparent( )
-    { return ( textureOffsetAndFlags & ( ( FLAG_TRANSPARENT ) << FLAG_FIRST_BIT ) ) != 0; }
+    bool IsStatic( )
+    { return ( textureOffsetAndFlags & ( FLAG_STATIC << FLAG_FIRST_BIT ) ) != 0; }
 
-    bool IsEmissive( )
-    { return ( textureOffsetAndFlags & ( ( FLAG_EMISSION | FLAG_FORCED_EMISSION ) << FLAG_FIRST_BIT ) ) != 0; }
+    bool IsTransparent( )
+    { return ( textureOffsetAndFlags & ( FLAG_TRANSPARENT << FLAG_FIRST_BIT ) ) != 0; }
 
     bool IsForcedEmission( )
-    { return ( textureOffsetAndFlags & ( ( FLAG_FORCED_EMISSION ) << FLAG_FIRST_BIT ) ) != 0; }
+    { return ( textureOffsetAndFlags & ( FLAG_FORCED_EMISSION << FLAG_FIRST_BIT ) ) != 0; }
 
     uint GetBaseTexture( )
     { return textureOffsetAndFlags & INSTANCE_ID_MASK; }
@@ -183,26 +181,26 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
     float3 mips = GetRealMip( baseTexture, geometryProps.mip );
 
     // Base color
-    float4 color = gIn_Textures[ baseTexture ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.z );
+    float4 color = gIn_Textures[ NonUniformResourceIndex( baseTexture ) ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.z );
     color.xyz *= geometryProps.IsTransparent( ) ? 1.0 : STL::Math::PositiveRcp( color.w ); // Correct handling of BC1 with pre-multiplied alpha
     float3 baseColor = saturate( color.xyz );
 
     // Roughness and metalness
-    float3 materialProps = gIn_Textures[ baseTexture + 1 ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.z ).xyz;
+    float3 materialProps = gIn_Textures[ NonUniformResourceIndex( baseTexture + 1 ) ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.z ).xyz;
     float roughness = materialProps.y;
     float metalness = materialProps.z;
 
     // Normal
-    float2 packedNormal = gIn_Textures[ baseTexture + 2 ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.y ).xy;
+    float2 packedNormal = gIn_Textures[ NonUniformResourceIndex( baseTexture + 2 ) ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.y ).xy;
     float3 N = gUseNormalMap ? STL::Geometry::TransformLocalNormal( packedNormal, geometryProps.T, geometryProps.N ) : geometryProps.N;
 
     // Estimate curvature
     float curvature = length( STL::Geometry::UnpackLocalNormal( packedNormal ).xy ) * float( gUseNormalMap );
 
     // Emission
-    float3 Lemi = gIn_Textures[ baseTexture + 3 ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.x ).xyz;
+    float3 Lemi = gIn_Textures[ NonUniformResourceIndex( baseTexture + 3 ) ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.x ).xyz;
     Lemi *= ( baseColor + 0.01 ) / ( max( baseColor, max( baseColor, baseColor ) ) + 0.01 );
-    Lemi *= gEmissionIntensity * float( geometryProps.IsEmissive( ) );
+    Lemi *= gEmissionIntensity;
 
     // Override material
     [flatten]
@@ -320,6 +318,106 @@ float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps mat
     return diffProb < 0.005 ? 0.0 : diffProb;
 }
 
+float ReprojectRadiance(
+    bool isPrevFrame, bool isRefraction,
+    Texture2D<float4> diffAndViewZ, Texture2D<float4> specAndViewZ,
+    GeometryProps geometryProps, uint2 pixelPos,
+    out float3 prevLdiff, out float3 prevLspec
+)
+{
+    float2 rescale = ( isPrevFrame ? gRectSizePrev : gRectSize ) * gInvRenderSize;
+
+    // IMPORTANT: not Xprev because confidence is based on viewZ
+    float4 clip = STL::Geometry::ProjectiveTransform( isPrevFrame ? gWorldToClipPrev : gWorldToClip, geometryProps.X );
+    float2 uv = ( clip.xy / clip.w ) * float2( 0.5, -0.5 ) + 0.5 - gJitter;
+
+    float4 data = diffAndViewZ.SampleLevel( gNearestSampler, uv * rescale, 0 );
+    float prevViewZ = abs( data.w ) / NRD_FP16_VIEWZ_SCALE;
+
+    prevLdiff = data.xyz;
+    prevLspec = specAndViewZ.SampleLevel( gNearestSampler, uv * rescale, 0 ).xyz;
+
+    // Initial state
+    float weight = 1.0;
+    float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
+
+    // Confidence - viewZ
+    // IMPORTANT: no "abs" for clip.w, because if it's negative it is a back-projection!
+    float err = abs( prevViewZ - clip.w ) * STL::Math::PositiveRcp( max( prevViewZ, abs( clip.w ) ) );
+    weight *= STL::Math::LinearStep( 0.03, 0.01, err );
+
+    // Ignore undenoised regions ( split screen mode is active )
+    weight *= float( pixelUv.x > gSeparator );
+    weight *= float( uv.x > gSeparator );
+
+    // Relaxed checks for refractions
+    if( isRefraction )
+    {
+        // Fade-out on screen edges ( hard )
+        weight *= all( saturate( uv ) == uv );
+    }
+    else
+    {
+        // Fade-out on screen edges ( smooth )
+        float2 f = STL::Math::LinearStep( 0.0, 0.1, uv ) * STL::Math::LinearStep( 1.0, 0.9, uv );
+        weight *= f.x * f.y;
+
+        // Confidence - ignore back-facing
+        // Instead of storing previous normal we can store previous NoL, if signs do not match we hit the surface from the opposite side
+        float NoL = dot( geometryProps.N, gSunDirection );
+        weight *= float( NoL * STL::Math::Sign( data.w ) > 0.0 );
+
+        // Confidence - ignore too short rays
+        float4 clip = STL::Geometry::ProjectiveTransform( gWorldToClip, geometryProps.X );
+        float2 uv = ( clip.xy / clip.w ) * float2( 0.5, -0.5 ) + 0.5 - gJitter;
+        float d = length( ( uv - pixelUv ) * gRectSize );
+        weight *= STL::Math::LinearStep( 1.0, 3.0, d );
+    }
+
+    // Ignore sky
+    weight *= float( !geometryProps.IsSky() );
+
+    // Clear out bad values
+    [flatten]
+    if( any( isnan( prevLdiff ) || isinf( prevLdiff ) || isnan( prevLspec ) || isinf( prevLspec ) ) )
+    {
+        prevLdiff = 0;
+        prevLspec = 0;
+        weight = 0;
+    }
+
+    // Use only if radiance is on the screen
+    weight *= float( gOnScreen < SHOW_AMBIENT_OCCLUSION );
+
+    return weight;
+}
+
+float GetDiffuseLikeMotionAmount( GeometryProps geometryProps, MaterialProps materialProps )
+{
+    /*
+    IMPORTANT / TODO: This is just a cheap estimation! Ideally curvature at hits should be applied in the reversed order:
+
+        hitDist = hitT[ N ];
+        for( uint i = N; i >= 1; i++ )
+            hitDist = ApplyThinLensEquation( hitDist, curvature[ i - 1 ] ); // + lobe spread energy dissipation should be there too!
+
+    Since NRD computes curvature at primary hit ( or PSR ), hit distances must respect the following rules:
+    - For primary hits:
+        - hitT for 1st bounce must be provided "as is" ( NRD applies thin lens equation )
+        - hitT for 2nd+ bounces must be adjusted on the application side by taking into account:
+            - energy dissipation due to lobe spread
+            - curvature at bounces
+    - For PSR:
+        - hitT for bounces up to where PSR is found must be adjusted on the application side by taking into account curvature at each bounce ( it affects the virtual position location )
+        - plus, same rules as for primary hits
+    */
+
+    float diffProb = EstimateDiffuseProbability( geometryProps, materialProps, true );
+    diffProb = lerp( diffProb, 1.0, STL::Math::Sqrt01( materialProps.curvature ) );
+
+    return diffProb;
+}
+
 //====================================================================================================================================
 // TRACER
 //====================================================================================================================================
@@ -327,10 +425,15 @@ float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps mat
 #define CheckNonOpaqueTriangle( rayQuery, mipAndCone ) \
     { \
         /* Instance */ \
-        uint instanceIndex = rayQuery.CandidateInstanceID( ) & INSTANCE_ID_MASK; \
+        uint instanceIndex = ( rayQuery.CandidateInstanceID( ) & INSTANCE_ID_MASK ) + rayQuery.CandidateGeometryIndex( ); \
         InstanceData instanceData = gIn_InstanceData[ instanceIndex ]; \
         \
+        /* Transform */ \
         float3x3 mObjectToWorld = (float3x3)rayQuery.CandidateObjectToWorld3x4( ); \
+        if( instanceData.isStatic ) \
+            mObjectToWorld = (float3x3)instanceData.mWorldToWorldPrev; \
+        \
+        float flip = STL::Math::Sign( instanceData.invScale ) * ( rayQuery.CandidateTriangleFrontFace( ) ? -1.0 : 1.0 ); \
         \
         /* Primitive */ \
         uint primitiveIndex = instanceData.basePrimitiveIndex + rayQuery.CandidatePrimitiveIndex( ); \
@@ -351,18 +454,14 @@ float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps mat
         \
         float3 N = barycentrics.x * n0 + barycentrics.y * n1 + barycentrics.z * n2; \
         N = STL::Geometry::RotateVector( mObjectToWorld, N ); \
-        N = normalize( N ); \
-        N = rayQuery.CandidateTriangleFrontFace( ) ? -N : N; \
+        N = normalize( N * flip ); \
         \
-        /* Handling object scale embedded into the transformation matrix (assuming uniform scale) */ \
-        float invObjectScale = STL::Math::Rsqrt( STL::Math::LengthSquared( mObjectToWorld[ 0 ] ) ); \
-        \
-        /* Mip level (TODO: doesn't take into account integrated AO / SO - i.e. diffuse = lowest mip, but what if we see the sky through a tiny hole?) */ \
+        /* Mip level ( TODO: doesn't take into account integrated AO / SO - i.e. diffuse = lowest mip, but what if we see the sky through a tiny hole? ) */ \
         float NoR = abs( dot( rayQuery.WorldRayDirection( ), N ) ); \
         float a = rayQuery.CandidateTriangleRayT( ); \
         a *= mipAndCone.y; \
         a *= STL::Math::PositiveRcp( NoR ); \
-        a *= primitiveData.b2s_worldToUvUnits.y * invObjectScale; \
+        a *= primitiveData.b2s_worldToUvUnits.y * abs( instanceData.invScale ); \
         \
         float mip = log2( a ); \
         mip += MAX_MIP_LEVEL; \
@@ -437,20 +536,29 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
         props.tmin = rayQuery.CommittedRayT( );
 
         // Instance
-        uint instanceIndex = rayQuery.CommittedInstanceID( ) & INSTANCE_ID_MASK;
+        uint instanceIndex = ( rayQuery.CommittedInstanceID( ) & INSTANCE_ID_MASK ) + rayQuery.CommittedGeometryIndex( );
         props.instanceIndex = instanceIndex;
 
         InstanceData instanceData = gIn_InstanceData[ instanceIndex ];
 
-        float3x3 mObjectToWorld = (float3x3)rayQuery.CommittedObjectToWorld3x4( ); // TODO: 4x3?
+        // Texture offset and flags
+        uint flags = rayQuery.CommittedInstanceID( ) & ~INSTANCE_ID_MASK;
+        props.textureOffsetAndFlags = instanceData.baseTextureIndex | flags;
+
+        // Transform
+        float3x3 mObjectToWorld = (float3x3)rayQuery.CommittedObjectToWorld3x4( );
+
+        if( instanceData.isStatic )
+        {
+            mObjectToWorld = (float3x3)instanceData.mWorldToWorldPrev;
+            props.textureOffsetAndFlags |= FLAG_STATIC << FLAG_FIRST_BIT;
+        }
+
+        float flip = STL::Math::Sign( instanceData.invScale ) * ( rayQuery.CommittedTriangleFrontFace( ) ? -1.0 : 1.0 );
 
         // Primitive
         uint primitiveIndex = instanceData.basePrimitiveIndex + rayQuery.CommittedPrimitiveIndex( );
         PrimitiveData primitiveData = gIn_PrimitiveData[ primitiveIndex ];
-
-        // Texture offset and flags
-        uint flags = rayQuery.CommittedInstanceID( ) & ~INSTANCE_ID_MASK;
-        props.textureOffsetAndFlags = instanceData.baseTextureIndex | flags;
 
         // Barycentrics
         float3 barycentrics;
@@ -464,8 +572,22 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
 
         float3 N = barycentrics.x * n0 + barycentrics.y * n1 + barycentrics.z * n2;
         N = STL::Geometry::RotateVector( mObjectToWorld, N );
-        N = normalize( N );
-        props.N = rayQuery.CommittedTriangleFrontFace( ) ? -N : N;
+        N = normalize( N * flip );
+        props.N = N;
+
+        // Curvature
+        props.curvature = primitiveData.curvature;
+
+        // Mip level (TODO: doesn't take into account integrated AO / SO - i.e. diffuse = lowest mip, but what if we see the sky through a tiny hole?)
+        float NoR = abs( dot( direction, props.N ) );
+        float a = props.tmin * mipAndCone.y;
+        a *= STL::Math::PositiveRcp( NoR );
+        a *= primitiveData.b2s_worldToUvUnits.y * abs( instanceData.invScale );
+
+        float mip = log2( a );
+        mip += MAX_MIP_LEVEL;
+        mip = max( mip, 0.0 );
+        props.mip += mip;
 
         // Uv
         props.uv = barycentrics.x * primitiveData.uv0 + barycentrics.y * primitiveData.uv1 + barycentrics.z * primitiveData.uv2;
@@ -479,23 +601,6 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
         T.xyz = STL::Geometry::RotateVector( mObjectToWorld, T.xyz );
         T.xyz = normalize( T.xyz );
         props.T = T;
-
-        // Curvature
-        props.curvature = primitiveData.curvature;
-
-        // Handling object scale embedded into the transformation matrix (assuming uniform scale)
-        float invObjectScale = STL::Math::Rsqrt( STL::Math::LengthSquared( mObjectToWorld[ 0 ] ) );
-
-        // Mip level (TODO: doesn't take into account integrated AO / SO - i.e. diffuse = lowest mip, but what if we see the sky through a tiny hole?)
-        float NoR = abs( dot( direction, props.N ) );
-        float a = props.tmin * mipAndCone.y;
-        a *= STL::Math::PositiveRcp( NoR );
-        a *= primitiveData.b2s_worldToUvUnits.y * invObjectScale;
-
-        float mip = log2( a );
-        mip += MAX_MIP_LEVEL;
-        mip = max( mip, 0.0 );
-        props.mip += mip;
     }
 
     props.X = origin + direction * props.tmin;

@@ -73,7 +73,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     float3 cameraRayOrigin = STL::Geometry::AffineTransform( gViewToWorld, cameraRayOriginv );
     float3 cameraRayDirection = gOrthoMode == 0 ? normalize( STL::Geometry::RotateVector( gViewToWorld, cameraRayOriginv ) ) : -gViewDirection;
 
-    GeometryProps geometryProps0 = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, INF, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, ( gOnScreen == SHOW_MESH || gOnScreen == SHOW_NORMAL ) ? GEOMETRY_ALL : GEOMETRY_IGNORE_TRANSPARENT, 0 );
+    GeometryProps geometryProps0 = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, INF, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, ( gOnScreen == SHOW_INSTANCE_INDEX || gOnScreen == SHOW_NORMAL ) ? GEOMETRY_ALL : GEOMETRY_IGNORE_TRANSPARENT, 0 );
     MaterialProps materialProps0 = GetMaterialProps( geometryProps0 );
 
     // ViewZ
@@ -82,22 +82,13 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     // Motion
     float3 Xprev = geometryProps0.X;
-    if( !geometryProps0.IsSky( ) )
+    if( !geometryProps0.IsSky( ) && !geometryProps0.IsStatic( ) )
     {
         InstanceData instanceData = gIn_InstanceData[ geometryProps0.instanceIndex ];
         Xprev = STL::Geometry::AffineTransform( instanceData.mWorldToWorldPrev, geometryProps0.X );
     }
 
-    float3 motion = Xprev - geometryProps0.X;
-    if( !gIsWorldSpaceMotionEnabled )
-    {
-        float viewZprev = STL::Geometry::AffineTransform( gWorldToViewPrev, Xprev ).z;
-        float2 sampleUvPrev = STL::Geometry::GetScreenUv( gWorldToClipPrev, Xprev );
-
-        motion.xy = ( sampleUvPrev - sampleUv ) * gRectSize;
-        motion.z = viewZprev - viewZ;
-    }
-
+    float3 motion = GetMotion( geometryProps0.X, Xprev );
     gOut_Mv[ pixelPos ] = motion;
 
     // Early out - sky
@@ -125,15 +116,21 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     gOut_Normal_Roughness[ pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( materialProps0.N, materialProps0.roughness, materialID );
     gOut_BaseColor_Metalness[ pixelPos ] = float4( STL::Color::LinearToSrgb( materialProps0.baseColor ), materialProps0.metalness );
 
-    // Debug & direct lighting
-    if( gOnScreen == SHOW_MESH )
+    // Debug
+    if( gOnScreen == SHOW_INSTANCE_INDEX )
     {
         STL::Rng::Initialize( geometryProps0.instanceIndex, 0 );
-        materialProps0.Ldirect = STL::Rng::GetFloat4().xyz;
+
+        uint checkerboard = STL::Sequence::CheckerBoard( pixelPos >> 2, 0 ) != 0;
+        float3 color = STL::Rng::GetFloat4().xyz;
+        color *= checkerboard && !geometryProps0.IsStatic( ) ? 0.5 : 1.0;
+
+        materialProps0.Ldirect = color;
     }
     else if( gOnScreen == SHOW_MIP_PRIMARY )
         materialProps0.Ldirect = STL::Color::ColorizeZucconi( mipNorm );
 
+    // Direct lighting and emission
     gOut_DirectLighting[ pixelPos ] = materialProps0.Ldirect;
     gOut_DirectEmission[ pixelPos ] = materialProps0.Lemi;
 
@@ -174,8 +171,9 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
                 break;
             }
 
+            // TODO: ( biased ) a cheap approximation of shadows through glass
             float NoV = abs( dot( geometryPropsShadow.N, sunDirection ) );
-            shadowTranslucency *= lerp( 0.9, 0.0, STL::Math::Pow01( 1.0 - NoV, 2.5 ) ) * GLASS_TINT;
+            shadowTranslucency *= lerp( 0.9, 0.0, STL::Math::Pow01( 1.0 - NoV, 2.5 ) );
             shadowTranslucency *= float( geometryPropsShadow.IsTransparent( ) );
 
             float offset = geometryProps0.tmin * 0.0001 + 0.001;

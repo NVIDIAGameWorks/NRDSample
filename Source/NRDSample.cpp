@@ -43,8 +43,10 @@ constexpr auto BLAS_BUILD_BITS                      = nri::AccelerationStructure
 constexpr auto TLAS_BUILD_BITS                      = nri::AccelerationStructureBuildBits::PREFER_FAST_TRACE;
 constexpr float ACCUMULATION_TIME                   = 0.5f; // seconds
 constexpr float NEAR_Z                              = 0.001f; // m
+constexpr float GLASS_THICKNESS                     = 0.002f; // m
 constexpr bool CAMERA_RELATIVE                      = true;
 constexpr bool CAMERA_LEFT_HANDED                   = true;
+constexpr bool DISALLOW_BLAS_MERGING                = false;
 
 //=================================================================================
 // Important tests, sensitive to regressions or just testing base functionality
@@ -95,10 +97,9 @@ constexpr uint32_t MAX_TEXTURE_TRANSITION_NUM       = 32;
 // See HLSL
 #define FLAG_FIRST_BIT                              20
 #define INSTANCE_ID_MASK                            ( ( 1 << FLAG_FIRST_BIT ) - 1 )
-#define FLAG_OPAQUE_OR_ALPHA_OPAQUE                 0x01
-#define FLAG_TRANSPARENT                            0x02
-#define FLAG_EMISSION                               0x04
-#define FLAG_FORCED_EMISSION                        0x08
+#define FLAG_DEFAULT                                0x01 // set only if nothing is set 
+#define FLAG_TRANSPARENT                            0x02 // transparent
+#define FLAG_FORCED_EMISSION                        0x04 // animated emissive cube
 
 enum Denoiser : int32_t
 {
@@ -121,6 +122,18 @@ enum MvType : int32_t
     MV_2D,
     MV_25D,
     MV_3D,
+};
+
+enum class AccelerationStructure : uint32_t
+{
+    TLAS_World,
+    TLAS_Emissive,
+
+    BLAS_StaticOpaque,
+    BLAS_StaticTransparent,
+    BLAS_StaticEmissive,
+
+    BLAS_Other // all other BLAS start from here
 };
 
 enum class Buffer : uint32_t
@@ -148,7 +161,6 @@ enum class Texture : uint32_t
     BaseColor_Metalness,
     DirectLighting,
     DirectEmission,
-    TransparentLighting,
     Shadow,
     Diff,
     Spec,
@@ -193,6 +205,7 @@ enum class Pipeline : uint32_t
     DirectLighting,
     IndirectRays,
     Composition,
+    DeltaRays,
     Temporal,
     Upsample,
     UpsampleNis,
@@ -231,8 +244,6 @@ enum class Descriptor : uint32_t
     DirectLighting_StorageTexture,
     DirectEmission_Texture,
     DirectEmission_StorageTexture,
-    TransparentLighting_Texture,
-    TransparentLighting_StorageTexture,
     Shadow_Texture,
     Shadow_StorageTexture,
     Diff_Texture,
@@ -297,6 +308,7 @@ enum class DescriptorSet : uint32_t
     DirectLighting1,
     IndirectRays1,
     Composition1,
+    DeltaRays1,
     Temporal1a,
     Temporal1b,
     Upsample1a,
@@ -547,14 +559,14 @@ struct PrimitiveData
 
 struct InstanceData
 {
-    uint32_t basePrimitiveIndex;
-    uint32_t baseTextureIndex;
-    uint32_t unused1;
-    uint32_t unused2;
-
     float4 mWorldToWorldPrev0;
     float4 mWorldToWorldPrev1;
     float4 mWorldToWorldPrev2;
+
+    uint32_t baseTextureIndex;
+    uint32_t basePrimitiveIndex;
+    uint32_t isStatic;
+    float invScale;
 };
 
 class Sample : public SampleBase
@@ -606,28 +618,28 @@ public:
     inline nri::DescriptorSet*& Get(DescriptorSet index)
     { return m_DescriptorSets[(uint32_t)index]; }
 
+    inline nri::AccelerationStructure*& Get(AccelerationStructure index)
+    { return m_AccelerationStructures[(uint32_t)index]; }
+
     void LoadScene();
-    void SetupAnimatedObjects();
+    void AddInnerGlassSurfaces();
+    void GenerateAnimatedCubes();
 
     nri::Format CreateSwapChain();
     void CreateCommandBuffers();
     void CreatePipelineLayoutAndDescriptorPool();
     void CreatePipelines();
-    void CreateBottomLevelAccelerationStructures();
-    void CreateTopLevelAccelerationStructures();
+    void CreateAccelerationStructures();
     void CreateSamplers();
     void CreateResources(nri::Format swapChainFormat);
     void CreateDescriptorSets();
 
-    void CreateUploadBuffer(uint64_t size, nri::Buffer*& buffer, nri::Memory*& memory);
-    void CreateScratchBuffer(nri::AccelerationStructure& accelerationStructure, nri::Buffer*& buffer, nri::Memory*& memory);
     void CreateTexture(std::vector<DescriptorDesc>& descriptorDescs, const char* debugName, nri::Format format, uint16_t width, uint16_t height, uint16_t mipNum, uint16_t arraySize, nri::TextureUsageBits usage, nri::AccessBits state);
     void CreateBuffer(std::vector<DescriptorDesc>& descriptorDescs, const char* debugName, uint64_t elements, uint32_t stride, nri::BufferUsageBits usage, nri::Format format = nri::Format::UNKNOWN);
 
     void UploadStaticData();
     void UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor);
     void RestoreBindings(nri::CommandBuffer& commandBuffer, const Frame& frame);
-    void BuildBottomLevelAccelerationStructure(nri::AccelerationStructure& accelerationStructure, const nri::GeometryObject* objects, const uint32_t objectNum);
     void BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffer, uint32_t bufferedFrameIndex);
     uint32_t BuildOptimizedTransitions(const TextureState* states, uint32_t stateNum, std::array<nri::TextureTransitionBarrierDesc, MAX_TEXTURE_TRANSITION_NUM>& transitions);
 
@@ -659,8 +671,6 @@ private:
     nri::SwapChain* m_SwapChain = nullptr;
     nri::CommandQueue* m_CommandQueue = nullptr;
     nri::Fence* m_FrameFence;
-    nri::AccelerationStructure* m_WorldTlas = nullptr;
-    nri::AccelerationStructure* m_LightTlas = nullptr;
     nri::DescriptorPool* m_DescriptorPool = nullptr;
     nri::PipelineLayout* m_PipelineLayout = nullptr;
     std::array<Frame, BUFFERED_FRAME_MAX_NUM> m_Frames = {};
@@ -672,7 +682,7 @@ private:
     std::vector<nri::Descriptor*> m_Descriptors;
     std::vector<nri::DescriptorSet*> m_DescriptorSets;
     std::vector<nri::Pipeline*> m_Pipelines;
-    std::vector<nri::AccelerationStructure*> m_BLASs;
+    std::vector<nri::AccelerationStructure*> m_AccelerationStructures;
     std::vector<BackBuffer> m_SwapChainBuffers;
     std::vector<AnimatedInstance> m_AnimatedInstances;
     std::array<float, 256> m_FrameTimes = {};
@@ -687,14 +697,17 @@ private:
     float3 m_PrevLocalPos = {};
     uint2 m_RenderResolution = {};
     uint64_t m_ConstantBufferSize = 0;
-    uint32_t m_DefaultInstancesOffset = 0;
+    uint32_t m_OpaqueObjectsNum = 0;
+    uint32_t m_TransparentObjectsNum = 0;
+    uint32_t m_EmissiveObjectsNum = 0;
+    uint32_t m_ProxyInstancesNum = 0;
     uint32_t m_LastSelectedTest = uint32_t(-1);
     uint32_t m_TestNum = uint32_t(-1);
     int32_t m_DlssQuality = int32_t(-1);
     float m_UiWidth = 0.0f;
     float m_AmbientAccumFrameNum = 0.0f;
     float m_MinResolutionScale = 0.5f;
-    bool m_HasTransparentObjects = false;
+    bool m_HasTransparent = false;
     bool m_ShowUi = true;
     bool m_ForceHistoryReset = false;
     bool m_Resolve = true;
@@ -741,13 +754,11 @@ Sample::~Sample()
     for (uint32_t i = 0; i < m_Pipelines.size(); i++)
         NRI.DestroyPipeline(*m_Pipelines[i]);
 
-    for (uint32_t i = 0; i < m_BLASs.size(); i++)
-        NRI.DestroyAccelerationStructure(*m_BLASs[i]);
+    for (uint32_t i = 0; i < m_AccelerationStructures.size(); i++)
+        NRI.DestroyAccelerationStructure(*m_AccelerationStructures[i]);
 
     NRI.DestroyPipelineLayout(*m_PipelineLayout);
     NRI.DestroyDescriptorPool(*m_DescriptorPool);
-    NRI.DestroyAccelerationStructure(*m_WorldTlas);
-    NRI.DestroyAccelerationStructure(*m_LightTlas);
     NRI.DestroyFence(*m_FrameFence);
     NRI.DestroySwapChain(*m_SwapChain);
 
@@ -773,7 +784,9 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     deviceCreationDesc.enableNRIValidation = m_DebugNRI;
     deviceCreationDesc.spirvBindingOffsets = SPIRV_BINDING_OFFSETS;
     deviceCreationDesc.physicalDeviceGroup = &mostPerformantPhysicalDeviceGroup;
-    DlssIntegration::SetupDeviceExtensions(deviceCreationDesc);
+    if (mostPerformantPhysicalDeviceGroup.vendor == nri::Vendor::NVIDIA)
+        DlssIntegration::SetupDeviceExtensions(deviceCreationDesc);
+
     NRI_ABORT_ON_FAILURE( nri::CreateDevice(deviceCreationDesc, m_Device) );
 
     NRI_ABORT_ON_FAILURE( nri::GetInterface(*m_Device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&NRI) );
@@ -870,14 +883,14 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     #endif
 
     LoadScene();
-    SetupAnimatedObjects();
+    AddInnerGlassSurfaces();
+    GenerateAnimatedCubes();
 
     nri::Format swapChainFormat = CreateSwapChain();
     CreateCommandBuffers();
     CreatePipelineLayoutAndDescriptorPool();
     CreatePipelines();
-    CreateBottomLevelAccelerationStructures();
-    CreateTopLevelAccelerationStructures();
+    CreateAccelerationStructures();
     CreateSamplers();
     CreateResources(swapChainFormat);
     CreateDescriptorSets();
@@ -1076,7 +1089,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         "Roughness",
                         "Metalness",
                         "World units",
-                        "Mesh",
+                        "Instance index",
                         "Mip level (primary)",
                         "Mip level (specular)",
                 #endif
@@ -1218,7 +1231,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     if (isUnfolded)
                     {
                         ImGui::Checkbox("Animate sun", &m_Settings.animateSun);
-                        if (!m_Scene.animations.empty() && m_Scene.animations[m_Settings.activeAnimation].cameraNode.HasAnimation())
+                        if (!m_Scene.animations.empty() && m_Scene.animations[m_Settings.activeAnimation].cameraNode.animationNode != utils::InvalidIndex)
                         {
                             ImGui::SameLine();
                             ImGui::Checkbox("Animate camera", &m_Settings.animateCamera);
@@ -1248,27 +1261,24 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             ImGui::SliderFloat("Object scale", &m_Settings.animatedObjectScale, 0.1f, 2.0f);
                         }
 
-                        if (m_Settings.animateCamera)
+                        if (m_Settings.animateCamera && m_Scene.animations[m_Settings.activeAnimation].durationMs != 0.0f)
                         {
-                            if (m_Scene.animations[m_Settings.activeAnimation].durationMs != 0.0f)
-                            {
-                                char animationLabel[128];
-                                snprintf(animationLabel, sizeof(animationLabel), "Animation %.1f sec (%%)", 0.001f * m_Scene.animations[m_Settings.activeAnimation].durationMs / (m_Settings.animationSpeed < 0.0f ? 1.0f / (1.0f + Abs(m_Settings.animationSpeed)) : (1.0f + m_Settings.animationSpeed)));
-                                ImGui::SliderFloat(animationLabel, &m_Settings.animationProgress, 0.0f, 99.999f);
+                            char animationLabel[128];
+                            snprintf(animationLabel, sizeof(animationLabel), "Animation %.1f sec (%%)", 0.001f * m_Scene.animations[m_Settings.activeAnimation].durationMs / (m_Settings.animationSpeed < 0.0f ? 1.0f / (1.0f + Abs(m_Settings.animationSpeed)) : (1.0f + m_Settings.animationSpeed)));
+                            ImGui::SliderFloat(animationLabel, &m_Settings.animationProgress, 0.0f, 99.999f);
 
-                                if (m_Scene.animations.size() > 1)
+                            if (m_Scene.animations.size() > 1)
+                            {
+                                char items[1024] = {'\0'};
+                                size_t offset = 0;
+                                char* iterator = items;
+                                for (auto animation : m_Scene.animations)
                                 {
-                                    char items[1024] = {'\0'};
-                                    size_t offset = 0;
-                                    char* iterator = items;
-                                    for (auto animation : m_Scene.animations)
-                                    {
-                                        const size_t size = std::min(sizeof(items), animation.animationName.length() + 1);
-                                        memcpy(iterator + offset, animation.animationName.c_str(), size);
-                                        offset += animation.animationName.length() + 1;
-                                    }
-                                    ImGui::Combo("Animated scene", &m_Settings.activeAnimation, items, helper::GetCountOf(m_Scene.animations));
+                                    const size_t size = std::min(sizeof(items), animation.animationName.length() + 1);
+                                    memcpy(iterator + offset, animation.animationName.c_str(), size);
+                                    offset += animation.animationName.length() + 1;
                                 }
+                                ImGui::Combo("Animated scene", &m_Settings.activeAnimation, items, helper::GetCountOf(m_Scene.animations));
                             }
                         }
                     }
@@ -1912,7 +1922,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
         ImGui::End();
     }
 
-    // Update camera
+    // Animate scene and update camera
     cBoxf cameraLimits = m_Scene.aabb;
     cameraLimits.Scale(2.0f);
 
@@ -1968,7 +1978,9 @@ void Sample::PrepareFrame(uint32_t frameIndex)
         m_PrevLocalPos = float3::Zero();
     }
 
-    m_Scene.Animate(animationSpeed, m_Timer.GetFrameTime(), m_Settings.animationProgress, m_Settings.activeAnimation, m_Settings.animateCamera ? &desc.customMatrix : nullptr);
+    if (!m_Scene.animations.empty())
+        m_Scene.Animate(animationSpeed, m_Timer.GetFrameTime(), m_Settings.animationProgress, m_Settings.activeAnimation, DISALLOW_BLAS_MERGING, m_Settings.animateCamera ? &desc.customMatrix : nullptr);
+
     m_Camera.Update(desc, frameIndex);
 
     // Animate sun
@@ -2099,13 +2111,17 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
 void Sample::LoadScene()
 {
+    // Proxy geometry, which will be instancinated
     std::string sceneFile = utils::GetFullPath("Cubes/Cubes.obj", utils::DataFolder::SCENES);
-    NRI_ABORT_ON_FALSE( utils::LoadScene(sceneFile, m_Scene, false) );
-    m_DefaultInstancesOffset = helper::GetCountOf(m_Scene.instances);
+    NRI_ABORT_ON_FALSE( utils::LoadScene(sceneFile, m_Scene, DISALLOW_BLAS_MERGING, false) );
 
+    m_ProxyInstancesNum = helper::GetCountOf(m_Scene.instances);
+
+    // The scene
     sceneFile = utils::GetFullPath(m_SceneFile, utils::DataFolder::SCENES);
-    NRI_ABORT_ON_FALSE( utils::LoadScene(sceneFile, m_Scene, false) );
+    NRI_ABORT_ON_FALSE( utils::LoadScene(sceneFile, m_Scene, DISALLOW_BLAS_MERGING, false) );
 
+    // Some scene dependent settings // TODO: improve
     m_ReblurSettings.antilagIntensitySettings.enable = true;
 
     if (m_SceneFile.find("BistroInterior") != std::string::npos)
@@ -2138,7 +2154,35 @@ void Sample::LoadScene()
     }
 }
 
-void Sample::SetupAnimatedObjects()
+void Sample::AddInnerGlassSurfaces()
+{
+    // IMPORTANT: this is only valid for non-merged instances, when each instance represents a single object
+
+    size_t instanceNum = m_Scene.instances.size();
+    for (size_t i = 0; i < instanceNum; i++)
+    {
+        const utils::Instance& instance = m_Scene.instances[i];
+        const utils::Material& material = m_Scene.materials[instance.materialIndex];
+
+        if (!material.IsTransparent())
+            continue;
+
+        const utils::Mesh& mesh = m_Scene.meshes[instance.meshIndex];
+        float3 size = mesh.aabb.vMax - mesh.aabb.vMin;
+        size *= instance.rotation.GetScale();
+
+        float minSize = Min(size.x, Min(size.y, size.z));
+        if (minSize < GLASS_THICKNESS * 2.0f)
+            continue;
+
+        utils::Instance innerInstance = instance;
+        innerInstance.scale = (size - GLASS_THICKNESS) / (size + 1e-15f);
+
+        m_Scene.instances.push_back(innerInstance);
+    }
+}
+
+void Sample::GenerateAnimatedCubes()
 {
     for (uint32_t i = 0; i < MAX_ANIMATED_INSTANCE_NUM; i++)
     {
@@ -2155,8 +2199,9 @@ void Sample::SetupAnimatedObjects()
         animatedInstance.inverseRotation = Sign( Rand::sf1(&m_FastRandState) );
         m_AnimatedInstances.push_back(animatedInstance);
 
-        uint32_t instanceIndex = i % m_DefaultInstancesOffset;
-        const utils::Instance& instance = m_Scene.instances[instanceIndex];
+        utils::Instance instance = m_Scene.instances[i % m_ProxyInstancesNum];
+        instance.allowUpdate = true;
+
         m_Scene.instances.push_back(instance);
     }
 }
@@ -2328,6 +2373,13 @@ void Sample::CreatePipelines()
         m_Pipelines.push_back(pipeline);
     }
 
+    { // Pipeline::DeltaRays
+        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "DeltaRays.cs", shaderCodeStorage);
+
+        NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
+        m_Pipelines.push_back(pipeline);
+    }
+
     { // Pipeline::Temporal
         pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "Temporal.cs", shaderCodeStorage);
 
@@ -2364,103 +2416,405 @@ void Sample::CreatePipelines()
     }
 }
 
-void Sample::CreateBottomLevelAccelerationStructures()
+void Sample::CreateAccelerationStructures()
 {
-    for (const utils::Mesh& mesh : m_Scene.meshes)
+    double stamp1 = m_Timer.GetTimeStamp();
+
+    struct Parameters
     {
-        const uint64_t vertexDataSize = mesh.vertexNum * sizeof(utils::Vertex);
-        const uint64_t indexDataSize = mesh.indexNum * sizeof(utils::Index);
+        nri::AccelerationStructure* accelerationStructure;
+        uint64_t scratchOffset;
+        uint32_t geometryObjectBase;
+        uint32_t geometryObjectsNum;
+    };
+    
+    uint64_t primitivesNum = 0;
+    std::vector<Parameters> parameters;
+    std::vector<nri::GeometryObject> geometryObjects;
 
-        nri::Buffer* tempBuffer = nullptr;
-        nri::Memory* tempMemory = nullptr;
-        CreateUploadBuffer(vertexDataSize + indexDataSize, tempBuffer, tempMemory);
+    geometryObjects.reserve(m_Scene.instances.size()); // reallocation is NOT allowed!
 
-        uint8_t* data = (uint8_t*)NRI.MapBuffer(*tempBuffer, 0, nri::WHOLE_SIZE);
-        memcpy(data, &m_Scene.vertices[mesh.vertexOffset], (size_t)vertexDataSize);
-        memcpy(data + vertexDataSize, &m_Scene.indices[mesh.indexOffset], (size_t)indexDataSize);
-        NRI.UnmapBuffer(*tempBuffer);
+    // Calculate temp memory size
+    std::vector<uint32_t> dynamicMeshesIndices;
+    uint64_t uploadSize = 0;
+    uint64_t geometryOffset = 0;
 
-        nri::GeometryObject geometryObject = {};
-        geometryObject.type = nri::GeometryType::TRIANGLES;
-        geometryObject.flags = nri::BottomLevelGeometryBits::NONE;
-        geometryObject.triangles.vertexBuffer = tempBuffer;
-        geometryObject.triangles.vertexOffset = 0;
-        geometryObject.triangles.vertexNum = mesh.vertexNum;
-        geometryObject.triangles.vertexFormat = nri::Format::RGB32_SFLOAT;
-        geometryObject.triangles.vertexStride = sizeof(utils::Vertex);
-        geometryObject.triangles.indexBuffer = tempBuffer;
-        geometryObject.triangles.indexOffset = vertexDataSize;
-        geometryObject.triangles.indexNum = mesh.indexNum;
-        geometryObject.triangles.indexType = sizeof(utils::Index) == 2 ? nri::IndexType::UINT16 : nri::IndexType::UINT32;
+    for (size_t i = m_ProxyInstancesNum; i < m_Scene.instances.size(); i++)
+    {
+        const utils::Instance& instance = m_Scene.instances[i];
+        const utils::Material& material = m_Scene.materials[instance.materialIndex];
 
-        nri::AccelerationStructureDesc blasDesc = {};
-        blasDesc.type = nri::AccelerationStructureType::BOTTOM_LEVEL;
-        blasDesc.flags = BLAS_BUILD_BITS;
-        blasDesc.instanceOrGeometryObjectNum = 1;
-        blasDesc.geometryObjects = &geometryObject;
+        if (material.IsOff())
+            continue;
 
-        nri::AccelerationStructure* blas = nullptr;
-        NRI_ABORT_ON_FAILURE(NRI.CreateAccelerationStructure(*m_Device, blasDesc, blas));
-        m_BLASs.push_back(blas);
+        if (instance.allowUpdate)
+        {
+            if (std::find(dynamicMeshesIndices.begin(), dynamicMeshesIndices.end(), instance.meshIndex) != dynamicMeshesIndices.end())
+                continue;
+            else
+                dynamicMeshesIndices.push_back(instance.meshIndex);
+        }
+
+        const utils::Mesh& mesh = m_Scene.meshes[instance.meshIndex];
+        uint64_t vertexDataSize = mesh.vertexNum * sizeof(float[3]);
+        uint64_t indexDataSize = helper::Align(mesh.indexNum * sizeof(utils::Index), 4);
+        uint64_t transformDataSize = instance.allowUpdate ? 0 : sizeof(float[12]);
+
+        if (material.IsEmissive())
+        {
+            // Emissive meshes apper twice: in BLAS_StaticOpaque and in BLAS_StaticEmissive
+            vertexDataSize *= 2;
+            indexDataSize *= 2;
+            transformDataSize *= 2;
+        }
+
+        uploadSize += vertexDataSize + indexDataSize + transformDataSize;
+        geometryOffset += transformDataSize;
+    }
+
+    // Create temp buffer in UPLOAD heap
+    nri::Buffer* uploadBuffer = nullptr;
+    nri::Memory* uploadMemory = nullptr;
+    {
+        const nri::BufferDesc bufferDesc = {uploadSize, 0, nri::BufferUsageBits::ACCELERATION_STRUCTURE_BUILD_READ};
+        NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, uploadBuffer));
 
         nri::MemoryDesc memoryDesc = {};
-        NRI.GetAccelerationStructureMemoryInfo(*blas, memoryDesc);
+        NRI.GetBufferMemoryInfo(*uploadBuffer, nri::MemoryLocation::HOST_UPLOAD, memoryDesc);
+
+        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::WHOLE_DEVICE_GROUP, memoryDesc.type, memoryDesc.size, uploadMemory));
+
+        const nri::BufferMemoryBindingDesc memoryBindingDesc = {uploadMemory, uploadBuffer};
+        NRI_ABORT_ON_FAILURE(NRI.BindBufferMemory(*m_Device, &memoryBindingDesc, 1));
+    }
+
+    uint8_t* uploadData = (uint8_t*)NRI.MapBuffer(*uploadBuffer, 0, nri::WHOLE_SIZE);
+
+    { // AccelerationStructure::TLAS_World
+        nri::AccelerationStructureDesc accelerationStructureDesc = {};
+        accelerationStructureDesc.type = nri::AccelerationStructureType::TOP_LEVEL;
+        accelerationStructureDesc.flags = TLAS_BUILD_BITS;
+        accelerationStructureDesc.instanceOrGeometryObjectNum = helper::GetCountOf(m_Scene.instances);
+
+        nri::AccelerationStructure* accelerationStructure = nullptr;
+        NRI_ABORT_ON_FAILURE(NRI.CreateAccelerationStructure(*m_Device, accelerationStructureDesc, accelerationStructure));
+        m_AccelerationStructures.push_back(accelerationStructure);
+
+        nri::MemoryDesc memoryDesc = {};
+        NRI.GetAccelerationStructureMemoryInfo(*accelerationStructure, memoryDesc);
 
         nri::Memory* memory = nullptr;
         NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::WHOLE_DEVICE_GROUP, memoryDesc.type, memoryDesc.size, memory));
         m_MemoryAllocations.push_back(memory);
 
-        const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = { memory, blas };
+        const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = {memory, accelerationStructure};
         NRI_ABORT_ON_FAILURE(NRI.BindAccelerationStructureMemory(*m_Device, &memoryBindingDesc, 1));
 
-        BuildBottomLevelAccelerationStructure(*blas, &geometryObject, 1);
-
-        NRI.DestroyBuffer(*tempBuffer);
-        NRI.FreeMemory(*tempMemory);
-    }
-}
-
-void Sample::CreateTopLevelAccelerationStructures()
-{
-    nri::Descriptor* descriptor = nullptr;
-    nri::Memory* memory = nullptr;
-
-    nri::AccelerationStructureDesc tlasDesc = {};
-    tlasDesc.type = nri::AccelerationStructureType::TOP_LEVEL;
-    tlasDesc.flags = TLAS_BUILD_BITS;
-    tlasDesc.instanceOrGeometryObjectNum = helper::GetCountOf(m_Scene.instances);
-
-    { // Descriptor::World_AccelerationStructure
-        NRI_ABORT_ON_FAILURE(NRI.CreateAccelerationStructure(*m_Device, tlasDesc, m_WorldTlas));
-
-        nri::MemoryDesc memoryDesc = {};
-        NRI.GetAccelerationStructureMemoryInfo(*m_WorldTlas, memoryDesc);
-
-        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::WHOLE_DEVICE_GROUP, memoryDesc.type, memoryDesc.size, memory));
-        m_MemoryAllocations.push_back(memory);
-
-        const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = { memory, m_WorldTlas };
-        NRI_ABORT_ON_FAILURE(NRI.BindAccelerationStructureMemory(*m_Device, &memoryBindingDesc, 1));
-
-        NRI.CreateAccelerationStructureDescriptor(*m_WorldTlas, 0, descriptor);
+        // Descriptor::World_AccelerationStructure
+        nri::Descriptor* descriptor = nullptr;
+        NRI.CreateAccelerationStructureDescriptor(*accelerationStructure, 0, descriptor);
         m_Descriptors.push_back(descriptor);
     }
 
-    { // Descriptor::Light_AccelerationStructure
-        NRI_ABORT_ON_FAILURE(NRI.CreateAccelerationStructure(*m_Device, tlasDesc, m_LightTlas));
+    { // AccelerationStructure::TLAS_Emissive
+        nri::AccelerationStructureDesc accelerationStructureDesc = {};
+        accelerationStructureDesc.type = nri::AccelerationStructureType::TOP_LEVEL;
+        accelerationStructureDesc.flags = TLAS_BUILD_BITS;
+        accelerationStructureDesc.instanceOrGeometryObjectNum = helper::GetCountOf(m_Scene.instances);
+
+        nri::AccelerationStructure* accelerationStructure = nullptr;
+        NRI_ABORT_ON_FAILURE(NRI.CreateAccelerationStructure(*m_Device, accelerationStructureDesc, accelerationStructure));
+        m_AccelerationStructures.push_back(accelerationStructure);
 
         nri::MemoryDesc memoryDesc = {};
-        NRI.GetAccelerationStructureMemoryInfo(*m_LightTlas, memoryDesc);
+        NRI.GetAccelerationStructureMemoryInfo(*accelerationStructure, memoryDesc);
 
+        nri::Memory* memory = nullptr;
         NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::WHOLE_DEVICE_GROUP, memoryDesc.type, memoryDesc.size, memory));
         m_MemoryAllocations.push_back(memory);
 
-        const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = { memory, m_LightTlas };
+        const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = {memory, accelerationStructure};
         NRI_ABORT_ON_FAILURE(NRI.BindAccelerationStructureMemory(*m_Device, &memoryBindingDesc, 1));
 
-        NRI.CreateAccelerationStructureDescriptor(*m_LightTlas, 0, descriptor);
+        // Descriptor::Light_AccelerationStructure
+        nri::Descriptor* descriptor = nullptr;
+        NRI.CreateAccelerationStructureDescriptor(*accelerationStructure, 0, descriptor);
         m_Descriptors.push_back(descriptor);
     }
+
+    // Create BOTTOM_LEVEL acceleration structures for static geometry
+    uint64_t scratchSize = 0;
+
+    for (uint32_t mode = (uint32_t)AccelerationStructure::BLAS_StaticOpaque; mode <= (uint32_t)AccelerationStructure::BLAS_StaticEmissive; mode++)
+    {
+        size_t geometryObjectBase = geometryObjects.size();
+
+        for (size_t i = m_ProxyInstancesNum; i < m_Scene.instances.size(); i++)
+        {
+            const utils::Instance& instance = m_Scene.instances[i];
+            const utils::Material& material = m_Scene.materials[instance.materialIndex];
+
+            if (material.IsOff())
+                continue;
+
+            if (instance.allowUpdate)
+                continue;
+
+            if (mode == (uint32_t)AccelerationStructure::BLAS_StaticOpaque)
+            {
+                if (material.IsTransparent())
+                    continue;
+
+                m_OpaqueObjectsNum++;
+            }
+            else if (mode == (uint32_t)AccelerationStructure::BLAS_StaticTransparent)
+            {
+                if (!material.IsTransparent())
+                    continue;
+
+                m_TransparentObjectsNum++;
+            }
+            else if (mode == (uint32_t)AccelerationStructure::BLAS_StaticEmissive)
+            {
+                if (!material.IsEmissive())
+                    continue;
+
+                m_EmissiveObjectsNum++;
+            }
+
+            const utils::Mesh& mesh = m_Scene.meshes[instance.meshIndex];
+
+            // Copy geometry to temp buffer
+            uint64_t vertexDataSize = mesh.vertexNum * sizeof(float[3]);
+            uint8_t* p = uploadData + geometryOffset;
+            for (uint32_t v = 0; v < mesh.vertexNum; v++)
+            {
+                memcpy(p, m_Scene.vertices[mesh.vertexOffset + v].position, sizeof(float[3]));
+                p += sizeof(float[3]);
+            }
+
+            uint64_t indexDataSize = mesh.indexNum * sizeof(utils::Index);
+            memcpy(p, &m_Scene.indices[mesh.indexOffset], indexDataSize);
+
+            // Copy transform to temp buffer
+            float4x4 mObjectToWorld = instance.rotation;
+            if (instance.scale != float3(1.0f))
+            {
+                float4x4 translation;
+                translation.SetupByTranslation( ToFloat(instance.position) - mesh.aabb.GetCenter() );
+
+                float4x4 translationInv = translation;
+                translationInv.InvertOrtho();
+
+                float4x4 scale;
+                scale.SetupByScale(instance.scale);
+            
+                mObjectToWorld = mObjectToWorld * translationInv * scale * translation;
+            }
+            mObjectToWorld.AddTranslation( ToFloat(instance.position) );
+
+            mObjectToWorld.Transpose3x4();
+
+            uint64_t transformOffset = geometryObjects.size() * sizeof(float[12]);
+            memcpy(uploadData + transformOffset, mObjectToWorld.a16, sizeof(float[12]));
+
+            // Add geometry object
+            nri::GeometryObject& geometryObject = geometryObjects.emplace_back();
+            geometryObject = {};
+            geometryObject.type = nri::GeometryType::TRIANGLES;
+            geometryObject.flags = material.IsAlphaOpaque() ? nri::BottomLevelGeometryBits::NONE : nri::BottomLevelGeometryBits::OPAQUE_GEOMETRY;
+            geometryObject.triangles.vertexBuffer = uploadBuffer;
+            geometryObject.triangles.vertexOffset = geometryOffset;
+            geometryObject.triangles.vertexNum = mesh.vertexNum;
+            geometryObject.triangles.vertexStride = sizeof(float[3]);
+            geometryObject.triangles.vertexFormat = nri::Format::RGB32_SFLOAT;
+            geometryObject.triangles.indexBuffer = uploadBuffer;
+            geometryObject.triangles.indexOffset = geometryOffset + vertexDataSize;
+            geometryObject.triangles.indexNum = mesh.indexNum;
+            geometryObject.triangles.indexType = sizeof(utils::Index) == 2 ? nri::IndexType::UINT16 : nri::IndexType::UINT32;
+            geometryObject.triangles.transformBuffer = uploadBuffer;
+            geometryObject.triangles.transformOffset = transformOffset;
+
+            // Update geometry offset
+            geometryOffset += vertexDataSize + helper::Align(indexDataSize, 4);
+            primitivesNum += mesh.indexNum / 3;
+        }
+
+        // Create BLAS
+        uint32_t geometryObjectsNum = (uint32_t)(geometryObjects.size() - geometryObjectBase);
+
+        nri::AccelerationStructureDesc accelerationStructureDesc = {};
+        accelerationStructureDesc.type = nri::AccelerationStructureType::BOTTOM_LEVEL;
+        accelerationStructureDesc.flags = BLAS_BUILD_BITS;
+        accelerationStructureDesc.instanceOrGeometryObjectNum = geometryObjectsNum;
+        accelerationStructureDesc.geometryObjects = geometryObjectsNum ? &geometryObjects[geometryObjectBase] : nullptr;
+
+        nri::AccelerationStructure* accelerationStructure = nullptr;
+        NRI_ABORT_ON_FAILURE(NRI.CreateAccelerationStructure(*m_Device, accelerationStructureDesc, accelerationStructure));
+        m_AccelerationStructures.push_back(accelerationStructure);
+
+        nri::MemoryDesc memoryDesc = {};
+        NRI.GetAccelerationStructureMemoryInfo(*accelerationStructure, memoryDesc);
+
+        nri::Memory* memory = nullptr;
+        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::WHOLE_DEVICE_GROUP, memoryDesc.type, memoryDesc.size, memory));
+        m_MemoryAllocations.push_back(memory);
+
+        const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = {memory, accelerationStructure};
+        NRI_ABORT_ON_FAILURE(NRI.BindAccelerationStructureMemory(*m_Device, &memoryBindingDesc, 1));
+
+        // Update parameters
+        if (geometryObjectsNum)
+        {
+            parameters.push_back( {accelerationStructure, scratchSize, (uint32_t)geometryObjectBase, geometryObjectsNum} );
+
+            uint64_t size = NRI.GetAccelerationStructureBuildScratchBufferSize(*accelerationStructure);
+            scratchSize += helper::Align(size, 256);
+        }
+    }
+    
+    // Create BOTTOM_LEVEL acceleration structures for dynamic geometry
+    for (uint32_t dynamicMeshIndex : dynamicMeshesIndices)
+    {
+        utils::Mesh& mesh = m_Scene.meshes[dynamicMeshIndex];
+        mesh.blasIndex = (uint32_t)m_AccelerationStructures.size();
+
+        // Copy geometry to temp buffer
+        uint64_t vertexDataSize = mesh.vertexNum * sizeof(float[3]);
+        uint8_t* p = uploadData + geometryOffset;
+        for (uint32_t v = 0; v < mesh.vertexNum; v++)
+        {
+            memcpy(p, m_Scene.vertices[mesh.vertexOffset + v].position, sizeof(float[3]));
+            p += sizeof(float[3]);
+        }
+
+        uint64_t indexDataSize = mesh.indexNum * sizeof(utils::Index);
+        memcpy(p, &m_Scene.indices[mesh.indexOffset], indexDataSize);
+
+        // Add geometry object
+        nri::GeometryObject& geometryObject = geometryObjects.emplace_back();
+        geometryObject = {};
+        geometryObject.type = nri::GeometryType::TRIANGLES;
+        geometryObject.flags = nri::BottomLevelGeometryBits::NONE; // will be set in TLAS instance
+        geometryObject.triangles.vertexBuffer = uploadBuffer;
+        geometryObject.triangles.vertexOffset = geometryOffset;
+        geometryObject.triangles.vertexNum = mesh.vertexNum;
+        geometryObject.triangles.vertexStride = sizeof(float[3]);
+        geometryObject.triangles.vertexFormat = nri::Format::RGB32_SFLOAT;
+        geometryObject.triangles.indexBuffer = uploadBuffer;
+        geometryObject.triangles.indexOffset = geometryOffset + vertexDataSize;
+        geometryObject.triangles.indexNum = mesh.indexNum;
+        geometryObject.triangles.indexType = sizeof(utils::Index) == 2 ? nri::IndexType::UINT16 : nri::IndexType::UINT32;
+
+        // Create BLAS
+        nri::AccelerationStructureDesc accelerationStructureDesc = {};
+        accelerationStructureDesc.type = nri::AccelerationStructureType::BOTTOM_LEVEL;
+        accelerationStructureDesc.flags = BLAS_BUILD_BITS;
+        accelerationStructureDesc.instanceOrGeometryObjectNum = 1;
+        accelerationStructureDesc.geometryObjects = &geometryObject;
+
+        nri::AccelerationStructure* accelerationStructure = nullptr;
+        NRI_ABORT_ON_FAILURE(NRI.CreateAccelerationStructure(*m_Device, accelerationStructureDesc, accelerationStructure));
+        m_AccelerationStructures.push_back(accelerationStructure);
+
+        nri::MemoryDesc memoryDesc = {};
+        NRI.GetAccelerationStructureMemoryInfo(*accelerationStructure, memoryDesc);
+
+        nri::Memory* memory = nullptr;
+        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::WHOLE_DEVICE_GROUP, memoryDesc.type, memoryDesc.size, memory));
+        m_MemoryAllocations.push_back(memory);
+
+        const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = {memory, accelerationStructure};
+        NRI_ABORT_ON_FAILURE(NRI.BindAccelerationStructureMemory(*m_Device, &memoryBindingDesc, 1));
+
+        // Update parameters
+        parameters.push_back( {accelerationStructure, scratchSize, (uint32_t)(geometryObjects.size() - 1), 1} );
+
+        uint64_t size = NRI.GetAccelerationStructureBuildScratchBufferSize(*accelerationStructure);
+        scratchSize += helper::Align(size, 256);
+
+        // Update geometry offset
+        geometryOffset += vertexDataSize + helper::Align(indexDataSize, 4);
+        primitivesNum += mesh.indexNum / 3;
+    }
+
+    // Allocate scratch memory
+    const nri::BufferDesc bufferDesc = {scratchSize, 0, nri::BufferUsageBits::RAY_TRACING_BUFFER | nri::BufferUsageBits::SHADER_RESOURCE_STORAGE};
+    nri::Buffer* scratchBuffer = nullptr;    
+    NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, scratchBuffer));
+
+    nri::MemoryDesc memoryDesc = {};
+    NRI.GetBufferMemoryInfo(*scratchBuffer, nri::MemoryLocation::DEVICE, memoryDesc);
+
+    nri::Memory* scratchMemory = nullptr;
+    NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::WHOLE_DEVICE_GROUP, memoryDesc.type, memoryDesc.size, scratchMemory));
+
+    const nri::BufferMemoryBindingDesc bufferMemoryBindingDesc = { scratchMemory, scratchBuffer };
+    NRI_ABORT_ON_FAILURE(NRI.BindBufferMemory(*m_Device, &bufferMemoryBindingDesc, 1));
+
+    // Create command allocator and command buffer
+    nri::CommandAllocator* commandAllocator = nullptr;
+    NRI.CreateCommandAllocator(*m_CommandQueue, nri::WHOLE_DEVICE_GROUP, commandAllocator);
+
+    nri::CommandBuffer* commandBuffer = nullptr;
+    NRI.CreateCommandBuffer(*commandAllocator, commandBuffer);
+
+    double stamp2 = m_Timer.GetTimeStamp();
+
+    // Write and execute commands
+    NRI.BeginCommandBuffer(*commandBuffer, nullptr, 0);
+    {
+        for (const Parameters& params : parameters)
+            NRI.CmdBuildBottomLevelAccelerationStructure(*commandBuffer, params.geometryObjectsNum, &geometryObjects[params.geometryObjectBase], BLAS_BUILD_BITS, *params.accelerationStructure, *scratchBuffer, params.scratchOffset);
+    }
+    NRI.EndCommandBuffer(*commandBuffer);
+
+    nri::QueueSubmitDesc queueSubmitDesc = {&commandBuffer, 1};
+    NRI.QueueSubmit(*m_CommandQueue, queueSubmitDesc);
+
+    // Wait idle
+    NRI.WaitForIdle(*m_CommandQueue);
+
+    double buildTime = m_Timer.GetTimeStamp() - stamp2;
+
+    // Cleanup
+    NRI.UnmapBuffer(*uploadBuffer);
+
+    NRI.FreeMemory(*scratchMemory);
+    NRI.DestroyBuffer(*scratchBuffer);
+
+    NRI.FreeMemory(*uploadMemory);
+    NRI.DestroyBuffer(*uploadBuffer);
+
+    NRI.DestroyCommandBuffer(*commandBuffer);
+    NRI.DestroyCommandAllocator(*commandAllocator);
+
+    double totalTime = m_Timer.GetTimeStamp() - stamp1;
+
+    printf(
+        "Scene stats:\n"
+        "  Instances     : %zu\n"
+        "  Meshes        : %zu\n"
+        "  Vertices      : %zu\n"
+        "  Primitives    : %zu\n"
+        "BVH stats:\n"
+        "  Total time    : %.2f ms\n"
+        "  Building time : %.2f ms\n"
+        "  Scratch size  : %.2f Mb\n"
+        "  BLAS num      : %zu\n"
+        "  Geometries    : %zu\n"
+        "  Primitives    : %zu\n"
+        , m_Scene.instances.size()
+        , m_Scene.meshes.size()
+        , m_Scene.primitives.size()
+        , m_Scene.vertices.size()
+        , totalTime
+        , buildTime
+        , scratchSize / (1024.0 * 1024.0)
+        , m_AccelerationStructures.size() - (size_t)AccelerationStructure::BLAS_StaticOpaque
+        , geometryObjects.size()
+        , primitivesNum
+   );
 }
 
 void Sample::CreateSamplers()
@@ -2555,8 +2909,8 @@ void Sample::CreateResources(nri::Format swapChainFormat)
     const uint16_t w = (uint16_t)m_RenderResolution.x;
     const uint16_t h = (uint16_t)m_RenderResolution.y;
     const uint64_t instanceDataSize = m_Scene.instances.size() * sizeof(InstanceData);
-    const uint64_t worldScratchBufferSize = NRI.GetAccelerationStructureBuildScratchBufferSize(*m_WorldTlas);
-    const uint64_t lightScratchBufferSize = NRI.GetAccelerationStructureBuildScratchBufferSize(*m_LightTlas);
+    const uint64_t worldScratchBufferSize = NRI.GetAccelerationStructureBuildScratchBufferSize(*Get(AccelerationStructure::TLAS_World));
+    const uint64_t lightScratchBufferSize = NRI.GetAccelerationStructureBuildScratchBufferSize(*Get(AccelerationStructure::TLAS_Emissive));
 
     std::vector<DescriptorDesc> descriptorDescs;
 
@@ -2588,8 +2942,6 @@ void Sample::CreateResources(nri::Format swapChainFormat)
     CreateTexture(descriptorDescs, "Texture::DirectLighting", nri::Format::R11_G11_B10_UFLOAT, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::DirectEmission", nri::Format::R11_G11_B10_UFLOAT, w, h, 1, 1,
-        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
-    CreateTexture(descriptorDescs, "Texture::TransparentLighting", nri::Format::R11_G11_B10_UFLOAT, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::Shadow", nri::Format::RGBA8_UNORM, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
@@ -2828,7 +3180,6 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Normal_Roughness_StorageTexture),
             Get(Descriptor::ViewZ_StorageTexture),
             Get(Descriptor::Mv_StorageTexture),
-            Get(Descriptor::TransparentLighting_StorageTexture),
             Get(Descriptor::Unfiltered_Diff_StorageTexture),
             Get(Descriptor::Unfiltered_Spec_StorageTexture),
 #if( NRD_MODE == SH )
@@ -2856,7 +3207,6 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Normal_Roughness_Texture),
             Get(Descriptor::BaseColor_Metalness_Texture),
             Get(Descriptor::DirectLighting_Texture),
-            Get(Descriptor::TransparentLighting_Texture),
             Get(Descriptor::Ambient_Texture),
             Get(Descriptor::Diff_Texture),
             Get(Descriptor::Spec_Texture),
@@ -2868,9 +3218,35 @@ void Sample::CreateDescriptorSets()
 
         const nri::Descriptor* storageTextures[] =
         {
-            Get(Descriptor::Composed_ViewZ_StorageTexture),
             Get(Descriptor::ComposedDiff_ViewZ_StorageTexture),
             Get(Descriptor::ComposedSpec_ViewZ_StorageTexture),
+        };
+
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::WHOLE_DEVICE_GROUP, 0));
+        m_DescriptorSets.push_back(descriptorSet);
+
+        const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
+        {
+            { textures, helper::GetCountOf(textures) },
+            { storageTextures, helper::GetCountOf(storageTextures) },
+        };
+
+        NRI.UpdateDescriptorRanges(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+    }
+
+    { // DescriptorSet::DeltaRays1
+        const nri::Descriptor* textures[] =
+        {
+            Get(Descriptor::ViewZ_Texture),
+            Get(Descriptor::ComposedDiff_ViewZ_Texture),
+            Get(Descriptor::ComposedSpec_ViewZ_Texture),
+            Get(Descriptor::Ambient_Texture),
+        };
+
+        const nri::Descriptor* storageTextures[] =
+        {
+            Get(Descriptor::Composed_ViewZ_StorageTexture),
+            Get(Descriptor::Mv_StorageTexture),
         };
 
         NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::WHOLE_DEVICE_GROUP, 0));
@@ -3111,14 +3487,14 @@ void Sample::CreateDescriptorSets()
         NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 2, &descriptorSet, 1, nri::WHOLE_DEVICE_GROUP, helper::GetCountOf(textures)));
         m_DescriptorSets.push_back(descriptorSet);
 
-        const nri::DescriptorRangeUpdateDesc rtDescriptorRangeUpdateDesc[] =
+        const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
         {
             { accelerationStructures, helper::GetCountOf(accelerationStructures) },
             { structuredBuffers, helper::GetCountOf(structuredBuffers) },
             { textures.data(), helper::GetCountOf(textures) }
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 0, helper::GetCountOf(rtDescriptorRangeUpdateDesc), rtDescriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 }
 
@@ -3152,36 +3528,6 @@ void Sample::CreateBuffer(std::vector<DescriptorDesc>& descriptorDescs, const ch
     m_Buffers.push_back(buffer);
 
     descriptorDescs.push_back( {debugName, buffer, format, nri::TextureUsageBits::NONE, usage} );
-}
-
-void Sample::CreateUploadBuffer(uint64_t size, nri::Buffer*& buffer, nri::Memory*& memory)
-{
-    const nri::BufferDesc bufferDesc = { size, 0, nri::BufferUsageBits::ACCELERATION_STRUCTURE_BUILD_READ };
-    NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, buffer));
-
-    nri::MemoryDesc memoryDesc = {};
-    NRI.GetBufferMemoryInfo(*buffer, nri::MemoryLocation::HOST_UPLOAD, memoryDesc);
-
-    NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::WHOLE_DEVICE_GROUP, memoryDesc.type, memoryDesc.size, memory));
-
-    const nri::BufferMemoryBindingDesc bufferMemoryBindingDesc = { memory, buffer };
-    NRI_ABORT_ON_FAILURE(NRI.BindBufferMemory(*m_Device, &bufferMemoryBindingDesc, 1));
-}
-
-void Sample::CreateScratchBuffer(nri::AccelerationStructure& accelerationStructure, nri::Buffer*& buffer, nri::Memory*& memory)
-{
-    const uint64_t scratchBufferSize = NRI.GetAccelerationStructureBuildScratchBufferSize(accelerationStructure);
-
-    const nri::BufferDesc bufferDesc = { scratchBufferSize, 0, nri::BufferUsageBits::RAY_TRACING_BUFFER | nri::BufferUsageBits::SHADER_RESOURCE_STORAGE };
-    NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, buffer));
-
-    nri::MemoryDesc memoryDesc = {};
-    NRI.GetBufferMemoryInfo(*buffer, nri::MemoryLocation::DEVICE, memoryDesc);
-
-    NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::WHOLE_DEVICE_GROUP, memoryDesc.type, memoryDesc.size, memory));
-
-    const nri::BufferMemoryBindingDesc bufferMemoryBindingDesc = { memory, buffer };
-    NRI_ABORT_ON_FAILURE(NRI.BindBufferMemory(*m_Device, &bufferMemoryBindingDesc, 1));
 }
 
 void Sample::UploadStaticData()
@@ -3283,37 +3629,6 @@ void Sample::UploadStaticData()
     NRI_ABORT_ON_FAILURE(NRI.UploadData(*m_CommandQueue, textureData.data(), helper::GetCountOf(textureData), dataDescArray, helper::GetCountOf(dataDescArray)));
 }
 
-void Sample::BuildBottomLevelAccelerationStructure(nri::AccelerationStructure& accelerationStructure, const nri::GeometryObject* objects, const uint32_t objectNum)
-{
-    nri::Buffer* scratchBuffer = nullptr;
-    nri::Memory* scratchBufferMemory = nullptr;
-    CreateScratchBuffer(accelerationStructure, scratchBuffer, scratchBufferMemory);
-
-    nri::CommandAllocator* commandAllocator = nullptr;
-    NRI.CreateCommandAllocator(*m_CommandQueue, nri::WHOLE_DEVICE_GROUP, commandAllocator);
-
-    nri::CommandBuffer* commandBuffer = nullptr;
-    NRI.CreateCommandBuffer(*commandAllocator, commandBuffer);
-
-    NRI.BeginCommandBuffer(*commandBuffer, nullptr, 0);
-    {
-        NRI.CmdBuildBottomLevelAccelerationStructure(*commandBuffer, objectNum, objects, BLAS_BUILD_BITS, accelerationStructure, *scratchBuffer, 0);
-    }
-    NRI.EndCommandBuffer(*commandBuffer);
-
-    nri::QueueSubmitDesc queueSubmitDesc = {};
-    queueSubmitDesc.commandBuffers = &commandBuffer;
-    queueSubmitDesc.commandBufferNum = 1;
-    NRI.QueueSubmit(*m_CommandQueue, queueSubmitDesc);
-
-    NRI.WaitForIdle(*m_CommandQueue);
-
-    NRI.DestroyCommandBuffer(*commandBuffer);
-    NRI.DestroyCommandAllocator(*commandAllocator);
-    NRI.DestroyBuffer(*scratchBuffer);
-    NRI.FreeMemory(*scratchBufferMemory);
-}
-
 void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffer, uint32_t bufferedFrameIndex)
 {
     bool isAnimatedObjects = m_Settings.animatedObjects;
@@ -3323,93 +3638,219 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
         isAnimatedObjects &= WaveTriangle(period) > 0.5;
     }
 
-    const uint64_t tlasCount = m_Scene.instances.size() - m_DefaultInstancesOffset;
-    const uint64_t tlasDataSize = tlasCount * sizeof(nri::GeometryObjectInstance);
-    const uint64_t tlasDataOffset = tlasDataSize * bufferedFrameIndex;
-    const uint64_t instanceDataSize = tlasCount * sizeof(InstanceData);
-    const uint64_t instanceDataOffset = instanceDataSize * bufferedFrameIndex;
-    const uint64_t instanceCount = m_Scene.instances.size() - (m_AnimatedInstances.size() - m_Settings.animatedObjectNum * isAnimatedObjects);
-    const uint64_t staticInstanceCount = m_Scene.instances.size() - m_AnimatedInstances.size();
+    uint64_t tlasCount = m_Scene.instances.size();
+    uint64_t tlasDataSize = tlasCount * sizeof(nri::GeometryObjectInstance);
+    uint64_t tlasDataOffset = tlasDataSize * bufferedFrameIndex;
+    uint64_t instanceDataSize = tlasCount * sizeof(InstanceData);
+    uint64_t instanceDataOffset = instanceDataSize * bufferedFrameIndex;
+    uint64_t staticInstanceCount = m_Scene.instances.size() - m_AnimatedInstances.size();
+    uint64_t instanceCount = staticInstanceCount + (isAnimatedObjects ? m_Settings.animatedObjectNum : 0);
 
     auto instanceData = (InstanceData*)NRI.MapBuffer(*Get(Buffer::InstanceDataStaging), instanceDataOffset, instanceDataSize);
     auto worldTlasData = (nri::GeometryObjectInstance*)NRI.MapBuffer(*Get(Buffer::WorldTlasDataStaging), tlasDataOffset, tlasDataSize);
     auto lightTlasData = (nri::GeometryObjectInstance*)NRI.MapBuffer(*Get(Buffer::LightTlasDataStaging), tlasDataOffset, tlasDataSize);
 
-    uint32_t worldInstanceNum = 0;
-    uint32_t lightInstanceNum = 0;
-    m_HasTransparentObjects = false;
-    for (size_t i = m_DefaultInstancesOffset; i < instanceCount; i++)
+    uint32_t instanceIndex = 0;
+    uint32_t worldGeometryObjectsNum = 0;
+    uint32_t lightGeometryObjectsNum = 0;
+
+    float4x4 mCameraTranslation = float4x4::Identity();
+    mCameraTranslation.AddTranslation( m_Camera.GetRelative(double3::Zero()) );
+    mCameraTranslation.Transpose3x4();
+
+    // Add static opaque (includes emissives)
+    if (m_OpaqueObjectsNum)
     {
-        utils::Instance& instance = m_Scene.instances[i];
-        const utils::Mesh& mesh = m_Scene.meshes[instance.meshIndex];
-        const utils::Material& material = m_Scene.materials[instance.materialIndex];
+        uint32_t flags = FLAG_DEFAULT;
+        uint32_t instanceIdAndFlags = instanceIndex | (flags << FLAG_FIRST_BIT);
 
-        if (material.IsOff()) // TODO: not an elegant way to skip "bad objects" (alpha channel is set to 0)
-            continue;
+        nri::GeometryObjectInstance geometryObjectInstance = {};
+        memcpy(geometryObjectInstance.transform, mCameraTranslation.a16, sizeof(geometryObjectInstance.transform));
+        geometryObjectInstance.instanceId = instanceIdAndFlags;
+        geometryObjectInstance.mask = flags;
+        geometryObjectInstance.shaderBindingTableLocalOffset = 0;
+        geometryObjectInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE;
+        geometryObjectInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticOpaque), 0);
 
-        assert( worldInstanceNum <= INSTANCE_ID_MASK );
+        *worldTlasData++ = geometryObjectInstance;
+        instanceIndex += m_OpaqueObjectsNum;
+        worldGeometryObjectsNum++;
+    }
 
-        float4x4 mObjectToWorld = instance.rotation;
-        mObjectToWorld.AddTranslation( m_Camera.GetRelative( instance.position ) );
+    // Add static transparent
+    if (m_TransparentObjectsNum)
+    {
+        uint32_t flags = FLAG_TRANSPARENT;
+        uint32_t instanceIdAndFlags = instanceIndex | (flags << FLAG_FIRST_BIT);
 
-        float4x4 mObjectToWorldPrev = instance.rotationPrev;
-        mObjectToWorldPrev.AddTranslation( m_Camera.GetRelative( instance.positionPrev ) );
+        nri::GeometryObjectInstance geometryObjectInstance = {};
+        memcpy(geometryObjectInstance.transform, mCameraTranslation.a16, sizeof(geometryObjectInstance.transform));
+        geometryObjectInstance.instanceId = instanceIdAndFlags;
+        geometryObjectInstance.mask = flags;
+        geometryObjectInstance.shaderBindingTableLocalOffset = 0;
+        geometryObjectInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE;
+        geometryObjectInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticTransparent), 0);
 
-        // Use fp64 to avoid imprecision problems on close up views (InvertOrtho can't be used due to scaling factors)
-        double4x4 mWorldToObjectd = ToDouble( mObjectToWorld );
-        mWorldToObjectd.Invert();
-        float4x4 mWorldToObject = ToFloat( mWorldToObjectd );
+        *worldTlasData++ = geometryObjectInstance;
+        instanceIndex += m_TransparentObjectsNum;
+        worldGeometryObjectsNum++;
 
-        float4x4 mWorldToWorldPrev = mObjectToWorldPrev * mWorldToObject;
-        mWorldToWorldPrev.Transpose3x4();
+        m_HasTransparent = m_TransparentObjectsNum ? true : false;
+    }
 
-        instance.positionPrev = instance.position;
-        instance.rotationPrev = instance.rotation;
+    // Add static emissives (only emissives in a separate TLAS)
+    if (m_EmissiveObjectsNum)
+    {
+        uint32_t flags = FLAG_DEFAULT;
+        uint32_t instanceIdAndFlags = instanceIndex | (flags << FLAG_FIRST_BIT);
 
-        mObjectToWorld.Transpose3x4();
+        nri::GeometryObjectInstance geometryObjectInstance = {};
+        memcpy(geometryObjectInstance.transform, mCameraTranslation.a16, sizeof(geometryObjectInstance.transform));
+        geometryObjectInstance.instanceId = instanceIdAndFlags;
+        geometryObjectInstance.mask = flags;
+        geometryObjectInstance.shaderBindingTableLocalOffset = 0;
+        geometryObjectInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE;
+        geometryObjectInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticEmissive), 0);
 
-        uint32_t flags = 0;
-        if (material.IsEmissive()) // TODO: importance sampling can be significantly accelerated if ALL emissives will be placed into a single BLAS, which will be the only one in a special TLAS!
-            flags = m_Settings.emission ? FLAG_EMISSION : FLAG_OPAQUE_OR_ALPHA_OPAQUE;
-        else if (m_Settings.emissiveObjects && i > staticInstanceCount && (i % 3 == 0))
-            flags = m_Settings.emission ? FLAG_FORCED_EMISSION : FLAG_OPAQUE_OR_ALPHA_OPAQUE;
-        else if (material.IsTransparent())
+        *lightTlasData++ = geometryObjectInstance;
+        instanceIndex += m_EmissiveObjectsNum;
+        lightGeometryObjectsNum++;
+    }
+
+    // Gather instance data and add dynamic objects
+    // IMPORTANT: instance data order must match geometry layout in BLAS-es
+    for (uint32_t mode = (uint32_t)AccelerationStructure::BLAS_StaticOpaque; mode <= (uint32_t)AccelerationStructure::BLAS_Other; mode++)
+    {
+        for (size_t i = m_ProxyInstancesNum; i < instanceCount; i++)
         {
-            flags = FLAG_TRANSPARENT;
-            m_HasTransparentObjects = true;
+            utils::Instance& instance = m_Scene.instances[i];
+            const utils::Material& material = m_Scene.materials[instance.materialIndex];
+
+            if (material.IsOff())
+                continue;
+
+            if (mode == (uint32_t)AccelerationStructure::BLAS_StaticOpaque)
+            {
+                if (instance.allowUpdate || material.IsTransparent())
+                    continue;
+            }
+            else if (mode == (uint32_t)AccelerationStructure::BLAS_StaticTransparent)
+            {
+                if (instance.allowUpdate || !material.IsTransparent())
+                    continue;
+            }
+            else if (mode == (uint32_t)AccelerationStructure::BLAS_StaticEmissive)
+            {
+                if (instance.allowUpdate || !material.IsEmissive())
+                    continue;
+            }
+            else
+            {
+                if (!instance.allowUpdate)
+                    continue;
+            }
+
+            assert(instanceIndex <= INSTANCE_ID_MASK);
+
+            float4x4 mObjectToWorld = float4x4::Identity();
+            float4x4 mWorldToWorldPrev = float4x4::Identity();
+            bool isLeftHanded = false;
+
+            if (instance.allowUpdate)
+            {
+                // Current matrix
+                mObjectToWorld = instance.rotation;
+                if (instance.scale != float3(1.0f))
+                {
+                    const utils::Mesh& mesh = m_Scene.meshes[instance.meshIndex];
+
+                    float4x4 translation;
+                    translation.SetupByTranslation( ToFloat(instance.position) - mesh.aabb.GetCenter() );
+
+                    float4x4 translationInv = translation;
+                    translationInv.InvertOrtho();
+
+                    float4x4 scale;
+                    scale.SetupByScale(instance.scale);
+            
+                    mObjectToWorld = mObjectToWorld * translationInv * scale * translation;
+                }
+                mObjectToWorld.AddTranslation( m_Camera.GetRelative(instance.position) );
+
+                // Previous transform
+                float4x4 mObjectToWorldPrev = instance.rotationPrev;
+                mObjectToWorldPrev.AddTranslation( m_Camera.GetRelative(instance.positionPrev) );
+
+                double4x4 dmWorldToObject = ToDouble(mObjectToWorld); // TODO: FP64 used to avoid imprecision problems on close up views (InvertOrtho can't be used due to scaling factors)
+                dmWorldToObject.Invert();
+
+                double4x4 dmObjectToWorldPrev = ToDouble(mObjectToWorldPrev);
+                mWorldToWorldPrev = ToFloat(dmObjectToWorldPrev * dmWorldToObject);
+
+                // Update previous state
+                instance.positionPrev = instance.position;
+                instance.rotationPrev = instance.rotation;
+            }
+            else
+            {
+                mObjectToWorld = mCameraTranslation;
+
+                // Static geometry doesn't have "prev" transformation, reuse this matrix to pass object rotation needed for normals
+                mWorldToWorldPrev = instance.rotation;
+
+                // Transform can be left-handed (mirroring), in this case normals need flipping
+                isLeftHanded = instance.rotation.IsLeftHanded();
+            }
+
+            mObjectToWorld.Transpose3x4();
+            mWorldToWorldPrev.Transpose3x4();
+
+            // Add instance data
+            const utils::Mesh& mesh = m_Scene.meshes[instance.meshIndex];
+            uint32_t basePrimitiveIndex = mesh.indexOffset / 3;
+
+            instanceData->baseTextureIndex = instance.materialIndex * TEXTURES_PER_MATERIAL;
+            instanceData->basePrimitiveIndex = basePrimitiveIndex;
+            instanceData->isStatic = instance.allowUpdate ? 0 : 1;
+            instanceData->invScale = (isLeftHanded ? -1.0f : 1.0f) / Length( instance.rotation.GetScale() );
+            instanceData->mWorldToWorldPrev0 = mWorldToWorldPrev.col0;
+            instanceData->mWorldToWorldPrev1 = mWorldToWorldPrev.col1;
+            instanceData->mWorldToWorldPrev2 = mWorldToWorldPrev.col2;
+            instanceData++;
+
+            // Add dynamic geometry
+            if (instance.allowUpdate)
+            {
+                uint32_t flags = FLAG_DEFAULT;
+                if (material.IsTransparent())
+                {
+                    flags = FLAG_TRANSPARENT;
+                    m_HasTransparent = true;
+                }
+                else if (m_Settings.emission && m_Settings.emissiveObjects && i > staticInstanceCount && (i % 3 == 0))
+                    flags = FLAG_FORCED_EMISSION;
+
+                uint32_t instanceIdAndFlags = instanceIndex | (flags << FLAG_FIRST_BIT);
+                instanceIndex++;
+
+                nri::GeometryObjectInstance geometryObjectInstance = {};
+                memcpy(geometryObjectInstance.transform, mObjectToWorld.a16, sizeof(geometryObjectInstance.transform));
+                geometryObjectInstance.instanceId = instanceIdAndFlags;
+                geometryObjectInstance.mask = flags;
+                geometryObjectInstance.shaderBindingTableLocalOffset = 0;
+                geometryObjectInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE | (material.IsAlphaOpaque() ? nri::TopLevelInstanceBits::NONE : nri::TopLevelInstanceBits::FORCE_OPAQUE);
+                geometryObjectInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*m_AccelerationStructures[mesh.blasIndex], 0);
+
+                *worldTlasData++ = geometryObjectInstance;
+                worldGeometryObjectsNum++;
+
+                if (flags == FLAG_FORCED_EMISSION || material.IsEmissive())
+                {
+                    *lightTlasData++ = geometryObjectInstance;
+                    lightGeometryObjectsNum++;
+                }
+            }
         }
-        else
-            flags = FLAG_OPAQUE_OR_ALPHA_OPAQUE;
-
-        uint32_t basePrimitiveIndex = mesh.indexOffset / 3;
-        uint32_t instanceIdAndFlags = worldInstanceNum | (flags << FLAG_FIRST_BIT);
-
-        uint32_t packedMaterial = Packed::uf4_to_uint<7, 7, 7, 0>(material.avgBaseColor);
-        packedMaterial |= Packed::uf4_to_uint<11, 10, 6, 5>( float4(0.0f, 0.0f, material.avgSpecularColor.y, material.avgSpecularColor.z) );
-
-        instanceData->basePrimitiveIndex = basePrimitiveIndex;
-        instanceData->baseTextureIndex = instance.materialIndex * TEXTURES_PER_MATERIAL;
-        instanceData->mWorldToWorldPrev0 = mWorldToWorldPrev.col0;
-        instanceData->mWorldToWorldPrev1 = mWorldToWorldPrev.col1;
-        instanceData->mWorldToWorldPrev2 = mWorldToWorldPrev.col2;
-        instanceData++;
-
-        nri::GeometryObjectInstance tlasInstance = {};
-        memcpy(tlasInstance.transform, mObjectToWorld.a16, sizeof(tlasInstance.transform));
-        tlasInstance.instanceId = instanceIdAndFlags;
-        tlasInstance.mask = flags;
-        tlasInstance.shaderBindingTableLocalOffset = 0;
-        tlasInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE | (material.IsAlphaOpaque() ? nri::TopLevelInstanceBits::NONE : nri::TopLevelInstanceBits::FORCE_OPAQUE);
-        tlasInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*m_BLASs[instance.meshIndex], 0);
-
-        if (flags & (FLAG_EMISSION | FLAG_FORCED_EMISSION))
-        {
-            *lightTlasData++ = tlasInstance;
-            lightInstanceNum++;
-        }
-
-        *worldTlasData++ = tlasInstance;
-        worldInstanceNum++;
     }
 
     NRI.UnmapBuffer(*Get(Buffer::InstanceDataStaging));
@@ -3427,8 +3868,8 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
     NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
 
     NRI.CmdCopyBuffer(commandBuffer, *Get(Buffer::InstanceData), 0, 0, *Get(Buffer::InstanceDataStaging), 0, instanceDataOffset, instanceDataSize);
-    NRI.CmdBuildTopLevelAccelerationStructure(commandBuffer, worldInstanceNum, *Get(Buffer::WorldTlasDataStaging), tlasDataOffset, TLAS_BUILD_BITS, *m_WorldTlas, *Get(Buffer::WorldScratch), 0);
-    NRI.CmdBuildTopLevelAccelerationStructure(commandBuffer, lightInstanceNum, *Get(Buffer::LightTlasDataStaging), tlasDataOffset, TLAS_BUILD_BITS, *m_LightTlas, *Get(Buffer::LightScratch), 0);
+    NRI.CmdBuildTopLevelAccelerationStructure(commandBuffer, worldGeometryObjectsNum, *Get(Buffer::WorldTlasDataStaging), tlasDataOffset, TLAS_BUILD_BITS, *Get(AccelerationStructure::TLAS_World), *Get(Buffer::WorldScratch), 0);
+    NRI.CmdBuildTopLevelAccelerationStructure(commandBuffer, lightGeometryObjectsNum, *Get(Buffer::LightTlasDataStaging), tlasDataOffset, TLAS_BUILD_BITS, *Get(AccelerationStructure::TLAS_Emissive), *Get(Buffer::LightScratch), 0);
 }
 
 void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
@@ -3519,7 +3960,7 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
         data->gTanSunAngularRadius                          = Tan( DegToRad( m_Settings.sunAngularDiameter * 0.5f ) );
         data->gTanPixelAngularRadius                        = Tan( 0.5f * DegToRad(m_Settings.camFov) / outputSize.x );
         data->gDebug                                        = m_Settings.debug;
-        data->gTransparent                                  = ( m_HasTransparentObjects && NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION && ( m_Settings.onScreen == 0 || m_Settings.onScreen == 2 ) ) ? 1.0f : 0.0f;
+        data->gTransparent                                  = (m_HasTransparent && NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION && ( m_Settings.onScreen == 0 || m_Settings.onScreen == 2 )) ? 1.0f : 0.0f;
         data->gReference                                    = m_Settings.denoiser == REFERENCE ? 1.0f : 0.0f;
         data->gUsePrevFrame                                 = m_Settings.usePrevFrame;
         data->gMinProbability                               = minProbability;
@@ -3863,7 +4304,6 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::TransparentLighting, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::Unfiltered_Diff, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::Unfiltered_Spec, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
 #if( NRD_MODE == SH )
@@ -3886,8 +4326,8 @@ void Sample::RenderFrame(uint32_t frameIndex)
             NRI.CmdDispatch(commandBuffer, rectGridWmod, rectGridHmod, 1);
         }
 
-        { // Diffuse & specular indirect lighting denoising
-            helper::Annotation annotation(NRI, commandBuffer, "Indirect lighting denoising");
+        { // Denoising
+            helper::Annotation annotation(NRI, commandBuffer, "Lighting denoising");
 
             float radiusResolutionScale = 1.0f;
             if (m_Settings.adaptRadiusToResolution)
@@ -4053,7 +4493,6 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::BaseColor_Metalness, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::DirectLighting, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::TransparentLighting, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::Diff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::Spec, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
@@ -4072,6 +4511,28 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
             NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::Composition));
             NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::Composition1), nullptr);
+
+            NRI.CmdDispatch(commandBuffer, rectGridW, rectGridH, 1);
+        }
+
+        { // Delta rays
+            helper::Annotation annotation(NRI, commandBuffer, "Delta rays");
+
+            const TextureState transitions[] =
+            {
+                // Input
+                {Texture::Diff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::Spec, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                // Output
+                {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+            };
+            transitionBarriers.textures = optimizedTransitions.data();
+            transitionBarriers.textureNum = BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions);
+            NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+
+            NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::DeltaRays));
+            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::DeltaRays1), nullptr);
 
             NRI.CmdDispatch(commandBuffer, rectGridW, rectGridH, 1);
         }
