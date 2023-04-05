@@ -40,7 +40,7 @@ has not been designed to trace primary hits. But still can be used to trace
 direct and indirect lighting.
 
 Prerequisites:
-    STL::Rng::Initialize( )
+    STL::Rng::Hash::Initialize( )
 
 Derivation:
     Lsum = L0 + BRDF0 * ( L1 + BRDF1 * ( L2 + BRDF2 * ( L3 +  ... ) ) )
@@ -180,7 +180,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                     if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
                     {
-                        float2 rnd = STL::Rng::GetFloat2();
+                        float2 rnd = STL::Rng::Hash::GetFloat2( );
                         rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;
                         rnd *= gTanSunAngularRadius;
 
@@ -300,7 +300,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 float diffuseProbability = EstimateDiffuseProbability( geometryProps, materialProps );
 
                 // Clamp probability to a sane range to guarantee a sample in 3x3 ( or 5x5 ) area
-                float rnd = STL::Rng::GetFloat2( ).x;
+                float rnd = STL::Rng::Hash::GetFloat( );
                 if( gTracingMode == RESOLUTION_FULL_PROBABILISTIC && bounceIndex == 1 )
                 {
                     diffuseProbability = float( diffuseProbability != 0.0 ) * clamp( diffuseProbability, gMinProbability, 1.0 - gMinProbability );
@@ -331,7 +331,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                 while( sampleNum < IMPORTANCE_SAMPLE_NUM && throughputWithImportanceSampling == 0 )
                 {
-                    float2 rnd = STL::Rng::GetFloat2( );
+                    float2 rnd = STL::Rng::Hash::GetFloat2( );
 
                     if( isDiffuse )
                     {
@@ -371,7 +371,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                     // Allow low roughness specular to take data from the previous frame
                     throughputWithImportanceSampling = STL::Color::Luminance( throughput );
-                    bool isImportanceSamplingNeeded = throughputWithImportanceSampling != 0 && ( isDiffuse || ( STL::Rng::GetFloat2( ).x < materialProps.roughness ) );
+                    bool isImportanceSamplingNeeded = throughputWithImportanceSampling != 0 && ( isDiffuse || ( STL::Rng::Hash::GetFloat( ) < materialProps.roughness ) );
 
                     if( gDisableShadowsAndEnableImportanceSampling && isImportanceSamplingNeeded )
                     {
@@ -437,7 +437,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                 if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
                 {
-                    float2 rnd = STL::Rng::GetFloat2();
+                    float2 rnd = STL::Rng::Hash::GetFloat2( );
                     rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;
                     rnd *= gTanSunAngularRadius;
 
@@ -589,13 +589,6 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
     float2 sampleUv = pixelUv + gJitter;
 
-    // Initialize RNG
-    STL::Rng::Initialize( pixelPos, gFrameIndex );
-
-    // Ambient level
-    float3 Lamb = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
-    Lamb *= gAmbient;
-
     // Early out
     float viewZ = gInOut_ViewZ[ pixelPos ];
     float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
@@ -632,6 +625,13 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
         return;
     }
+
+    // Initialize RNG
+    STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
+
+    // Ambient level
+    float3 Lamb = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
+    Lamb *= gAmbient;
 
     // G-buffer
     float4 normalAndRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( gInOut_Normal_Roughness[ pixelPos ] );
@@ -688,7 +688,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     #if( USE_SIMULATED_FIREFLY_TEST == 1 )
         const float maxFireflyEnergyScaleFactor = 10000.0;
-        result.diffRadiance /= lerp( 1.0 / maxFireflyEnergyScaleFactor, 1.0, STL::Rng::GetFloat2().x );
+        result.diffRadiance /= lerp( 1.0 / maxFireflyEnergyScaleFactor, 1.0, STL::Rng::Hash::GetFloat( ) );
     #endif
 
     // Convert for NRD

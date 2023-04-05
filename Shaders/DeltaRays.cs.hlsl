@@ -67,7 +67,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
         if( bounce == 1 )
             transmittance *= isReflection ? F : 1.0 - F;
         else
-            isReflection = STL::Rng::GetFloat2().x < F;
+            isReflection = STL::Rng::Hash::GetFloat( ) < F;
 
         // Compute ray
         float3 ray = reflect( -geometryProps.V, geometryProps.N );
@@ -142,9 +142,6 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
     float2 sampleUv = pixelUv + gJitter;
 
-    // Initialize RNG
-    STL::Rng::Initialize( pixelPos, gFrameIndex );
-
     // Ambient level
     float3 Lamb = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
     Lamb *= gAmbient;
@@ -162,8 +159,11 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     GeometryProps geometryPropsT = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, tmin0, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, gTransparent == 0.0 ? 0 : GEOMETRY_ONLY_TRANSPARENT, 0 );
 
     float3 Ltransparent = 0.0;
-    if( geometryPropsT.tmin < tmin0 )
+    if( !geometryPropsT.IsSky( ) && geometryPropsT.tmin < tmin0 )
     {
+        // Initialize RNG
+        STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
+
         // Patch motion vectors replacing MV for the background with MV for the closest glass layer.
         // IMPORTANT: surface-based motion can be used only if the object is curved.
         // TODO: let's use the simplest heuristic for now, but better switch to some "smart" interpolation between

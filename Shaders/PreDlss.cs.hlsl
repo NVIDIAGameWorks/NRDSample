@@ -36,7 +36,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     gOut_SurfaceMotion[ pixelPos ] = pixelMotion;
 
     // Post lighting composition
-    STL::Rng::Initialize( pixelPos, gFrameIndex );
+    STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
 
     float3 Lsum = gIn_ComposedLighting_ViewZ[ pixelPos ].xyz;
     Lsum = ApplyExposure( Lsum, false );

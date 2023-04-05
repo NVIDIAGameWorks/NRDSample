@@ -32,7 +32,7 @@ void main( uint2 tilePos : SV_GroupId, uint2 pixelPos : SV_DispatchThreadId, uin
     GroupMemoryBarrierWithGroupSync();
 
     // Cast rays in all directions ( find primary hit )
-    STL::Rng::Initialize( pixelPos, gFrameIndex );
+    STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
 
     float2 rnd = STL::Sequence::Hammersley2D( pixelPos.y * DISPATCH_W + pixelPos.x, DISPATCH_W * DISPATCH_H );
     float3 ray = STL::ImportanceSampling::Uniform::GetRay( float2( rnd.x, rnd.y * 2.0 - 1.0 ) );
@@ -51,7 +51,7 @@ void main( uint2 tilePos : SV_GroupId, uint2 pixelPos : SV_DispatchThreadId, uin
     for( uint i = 0; i < 9 && STL::Color::Luminance( BRDF ) > 0.001; i++ )
     {
         // Choose ray
-        float2 rnd = STL::Rng::GetFloat2();
+        float2 rnd = STL::Rng::Hash::GetFloat2( );
         float3 rayLocal = STL::ImportanceSampling::Cosine::GetRay( rnd );
         float3x3 mLocalBasis = STL::Geometry::GetBasis( materialProps.N );
         float3 ray = STL::Geometry::RotateVectorInverse( mLocalBasis, rayLocal );

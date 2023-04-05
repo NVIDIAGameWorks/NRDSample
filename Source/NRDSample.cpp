@@ -46,7 +46,7 @@ constexpr float NEAR_Z                              = 0.001f; // m
 constexpr float GLASS_THICKNESS                     = 0.002f; // m
 constexpr bool CAMERA_RELATIVE                      = true;
 constexpr bool CAMERA_LEFT_HANDED                   = true;
-constexpr bool DISALLOW_BLAS_MERGING                = false;
+constexpr bool ALLOW_BLAS_MERGING                   = true;
 
 //=================================================================================
 // Important tests, sensitive to regressions or just testing base functionality
@@ -97,7 +97,7 @@ constexpr uint32_t MAX_TEXTURE_TRANSITION_NUM       = 32;
 // See HLSL
 #define FLAG_FIRST_BIT                              20
 #define INSTANCE_ID_MASK                            ( ( 1 << FLAG_FIRST_BIT ) - 1 )
-#define FLAG_DEFAULT                                0x01 // set only if nothing is set 
+#define FLAG_DEFAULT                                0x01 // set only if nothing is set
 #define FLAG_TRANSPARENT                            0x02 // transparent
 #define FLAG_FORCED_EMISSION                        0x04 // animated emissive cube
 
@@ -755,7 +755,10 @@ Sample::~Sample()
         NRI.DestroyPipeline(*m_Pipelines[i]);
 
     for (uint32_t i = 0; i < m_AccelerationStructures.size(); i++)
-        NRI.DestroyAccelerationStructure(*m_AccelerationStructures[i]);
+    {
+        if (m_AccelerationStructures[i])
+            NRI.DestroyAccelerationStructure(*m_AccelerationStructures[i]);
+    }
 
     NRI.DestroyPipelineLayout(*m_PipelineLayout);
     NRI.DestroyDescriptorPool(*m_DescriptorPool);
@@ -763,7 +766,10 @@ Sample::~Sample()
     NRI.DestroySwapChain(*m_SwapChain);
 
     for (size_t i = 0; i < m_MemoryAllocations.size(); i++)
-        NRI.FreeMemory(*m_MemoryAllocations[i]);
+    {
+        if (m_MemoryAllocations[i])
+            NRI.FreeMemory(*m_MemoryAllocations[i]);
+    }
 
     DestroyUserInterface();
 
@@ -1231,7 +1237,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     if (isUnfolded)
                     {
                         ImGui::Checkbox("Animate sun", &m_Settings.animateSun);
-                        if (!m_Scene.animations.empty() && m_Scene.animations[m_Settings.activeAnimation].cameraNode.animationNode != utils::InvalidIndex)
+                        if (!m_Scene.animations.empty() && m_Scene.animations[m_Settings.activeAnimation].cameraNode.animationNodeIndex != utils::InvalidIndex)
                         {
                             ImGui::SameLine();
                             ImGui::Checkbox("Animate camera", &m_Settings.animateCamera);
@@ -1979,7 +1985,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     }
 
     if (!m_Scene.animations.empty())
-        m_Scene.Animate(animationSpeed, m_Timer.GetFrameTime(), m_Settings.animationProgress, m_Settings.activeAnimation, DISALLOW_BLAS_MERGING, m_Settings.animateCamera ? &desc.customMatrix : nullptr);
+        m_Scene.Animate(animationSpeed, m_Timer.GetFrameTime(), m_Settings.animationProgress, m_Settings.activeAnimation, m_Settings.animateCamera ? &desc.customMatrix : nullptr);
 
     m_Camera.Update(desc, frameIndex);
 
@@ -2113,13 +2119,13 @@ void Sample::LoadScene()
 {
     // Proxy geometry, which will be instancinated
     std::string sceneFile = utils::GetFullPath("Cubes/Cubes.obj", utils::DataFolder::SCENES);
-    NRI_ABORT_ON_FALSE( utils::LoadScene(sceneFile, m_Scene, DISALLOW_BLAS_MERGING, false) );
+    NRI_ABORT_ON_FALSE( utils::LoadScene(sceneFile, m_Scene, !ALLOW_BLAS_MERGING) );
 
     m_ProxyInstancesNum = helper::GetCountOf(m_Scene.instances);
 
     // The scene
     sceneFile = utils::GetFullPath(m_SceneFile, utils::DataFolder::SCENES);
-    NRI_ABORT_ON_FALSE( utils::LoadScene(sceneFile, m_Scene, DISALLOW_BLAS_MERGING, false) );
+    NRI_ABORT_ON_FALSE( utils::LoadScene(sceneFile, m_Scene, !ALLOW_BLAS_MERGING) );
 
     // Some scene dependent settings // TODO: improve
     m_ReblurSettings.antilagIntensitySettings.enable = true;
@@ -2427,7 +2433,7 @@ void Sample::CreateAccelerationStructures()
         uint32_t geometryObjectBase;
         uint32_t geometryObjectsNum;
     };
-    
+
     uint64_t primitivesNum = 0;
     std::vector<Parameters> parameters;
     std::vector<nri::GeometryObject> geometryObjects;
@@ -2608,7 +2614,7 @@ void Sample::CreateAccelerationStructures()
 
                 float4x4 scale;
                 scale.SetupByScale(instance.scale);
-            
+
                 mObjectToWorld = mObjectToWorld * translationInv * scale * translation;
             }
             mObjectToWorld.AddTranslation( ToFloat(instance.position) );
@@ -2640,39 +2646,44 @@ void Sample::CreateAccelerationStructures()
             primitivesNum += mesh.indexNum / 3;
         }
 
-        // Create BLAS
         uint32_t geometryObjectsNum = (uint32_t)(geometryObjects.size() - geometryObjectBase);
-
-        nri::AccelerationStructureDesc accelerationStructureDesc = {};
-        accelerationStructureDesc.type = nri::AccelerationStructureType::BOTTOM_LEVEL;
-        accelerationStructureDesc.flags = BLAS_BUILD_BITS;
-        accelerationStructureDesc.instanceOrGeometryObjectNum = geometryObjectsNum;
-        accelerationStructureDesc.geometryObjects = geometryObjectsNum ? &geometryObjects[geometryObjectBase] : nullptr;
-
-        nri::AccelerationStructure* accelerationStructure = nullptr;
-        NRI_ABORT_ON_FAILURE(NRI.CreateAccelerationStructure(*m_Device, accelerationStructureDesc, accelerationStructure));
-        m_AccelerationStructures.push_back(accelerationStructure);
-
-        nri::MemoryDesc memoryDesc = {};
-        NRI.GetAccelerationStructureMemoryInfo(*accelerationStructure, memoryDesc);
-
-        nri::Memory* memory = nullptr;
-        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::WHOLE_DEVICE_GROUP, memoryDesc.type, memoryDesc.size, memory));
-        m_MemoryAllocations.push_back(memory);
-
-        const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = {memory, accelerationStructure};
-        NRI_ABORT_ON_FAILURE(NRI.BindAccelerationStructureMemory(*m_Device, &memoryBindingDesc, 1));
-
-        // Update parameters
         if (geometryObjectsNum)
         {
+            // Create BLAS
+            nri::AccelerationStructureDesc accelerationStructureDesc = {};
+            accelerationStructureDesc.type = nri::AccelerationStructureType::BOTTOM_LEVEL;
+            accelerationStructureDesc.flags = BLAS_BUILD_BITS;
+            accelerationStructureDesc.instanceOrGeometryObjectNum = geometryObjectsNum;
+            accelerationStructureDesc.geometryObjects = &geometryObjects[geometryObjectBase];
+
+            nri::AccelerationStructure* accelerationStructure = nullptr;
+            NRI_ABORT_ON_FAILURE(NRI.CreateAccelerationStructure(*m_Device, accelerationStructureDesc, accelerationStructure));
+            m_AccelerationStructures.push_back(accelerationStructure);
+
+            nri::MemoryDesc memoryDesc = {};
+            NRI.GetAccelerationStructureMemoryInfo(*accelerationStructure, memoryDesc);
+
+            nri::Memory* memory = nullptr;
+            NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::WHOLE_DEVICE_GROUP, memoryDesc.type, memoryDesc.size, memory));
+            m_MemoryAllocations.push_back(memory);
+
+            const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = {memory, accelerationStructure};
+            NRI_ABORT_ON_FAILURE(NRI.BindAccelerationStructureMemory(*m_Device, &memoryBindingDesc, 1));
+
+            // Update parameters
             parameters.push_back( {accelerationStructure, scratchSize, (uint32_t)geometryObjectBase, geometryObjectsNum} );
 
             uint64_t size = NRI.GetAccelerationStructureBuildScratchBufferSize(*accelerationStructure);
             scratchSize += helper::Align(size, 256);
         }
+        else
+        {
+            // Needed only to preserve order
+            m_AccelerationStructures.push_back(nullptr);
+            m_MemoryAllocations.push_back(nullptr);
+        }
     }
-    
+
     // Create BOTTOM_LEVEL acceleration structures for dynamic geometry
     for (uint32_t dynamicMeshIndex : dynamicMeshesIndices)
     {
@@ -2740,7 +2751,7 @@ void Sample::CreateAccelerationStructures()
 
     // Allocate scratch memory
     const nri::BufferDesc bufferDesc = {scratchSize, 0, nri::BufferUsageBits::RAY_TRACING_BUFFER | nri::BufferUsageBits::SHADER_RESOURCE_STORAGE};
-    nri::Buffer* scratchBuffer = nullptr;    
+    nri::Buffer* scratchBuffer = nullptr;
     NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, scratchBuffer));
 
     nri::MemoryDesc memoryDesc = {};
@@ -2780,11 +2791,11 @@ void Sample::CreateAccelerationStructures()
     // Cleanup
     NRI.UnmapBuffer(*uploadBuffer);
 
-    NRI.FreeMemory(*scratchMemory);
     NRI.DestroyBuffer(*scratchBuffer);
+    NRI.FreeMemory(*scratchMemory);
 
-    NRI.FreeMemory(*uploadMemory);
     NRI.DestroyBuffer(*uploadBuffer);
+    NRI.FreeMemory(*uploadMemory);
 
     NRI.DestroyCommandBuffer(*commandBuffer);
     NRI.DestroyCommandAllocator(*commandAllocator);
@@ -3772,7 +3783,7 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
 
                     float4x4 scale;
                     scale.SetupByScale(instance.scale);
-            
+
                     mObjectToWorld = mObjectToWorld * translationInv * scale * translation;
                 }
                 mObjectToWorld.AddTranslation( m_Camera.GetRelative(instance.position) );

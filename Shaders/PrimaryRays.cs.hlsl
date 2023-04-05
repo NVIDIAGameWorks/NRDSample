@@ -119,10 +119,10 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     // Debug
     if( gOnScreen == SHOW_INSTANCE_INDEX )
     {
-        STL::Rng::Initialize( geometryProps0.instanceIndex, 0 );
+        STL::Rng::Hash::Initialize( geometryProps0.instanceIndex, 0 );
 
         uint checkerboard = STL::Sequence::CheckerBoard( pixelPos >> 2, 0 ) != 0;
-        float3 color = STL::Rng::GetFloat4().xyz;
+        float3 color = STL::Rng::Hash::GetFloat4( ).xyz;
         color *= checkerboard && !geometryProps0.IsStatic( ) ? 0.5 : 1.0;
 
         materialProps0.Ldirect = color;
@@ -146,8 +146,8 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
             rnd = GetBlueNoise( gIn_Scrambling_Ranking_1spp, pixelPos, false, 0, 0 );
         else
         {
-            STL::Rng::Initialize( pixelPos, gFrameIndex );
-            rnd = STL::Rng::GetFloat2( );
+            STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
+            rnd = STL::Rng::Hash::GetFloat2( );
         }
 
         rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;

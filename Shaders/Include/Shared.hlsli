@@ -241,7 +241,7 @@ float3 GetMotion( float3 X, float3 Xprev )
     return motion;
 }
 
-// IMPORTANT: requires STL::Rng::Initialize
+// IMPORTANT: requires STL::Rng::Hash::Initialize
 float3 ApplyExposure( float3 Lsum, bool convertToLDR = true )
 {
     // Exposure
@@ -250,7 +250,7 @@ float3 ApplyExposure( float3 Lsum, bool convertToLDR = true )
         Lsum *= gExposure;
 
         // Dithering
-        float rnd = STL::Rng::GetFloat2( ).x;
+        float rnd = STL::Rng::Hash::GetFloat( );
         float luma = STL::Color::Luminance( Lsum );
         float amplitude = lerp( 0.4, 1.0 / 1024.0, STL::Math::Sqrt01( luma ) );
         float dither = 1.0 + ( rnd - 0.5 ) * amplitude;
