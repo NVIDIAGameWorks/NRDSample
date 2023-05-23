@@ -13,7 +13,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 // Inputs
 NRI_RESOURCE( Texture2D<float2>, gIn_PrimaryMipAndCurvature, t, 0, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_PrevComposedDiff_PrevViewZ, t, 1, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_PrevComposedDiff, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_PrevComposedSpec_PrevViewZ, t, 2, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 3, 1 );
 
@@ -23,12 +23,45 @@ NRI_RESOURCE( RWTexture2D<float4>, gInOut_BaseColor_Metalness, u, 1, 1 );
 NRI_RESOURCE( RWTexture2D<float4>, gInOut_Normal_Roughness, u, 2, 1 );
 NRI_RESOURCE( RWTexture2D<float>, gInOut_ViewZ, u, 3, 1 );
 NRI_RESOURCE( RWTexture2D<float3>, gInOut_Mv, u, 4, 1 );
-NRI_RESOURCE( RWTexture2D<float4>, gOut_Diff, u, 5, 1 );
-NRI_RESOURCE( RWTexture2D<float4>, gOut_Spec, u, 6, 1 );
+NRI_RESOURCE( RWTexture2D<float3>, gOut_PsrThroughput, u, 5, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_Diff, u, 6, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_Spec, u, 7, 1 );
 #if( NRD_MODE == SH )
-    NRI_RESOURCE( RWTexture2D<float4>, gOut_DiffSh, u, 7, 1 );
-    NRI_RESOURCE( RWTexture2D<float4>, gOut_SpecSh, u, 8, 1 );
+    NRI_RESOURCE( RWTexture2D<float4>, gOut_DiffSh, u, 8, 1 );
+    NRI_RESOURCE( RWTexture2D<float4>, gOut_SpecSh, u, 9, 1 );
 #endif
+
+float MixWithRadianceFromPreviousFrame( inout float3 L, GeometryProps geometryProps, MaterialProps materialProps, uint2 pixelPos, bool isDiffuse )
+{
+    // Reproject previous frame
+    float3 prevLdiff, prevLspec;
+    float prevFrameWeight = ReprojectRadiance( true, false, gIn_PrevComposedDiff, gIn_PrevComposedSpec_PrevViewZ, geometryProps, pixelPos, prevLdiff, prevLspec );
+    prevFrameWeight *= gPrevFrameConfidence; // see C++ code for details
+
+    // Estimate how strong lighting at hit depends on the view direction
+    float diffuseProbabilityBiased = EstimateDiffuseProbability( geometryProps, materialProps, true );
+    float3 prevLsum = prevLdiff + prevLspec * diffuseProbabilityBiased;
+
+    float diffuseLikeMotion = lerp( diffuseProbabilityBiased, 1.0, STL::Math::Sqrt01( materialProps.curvature ) );
+    prevFrameWeight *= isDiffuse ? 1.0 : diffuseLikeMotion;
+
+    // Reduce the previous frame contribution if specular prevails and view dependency is significant
+    float a = STL::Color::Luminance( prevLspec );
+    float b = STL::Color::Luminance( prevLdiff );
+    float ratio = a / ( a + b + 1e-6 );
+    prevFrameWeight *= lerp( 1.0, diffuseProbabilityBiased, ratio );
+
+    // Prefer the current frame lighting if it's brighter
+    a = STL::Color::Luminance( prevLsum );
+    b = STL::Color::Luminance( L );
+    ratio = a / ( a + b + 1e-6 );
+    prevFrameWeight *= ratio;
+
+    // Final mix
+    L = lerp( L, prevLsum, prevFrameWeight );
+
+    return prevFrameWeight;
+}
 
 //========================================================================================
 // TRACE OPAQUE
@@ -66,9 +99,6 @@ struct TraceOpaqueDesc
     // Pixel position
     uint2 pixelPos;
 
-    // BRDF energy threshold
-    float threshold;
-
     // Checkerboard
     uint checkerboard;
 
@@ -99,34 +129,37 @@ struct TraceOpaqueResult
     #endif
 };
 
+bool IsPsrAllowed( MaterialProps materialProps )
+{
+    return materialProps.roughness < 0.044 && ( materialProps.metalness > 0.941 || STL::Color::Luminance( materialProps.baseColor ) < 0.005 ); // TODO: tweaked for some content?
+}
+
 TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 {
     // TODO: for RESOLUTION_FULL_PROBABILISTIC with 1 path per pixel the tracer can be significantly simplified:
     // - only one "float3" needed for radiance, hit distance and direction ( diff or spec )
     // - tracing to PSR can be embedded into the main loop
     // - temp vars "materialProps" and "geometryProps" not needed if "desc" modification is allowed ( or "desc" modification not needed )
-    // - "startBRDF" and "startLsum" not needed
+    // - "psrThroughput" and "psrLsum" not needed
 
     //=====================================================================================================================================================================
     // Primary surface replacement ( PSR )
     //=====================================================================================================================================================================
 
     float viewZ = STL::Geometry::AffineTransform( gWorldToView, desc.geometryProps.X ).z;
-    float3 startBRDF = 1.0;
-    float3 startLsum = 0.0;
+    float3 psrLsum = 0.0;
 
     #if( USE_PSR == 1 )
         float3x3 mirrorMatrix = STL::Geometry::GetMirrorMatrix( 0 ); // identity
-        int psrBounceIndex = 0;
+        float3 psrThroughput = 1.0;
 
-        bool canBePsr = gPSR && desc.materialProps.roughness < 0.005 && desc.materialProps.metalness > 0.995;
-        if( canBePsr )
+        if( gPSR && IsPsrAllowed( desc.materialProps ) )
         {
             GeometryProps geometryProps = desc.geometryProps;
             MaterialProps materialProps = desc.materialProps;
 
-            float accumulatedHitDistForTracking = 0.0;
-            float accumulatedDiffuseLikeMotionForTracking = 0.0;
+            float accumulatedHitDist = 0.0;
+            float accumulatedPseudoCurvature = 0.0; // TODO: is there a less empirical solution?
 
             [loop]
             for( uint bounceIndex = 1; bounceIndex <= desc.bounceNum; bounceIndex++ )
@@ -134,6 +167,9 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 //=============================================================================================================================================================
                 // Origin point
                 //=============================================================================================================================================================
+
+                float curvature = materialProps.curvature;
+                accumulatedPseudoCurvature += STL::Math::Pow01( abs( curvature ), 0.25 );
 
                 {
                     // Accumulate mirror matrix
@@ -147,17 +183,15 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                         float3 albedo, Rf0;
                         STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
 
-                        float3 H = normalize( geometryProps.V + ray );
-                        float VoH = abs( dot( geometryProps.V, H ) );
-                        startBRDF *= STL::BRDF::FresnelTerm_Schlick( Rf0, VoH );
+                        float NoV = abs( dot( materialProps.N, geometryProps.V ) );
+                        float3 Fenv = STL::BRDF::EnvironmentTerm_Rtg( Rf0, NoV, materialProps.roughness );
+
+                        psrThroughput *= Fenv;
                     #endif
 
                     // Abort if expected contribution of the current bounce is low
-                    if( STL::Color::Luminance( startBRDF ) < desc.threshold )
+                    if( PSR_THROUGHPUT_THRESHOLD != 0.0 && STL::Color::Luminance( psrThroughput ) < PSR_THROUGHPUT_THRESHOLD )
                         break;
-
-                    // Estimate surface-based motion amount ( i.e. when specular moves like diffuse )
-                    accumulatedDiffuseLikeMotionForTracking += GetDiffuseLikeMotionAmount( geometryProps, materialProps );
 
                     //=========================================================================================================================================================
                     // Trace to the next hit
@@ -173,94 +207,84 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 //=============================================================================================================================================================
 
                 {
-                    float2 mipAndCone = GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness );
-
-                    // Compute lighting at hit point
-                    float3 L = materialProps.Ldirect;
-
-                    if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
-                    {
-                        float2 rnd = STL::Rng::Hash::GetFloat2( );
-                        rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;
-                        rnd *= gTanSunAngularRadius;
-
-                        float3x3 mSunBasis = STL::Geometry::GetBasis( gSunDirection ); // TODO: move to CB
-                        float3 sunDirection = normalize( mSunBasis[ 0 ] * rnd.x + mSunBasis[ 1 ] * rnd.y + mSunBasis[ 2 ] );
-
-                        L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), sunDirection, 0.0, INF, mipAndCone, gWorldTlas, desc.instanceInclusionMask, desc.rayFlags );
-                    }
-
-                    L += materialProps.Lemi;
-
-                    // Reuse previous frame carefully treating specular ( if specular contribution is high it can't be reused because it was computed for a different view vector! )
-                    float3 prevLdiff, prevLspec;
-                    float prevFrameWeight = ReprojectRadiance( true, false, gIn_PrevComposedDiff_PrevViewZ, gIn_PrevComposedSpec_PrevViewZ, geometryProps, desc.pixelPos, prevLdiff, prevLspec );
-
-                    float diffuseLikeMotion = GetDiffuseLikeMotionAmount( geometryProps, materialProps );
-                    prevFrameWeight *= diffuseLikeMotion;
-                    prevFrameWeight *= 0.9 * gUsePrevFrame; // TODO: use F( bounceIndex ) bounceIndex = 99 => 1.0
-                    prevFrameWeight *= 1.0 - gAmbientAccumSpeed;
-
-                    float diffuseProbabilityBiased = EstimateDiffuseProbability( geometryProps, materialProps, true );
-                    float3 prevLsum = prevLdiff + prevLspec * diffuseProbabilityBiased;
-
-                    float l1 = STL::Color::Luminance( L );
-                    float l2 = STL::Color::Luminance( prevLsum );
-                    prevFrameWeight *= l2 / ( l1 + l2 + 1e-6 );
-
-                    L = lerp( L, prevLsum, prevFrameWeight );
-
-                    // Accumulate lighting
-                    L *= startBRDF;
-                    startLsum += L;
-
-                    // Reduce contribution of next samples if previous frame is sampled, which already has multi-bounce information ( biased )
-                    startBRDF *= 1.0 - prevFrameWeight;
-
-                    // Accumulate hit distance representing virtual point position
-                    accumulatedHitDistForTracking += geometryProps.tmin * STL::Math::SmoothStep( 0.2, 0.0, accumulatedDiffuseLikeMotionForTracking );
+                    // Accumulate hit distance representing virtual point position ( see "README/NOISY INPUTS" )
+                    // TODO: this heuristic works best so far
+                    float hitDistFocused = geometryProps.tmin / ( 2.0 * curvature * geometryProps.tmin + 1.0 );
+                    accumulatedHitDist += hitDistFocused * STL::Math::SmoothStep( 0.2, 0.0, accumulatedPseudoCurvature );
 
                     // If hit is not a delta-event ( or the last bounce, or a miss ) it's PSR
-                    if( !( materialProps.roughness < 0.005 && materialProps.metalness > 0.995 ) || bounceIndex == desc.bounceNum || geometryProps.IsSky( ) )
+                    if( !IsPsrAllowed( materialProps ) || bounceIndex == desc.bounceNum || geometryProps.IsSky( ) )
                     {
-                        float3 Xvirtual = desc.geometryProps.X - desc.geometryProps.V * accumulatedHitDistForTracking;
-                        viewZ = STL::Geometry::AffineTransform( gWorldToView, Xvirtual ).z;
-
-                        if( !geometryProps.IsSky( ) )
-                        {
-                            float diffuseProbability = EstimateDiffuseProbability( geometryProps, materialProps );
-                            uint materialID = diffuseProbability > BRDF_ENERGY_THRESHOLD ? 0 : 1;
-
-                            float3 psrNormal = STL::Geometry::RotateVectorInverse( mirrorMatrix, materialProps.N );
-
-                            gInOut_BaseColor_Metalness[ desc.pixelPos ] = float4( STL::Color::LinearToSrgb( materialProps.baseColor ), materialProps.metalness );
-                            gInOut_Normal_Roughness[ desc.pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( psrNormal, materialProps.roughness, materialID );
-                        }
-                        else
-                            gInOut_DirectLighting[ desc.pixelPos ] = startLsum;
-
-                        gInOut_ViewZ[ desc.pixelPos ] = geometryProps.IsSky( ) ? STL::Math::Sign( viewZ ) * INF : viewZ;
-
-                        float3 XvirtualPrev = Xvirtual;
-                        if( !geometryProps.IsSky( ) && !geometryProps.IsStatic( ) )
-                        {
-                            InstanceData instanceData = gIn_InstanceData[ geometryProps.instanceIndex ];
-                            XvirtualPrev = STL::Geometry::AffineTransform( instanceData.mWorldToWorldPrev, Xvirtual );
-                        }
-
-                        float3 motion = GetMotion( Xvirtual, XvirtualPrev );
-                        gInOut_Mv[ desc.pixelPos ] = motion;
-
-                        desc.geometryProps = geometryProps;
-                        desc.materialProps = materialProps;
+                        // Update bounces
                         desc.bounceNum -= bounceIndex;
-                        psrBounceIndex = bounceIndex;
-
                         break;
                     }
                 }
             }
+
+            // Compute lighting at hit point
+            float3 L = materialProps.Ldirect;
+
+            if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
+            {
+                float2 rnd = STL::Rng::Hash::GetFloat2( );
+                rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;
+                rnd *= gTanSunAngularRadius;
+
+                float3x3 mSunBasis = STL::Geometry::GetBasis( gSunDirection ); // TODO: move to CB
+                float3 sunDirection = normalize( mSunBasis[ 0 ] * rnd.x + mSunBasis[ 1 ] * rnd.y + mSunBasis[ 2 ] );
+
+                float2 mipAndCone = GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness );
+                L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), sunDirection, 0.0, INF, mipAndCone, gWorldTlas, desc.instanceInclusionMask, desc.rayFlags );
+            }
+
+            L += materialProps.Lemi;
+
+            // Reuse previous frame carefully treating specular ( if specular contribution is high it can't be reused because it was computed for a different view vector! )
+            MixWithRadianceFromPreviousFrame( L, geometryProps, materialProps, desc.pixelPos, false ); // TODO: use weight?
+
+            // Throughput will be applied later
+            psrLsum = L;
+
+            // Update materials and INF emission
+            if( !geometryProps.IsSky( ) )
+            {
+                // IMPORTANT: use another set of materialID to avoid potential leaking, because PSR uses own de-modulation scheme
+                float diffuseProbability = EstimateDiffuseProbability( geometryProps, materialProps );
+                float materialID = diffuseProbability != 0.0 ? 2.0 : 3.0;
+
+                float3 psrNormal = STL::Geometry::RotateVectorInverse( mirrorMatrix, materialProps.N );
+
+                gInOut_BaseColor_Metalness[ desc.pixelPos ] = float4( STL::Color::LinearToSrgb( materialProps.baseColor ), materialProps.metalness );
+                gInOut_Normal_Roughness[ desc.pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( psrNormal, materialProps.roughness, materialID );
+            }
+            else
+                gInOut_DirectLighting[ desc.pixelPos ] = psrLsum;
+
+            // Update viewZ
+            float3 Xvirtual = desc.geometryProps.X - desc.geometryProps.V * accumulatedHitDist;
+            viewZ = STL::Geometry::AffineTransform( gWorldToView, Xvirtual ).z;
+
+            gInOut_ViewZ[ desc.pixelPos ] = geometryProps.IsSky( ) ? STL::Math::Sign( viewZ ) * INF : viewZ;
+
+            // Update motion
+            float3 Xprev = geometryProps.X;
+            if( !geometryProps.IsSky( ) && !geometryProps.IsStatic( ) )
+            {
+                InstanceData instanceData = gIn_InstanceData[ geometryProps.instanceIndex ];
+                Xprev = STL::Geometry::AffineTransform( instanceData.mWorldToWorldPrev, geometryProps.X );
+            }
+
+            float3 XvirtualPrev = Xvirtual + Xprev - geometryProps.X;
+            float3 motion = GetMotion( Xvirtual, XvirtualPrev );
+            gInOut_Mv[ desc.pixelPos ] = motion;
+
+            // Replace primary surface props with the replacement props
+            desc.geometryProps = geometryProps;
+            desc.materialProps = materialProps;
         }
+
+        gOut_PsrThroughput[ desc.pixelPos ] = psrThroughput;
     #endif
 
     //=====================================================================================================================================================================
@@ -281,8 +305,8 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
         float accumulatedHitDist = 0.0;
         float accumulatedDiffuseLikeMotion = 0.0;
 
-        float3 Lsum = startLsum;
-        float3 BRDF = startBRDF;
+        float3 Lsum = psrLsum;
+        float3 pathThroughput = 1.0;
 
         bool isDiffusePath = gTracingMode == RESOLUTION_HALF ? desc.checkerboard : ( i & 0x1 );
 
@@ -311,7 +335,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 if( gTracingMode == RESOLUTION_FULL_PROBABILISTIC || bounceIndex > 1 )
                 {
                     isDiffuse = rnd < diffuseProbability;
-                    BRDF /= abs( float( !isDiffuse ) - diffuseProbability );
+                    pathThroughput /= abs( float( !isDiffuse ) - diffuseProbability );
 
                     if( bounceIndex == 1 )
                         isDiffusePath = isDiffuse;
@@ -322,65 +346,58 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 // Choose a ray
                 float3x3 mLocalBasis = STL::Geometry::GetBasis( materialProps.N );
                 float3 Vlocal = STL::Geometry::RotateVector( mLocalBasis, geometryProps.V );
-                float3 ray = 0;
-                float3 throughput = 0;
                 float trimmingFactor = gTrimmingParams.x * STL::Math::SmoothStep( gTrimmingParams.y, gTrimmingParams.z, materialProps.roughness );
-                float throughputWithImportanceSampling = 0;
-                float VoH = 0;
-                uint sampleNum = 0;
+                float3 ray = 0;
+                uint samplesNum = 0;
+                uint maxSamplesNum = gDisableShadowsAndEnableImportanceSampling && bounceIndex == 1 && ( isDiffuse || STL::Rng::Hash::GetFloat( ) < materialProps.roughness ) ? IMPORTANCE_SAMPLE_NUM : 1;
 
-                while( sampleNum < IMPORTANCE_SAMPLE_NUM && throughputWithImportanceSampling == 0 )
+                for( uint sampleIndex = 0; sampleIndex < maxSamplesNum; sampleIndex++ )
                 {
                     float2 rnd = STL::Rng::Hash::GetFloat2( );
 
+                    // Generate a ray in local space
+                    float3 r;
                     if( isDiffuse )
                     {
-                        // Generate a ray
-                    #if( NRD_MODE == DIRECTIONAL_OCCLUSION )
-                        ray = STL::ImportanceSampling::Uniform::GetRay( rnd );
-
-                        float NoL = saturate( ray.z );
-                        float pdf = STL::ImportanceSampling::Uniform::GetPDF( );
-                    #else
-                        ray = STL::ImportanceSampling::Cosine::GetRay( rnd );
-
-                        float NoL = saturate( ray.z );
-                        float pdf = STL::ImportanceSampling::Cosine::GetPDF( NoL );
-                    #endif
-
-                        // Throughput
-                        throughput = NoL / ( STL::Math::Pi( 1.0 ) * pdf );
-
-                        float3 Hlocal = normalize( Vlocal + ray );
-                        VoH = abs( dot( Vlocal, Hlocal ) );
+                        #if( NRD_MODE == DIRECTIONAL_OCCLUSION )
+                            r = STL::ImportanceSampling::Uniform::GetRay( rnd );
+                        #else
+                            r = STL::ImportanceSampling::Cosine::GetRay( rnd );
+                        #endif
                     }
                     else
                     {
-                        // Generate a ray
                         float3 Hlocal = STL::ImportanceSampling::VNDF::GetRay( rnd, materialProps.roughness, Vlocal, trimmingFactor );
-                        ray = reflect( -Vlocal, Hlocal );
-
-                        // Throughput ( see paragraph "Usage in Monte Carlo renderer" from http://jcgt.org/published/0007/04/01/paper.pdf )
-                        float NoL = saturate( ray.z );
-                        throughput = STL::BRDF::GeometryTerm_Smith( materialProps.roughness, NoL );
-
-                        VoH = abs( dot( Vlocal, Hlocal ) );
+                        r = reflect( -Vlocal, Hlocal );
                     }
 
-                    ray = STL::Geometry::RotateVectorInverse( mLocalBasis, ray );
+                    // Ignore sub-surface scattering // TODO: needed?
+                    bool isMiss = r.z < 0.0;
 
-                    // Allow low roughness specular to take data from the previous frame
-                    throughputWithImportanceSampling = STL::Color::Luminance( throughput );
-                    bool isImportanceSamplingNeeded = throughputWithImportanceSampling != 0 && ( isDiffuse || ( STL::Rng::Hash::GetFloat( ) < materialProps.roughness ) );
+                    // Transform to world space
+                    r = STL::Geometry::RotateVectorInverse( mLocalBasis, r );
 
-                    if( gDisableShadowsAndEnableImportanceSampling && isImportanceSamplingNeeded )
-                    {
-                        bool isMiss = CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), ray, 0.0, INF, mipAndCone, gLightTlas, GEOMETRY_ALL, desc.rayFlags );
-                        throughputWithImportanceSampling *= float( !isMiss );
-                    }
+                    // Importance sampling for direct lighting
+                    // TODO: move direct lighting tracing into a separate pass:
+                    // - currently AO and SO in case of IS represent get replaced with useless distances to closest lights
+                    // - better separate denoising into direct and indirect
 
-                    sampleNum++;
+                    // If IS enabled, check the ray in LightBVH
+                    if( !isMiss && maxSamplesNum != 1 )
+                        isMiss = CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), r, 0.0, INF, mipAndCone, gLightTlas, GEOMETRY_ALL, desc.rayFlags );
+
+                    // Count rays hitting emissive surfaces
+                    if( !isMiss )
+                        samplesNum++;
+
+                    // Save either the first ray or the current ray hitting an emissive
+                    if( !isMiss || sampleIndex == 0 )
+                        ray = r;
                 }
+
+                // Adjust throughput by percentage of rays hitting any emissive surface ( do not modify throughput if there is no a hit, it's needed to cast a non-IS ray and get correct AO / SO at least )
+                if( samplesNum != 0 )
+                    pathThroughput *= float( samplesNum ) / float( maxSamplesNum );
 
                 // ( Optional ) Save sampling direction for the 1st bounce
                 #if( NRD_MODE == DIRECTIONAL_OCCLUSION || NRD_MODE == SH )
@@ -388,7 +405,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                     {
                         float3 psrRay = ray;
                         #if( USE_PSR == 1 )
-                            ray = STL::Geometry::RotateVectorInverse( mirrorMatrix, ray );
+                            psrRay = STL::Geometry::RotateVectorInverse( mirrorMatrix, ray );
                         #endif
 
                         if( isDiffuse )
@@ -398,24 +415,62 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                     }
                 #endif
 
-                // Update throughput
+                // Update path throughput
                 #if( NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION )
                     float3 albedo, Rf0;
                     STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
 
-                    float3 F = STL::BRDF::FresnelTerm_Schlick( Rf0, VoH );
+                    float3 H = normalize( geometryProps.V + ray );
+                    float VoH = abs( dot( geometryProps.V, H ) );
+                    float NoL = saturate( dot( materialProps.N, ray ) );
+
                     if( isDiffuse )
-                        throughput *= ( 1.0 - F ) * albedo;
+                    {
+                        float NoV = abs( dot( materialProps.N, geometryProps.V ) );
+                        pathThroughput *= STL::Math::Pi( 1.0 ) * albedo * STL::BRDF::DiffuseTerm_Burley( materialProps.roughness, NoL, NoV, VoH );
+                    }
                     else
-                        throughput *= F;
+                    {
+                        float3 F = STL::BRDF::FresnelTerm_Schlick( Rf0, VoH );
+                        pathThroughput *= F;
+
+                        // See paragraph "Usage in Monte Carlo renderer" from http://jcgt.org/published/0007/04/01/paper.pdf
+                        pathThroughput *= STL::BRDF::GeometryTerm_Smith( materialProps.roughness, NoL );
+                    }
                 #endif
 
-                // Update BRDF
-                BRDF *= throughput / float( sampleNum );
-
                 // Abort if expected contribution of the current bounce is low
-                if( STL::Color::Luminance( BRDF ) < desc.threshold )
-                    break;
+                #if( USE_RUSSIAN_ROULETTE == 1 )
+                    /*
+                    BAD PRACTICE:
+                    Russian Roulette approach is here to demonstrate that it's a bad practice for real time denoising for the following reasons:
+                    - increases entropy of the signal
+                    - transforms radiance into non-radiance, which is strictly speaking not allowed to be processed spatially (who wants to get a high energy firefly
+                    redistributed around surrounding pixels?)
+                    - not necessarily converges to the right image, because we do assumptions about the future and approximate the tail of the path via a scaling factor
+                    - this approach breaks denoising, especially REBLUR, which has been designed to work with pure radiance
+                    */
+
+                    // Nevertheless, RR can be used with caution: the code below tuned for good IQ / PERF tradeoff
+                    float russianRouletteProbability = STL::Color::Luminance( pathThroughput );
+                    russianRouletteProbability = STL::Math::Pow01( russianRouletteProbability, 0.25 );
+                    russianRouletteProbability = max( russianRouletteProbability, 0.01 );
+
+                    if( STL::Rng::Hash::GetFloat( ) > russianRouletteProbability )
+                        break;
+
+                    pathThroughput /= russianRouletteProbability;
+                #else
+                    /*
+                    GOOD PRACTICE:
+                    - terminate path if "pathThroughput" is smaller than some threshold
+                    - approximate ambient at the end of the path
+                    - re-use data from the previous frame
+                    */
+
+                    if( THROUGHPUT_THRESHOLD != 0.0 && STL::Color::Luminance( pathThroughput ) < THROUGHPUT_THRESHOLD )
+                        break;
+                #endif
 
                 //=========================================================================================================================================================
                 // Trace to the next hit
@@ -430,8 +485,6 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
             //=============================================================================================================================================================
 
             {
-                float2 mipAndCone = GetConeAngleFromRoughness( geometryProps.mip, isDiffuse ? 1.0 : materialProps.roughness );
-
                 // Compute lighting at hit point
                 float3 L = materialProps.Ldirect;
 
@@ -444,68 +497,63 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                     float3x3 mSunBasis = STL::Geometry::GetBasis( gSunDirection ); // TODO: move to CB
                     float3 sunDirection = normalize( mSunBasis[ 0 ] * rnd.x + mSunBasis[ 1 ] * rnd.y + mSunBasis[ 2 ] );
 
+                    float2 mipAndCone = GetConeAngleFromRoughness( geometryProps.mip, isDiffuse ? 1.0 : materialProps.roughness );
                     L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), sunDirection, 0.0, INF, mipAndCone, gWorldTlas, desc.instanceInclusionMask, desc.rayFlags );
                 }
 
                 L += materialProps.Lemi;
 
                 // Reuse previous frame carefully treating specular ( if specular contribution is high it can't be reused because it was computed for a different view vector! )
-                float3 prevLdiff, prevLspec;
-                float prevFrameWeight = ReprojectRadiance( true, false, gIn_PrevComposedDiff_PrevViewZ, gIn_PrevComposedSpec_PrevViewZ, geometryProps, desc.pixelPos, prevLdiff, prevLspec );
-
-                float diffuseLikeMotion = isDiffuse ? 1.0 : GetDiffuseLikeMotionAmount( geometryProps, materialProps );
-                prevFrameWeight *= diffuseLikeMotion;
-                prevFrameWeight *= 0.9 * gUsePrevFrame; // TODO: use F( bounceIndex ) bounceIndex = 99 => 1.0
-                prevFrameWeight *= 1.0 - gAmbientAccumSpeed;
-
-                float diffuseProbabilityBiased = EstimateDiffuseProbability( geometryProps, materialProps, true );
-                float3 prevLsum = prevLdiff + prevLspec * diffuseProbabilityBiased;
-
-                float l1 = STL::Color::Luminance( L );
-                float l2 = STL::Color::Luminance( prevLsum );
-                prevFrameWeight *= l2 / ( l1 + l2 + 1e-6 );
-
-                L = lerp( L, prevLsum, prevFrameWeight );
+                float prevFrameWeight = MixWithRadianceFromPreviousFrame( L, geometryProps, materialProps, desc.pixelPos, isDiffuse );
 
                 // Accumulate lighting
-                L *= BRDF;
+                L *= pathThroughput;
                 Lsum += L;
 
-                // Reduce contribution of next samples if previous frame is sampled, which already has multi-bounce information ( biased )
-                BRDF *= 1.0 - prevFrameWeight;
+                // ( Biased ) Reduce contribution of next samples if previous frame is sampled, which already has multi-bounce information
+                pathThroughput *= 1.0 - prevFrameWeight;
 
-                // Accumulate path length for NRD
+                // Accumulate path length for NRD ( see "README/NOISY INPUTS" )
                 /*
-                IMPORTANT:
-                    - energy dissipation must be respected, i.e.
-                        - diffuse - only 1st bounce hitT is needed
-                        - specular - only 1st bounce hitT is needed for glossy+ specular
-                        - sum of all segments can be ( but not necessary ) needed for 0 roughness only
-                    - for 0 roughness hitT must be clean like a tear! NRD specular tracking relies on it
-                        - in case of probabilistic sampling there can be pixels with "no data" ( hitT = 0 ), but hitT reconstruction mode must be enabled in NRD
-                    - see "GetDiffuseLikeMotionAmount":
-                        - it's just a noise-free estimation
-                        - curvature is important: it makes reflections closer to the surface making their motion diffuse-like
+                REQUIREMENTS:
+                    - hitT for the bounce after the primary hit or PSR must be provided "as is"
+                    - hitT for subsequent bounces and for bounces before PSR must be adjusted by curvature and lobe energy dissipation on the application side
+
+                IDEAL SOLUTION ( after PSR ):
+                    hitDist = 0;
+                    for( uint bounce = N; bounce > PSR + 1; bounce-- )
+                    {
+                        hitDist += hitT[ bounce ];
+                        hitDist = ApplyThinLensEquation( hitDist, curvature[ bounce - 1 ] );
+                        hitDist = ApplyLobeSpread( hitDist, bounce, isDiffuse ? 1.0 : roughness  );
+                    }
+                    hitDist += hitT[ PSR + 1 ];
                 */
-                float a = STL::Color::Luminance( L ) + 1e-6;
-                float b = STL::Color::Luminance( Lsum ) + 1e-6; // already includes L
-                float importance = a / b;
+                float a = STL::Color::Luminance( L );
+                float b = STL::Color::Luminance( Lsum ); // already includes L
+                float importance = a / ( b + 1e-6 );
+
+                importance *= 1.0 - STL::Color::Luminance( materialProps.Lemi ) / ( a + 1e-6 );
+
+                float diffuseLikeMotion = EstimateDiffuseProbability( geometryProps, materialProps, true );
+                diffuseLikeMotion = lerp( diffuseLikeMotion, 1.0, STL::Math::Sqrt01( materialProps.curvature ) );
+                diffuseLikeMotion = isDiffuse ? 1.0 : diffuseLikeMotion;
 
                 accumulatedHitDist += geometryProps.tmin * STL::Math::SmoothStep( 0.2, 0.0, accumulatedDiffuseLikeMotion );
                 accumulatedDiffuseLikeMotion += 1.0 - importance * ( 1.0 - diffuseLikeMotion );
             }
         }
 
-        // Ambient estimation at the end of the path
-        BRDF *= GetAmbientBRDF( geometryProps, materialProps );
-        BRDF *= 1.0 + EstimateDiffuseProbability( geometryProps, materialProps, true ); // TODO: hack? divide by PDF of the last ray?
+        // Ambient estimation at the end of the path ( balanced with ambient applied in Composition )
+        pathThroughput *= GetAmbientBRDF( geometryProps, materialProps );
+        pathThroughput *= 1.0 + EstimateDiffuseProbability( geometryProps, materialProps, true );
 
         float occlusion = REBLUR_FrontEnd_GetNormHitDist( geometryProps.tmin, 0.0, gHitDistParams, 1.0 );
         occlusion = lerp( 1.0 / STL::Math::Pi( 1.0 ), 1.0, occlusion );
         occlusion *= exp2( AMBIENT_FADE * STL::Math::LengthSquared( geometryProps.X - gCameraOrigin ) );
-        occlusion *= isDiffusePath ? 0.0 : ( 1.0 - GetSpecMagicCurve( desc.materialProps.roughness ) ); // balanced with ambient applied in Composition
+        occlusion *= 1.0 - GetSpecMagicCurve( isDiffusePath ? 1.0 : desc.materialProps.roughness );
 
-        Lsum += BRDF * desc.Lamb * occlusion;
+        Lsum += pathThroughput * desc.Lamb * occlusion;
 
         // Debug visualization: specular mip level at the end of the path
         if( gOnScreen == SHOW_MIP_SPECULAR )
@@ -536,7 +584,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
         }
     }
 
-    // Material de-modulation ( convert irradiance to radiance )
+    // Material de-modulation ( convert irradiance into radiance )
     float3 albedo, Rf0;
     STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( desc.materialProps.baseColor, desc.materialProps.metalness, albedo, Rf0 );
 
@@ -547,8 +595,8 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
     if( gOnScreen != SHOW_MIP_SPECULAR )
     {
-        result.diffRadiance /= gReference ? 1.0 : diffDemod;
-        result.specRadiance /= gReference ? 1.0 : specDemod;
+        result.diffRadiance /= diffDemod;
+        result.specRadiance /= specDemod;
     }
 
     // Radiance is already divided by sampling probability, we need to average across all paths
@@ -671,7 +719,6 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     desc.materialProps = materialProps0;
     desc.Lamb = Lamb;
     desc.pixelPos = pixelPos;
-    desc.threshold = BRDF_ENERGY_THRESHOLD;
     desc.checkerboard = checkerboard;
     desc.pathNum = gSampleNum;
     desc.bounceNum = gBounceNum; // TODO: adjust by roughness?

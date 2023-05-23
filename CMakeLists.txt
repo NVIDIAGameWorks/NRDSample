@@ -45,10 +45,10 @@ endif ()
 message ("Packman platform: ${PACKMAN_PLATFORM}")
 
 if (USE_MINIMAL_DATA)
-    set (NRI_DATA_VERSION 2.0_minimal)
+    set (NRI_DATA_VERSION 2.3_minimal)
     message ("Using minimal '_Data'")
 else ()
-    set (NRI_DATA_VERSION 2.1)
+    set (NRI_DATA_VERSION 2.3)
 endif ()
 
 execute_process (COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/External/Packman/packman${PACKMAN_EXT}" pull "${CMAKE_CURRENT_SOURCE_DIR}/Dependencies.xml" -p ${PACKMAN_PLATFORM} -t nri_data_version=${NRI_DATA_VERSION}

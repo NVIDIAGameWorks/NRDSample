@@ -78,7 +78,8 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     // ViewZ
     float viewZ = STL::Geometry::AffineTransform( gWorldToView, geometryProps0.X ).z;
-    gOut_ViewZ[ pixelPos ] = geometryProps0.IsSky( ) ? STL::Math::Sign( viewZ ) * INF : viewZ;
+    viewZ = geometryProps0.IsSky( ) ? STL::Math::Sign( viewZ ) * INF : viewZ;
+    gOut_ViewZ[ pixelPos ] = viewZ;
 
     // Motion
     float3 Xprev = geometryProps0.X;
@@ -94,6 +95,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     // Early out - sky
     if( geometryProps0.IsSky( ) )
     {
+        gOut_ShadowData[ pixelPos ] = SIGMA_FrontEnd_PackShadow( viewZ, 0.0, 0.0 );
         gOut_DirectEmission[ pixelPos ] = materialProps0.Lemi;
         gOut_DirectLighting[ pixelPos ] = 0;
 
@@ -105,11 +107,11 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     float curvatureNorm = STL::Math::Sqrt01( materialProps0.curvature / 4.0 );
 
     float diffuseProbability = EstimateDiffuseProbability( geometryProps0, materialProps0 );
-    uint materialID = diffuseProbability > BRDF_ENERGY_THRESHOLD ? 0 : 1;
+    float materialID = diffuseProbability != 0.0 ? 0.0 : 1.0;
 
     #if( USE_SIMULATED_MATERIAL_ID_TEST == 1 )
         if( gDebug == 0.0 )
-            materialID = materialID || ( frac( geometryProps0.X ).x < 0.05 ? 1 : 0 );
+            materialID *= float( frac( geometryProps0.X ).x < 0.05 );
     #endif
 
     gOut_PrimaryMipAndCurvature[ pixelPos ] = float2( mipNorm, curvatureNorm );
@@ -129,6 +131,8 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     }
     else if( gOnScreen == SHOW_MIP_PRIMARY )
         materialProps0.Ldirect = STL::Color::ColorizeZucconi( mipNorm );
+    else if( gOnScreen == SHOW_CURVATURE )
+        materialProps0.Ldirect = sqrt( abs( materialProps0.curvature ) );
 
     // Direct lighting and emission
     gOut_DirectLighting[ pixelPos ] = materialProps0.Ldirect;
@@ -142,13 +146,13 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     if( isShadowRayNeeded )
     {
         float2 rnd;
-        if( gReference == 0.0 )
-            rnd = GetBlueNoise( gIn_Scrambling_Ranking_1spp, pixelPos, false, 0, 0 );
-        else
+        if( gDenoiserType == REFERENCE )
         {
             STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
             rnd = STL::Rng::Hash::GetFloat2( );
         }
+        else
+            rnd = GetBlueNoise( gIn_Scrambling_Ranking_1spp, pixelPos, false, 0, 0 );
 
         rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;
         rnd *= gTanSunAngularRadius;
@@ -168,10 +172,11 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
                 // On immediate miss - return no shadow, otherwise - return accumulated data
                 shadowTranslucency = shadowHitDist == 0.0 ? 0.0 : shadowTranslucency;
                 shadowHitDist = shadowHitDist == 0.0 ? INF : shadowHitDist;
+
                 break;
             }
 
-            // TODO: ( biased ) a cheap approximation of shadows through glass
+            // ( Biased ) Cheap approximation of shadows through glass
             float NoV = abs( dot( geometryPropsShadow.N, sunDirection ) );
             shadowTranslucency *= lerp( 0.9, 0.0, STL::Math::Pow01( 1.0 - NoV, 2.5 ) );
             shadowTranslucency *= float( geometryPropsShadow.IsTransparent( ) );

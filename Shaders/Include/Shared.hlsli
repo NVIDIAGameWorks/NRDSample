@@ -33,21 +33,26 @@ Modifiers:
 
 #define NRD_MODE                            NORMAL // NORMAL, OCCLUSION, SH, DIRECTIONAL_OCCLUSION
 
-#define USE_SIMPLEX_LIGHTING_MODEL          0
+// Default = 1
 #define USE_IMPORTANCE_SAMPLING             1
+#define USE_PSR                             1 // allow primary surface replacement
+
+// Default = 0
+#define USE_SIMPLEX_LIGHTING_MODEL          0
 #define USE_SANITIZATION                    0 // NRD sample is NAN/INF free
-#define USE_PSR                             1
 #define USE_SIMULATED_MATERIAL_ID_TEST      0 // for "material ID" support debugging
 #define USE_SIMULATED_FIREFLY_TEST          0 // "anti-firefly" debugging
+#define USE_RUSSIAN_ROULETTE                0 // bad practice for real-time denoising
 
-#define BRDF_ENERGY_THRESHOLD               0.001
-#define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
+#define THROUGHPUT_THRESHOLD                0.001
+#define PSR_THROUGHPUT_THRESHOLD            0.0 // TODO: even small throughput can produce a bright spot if incoming radiance is huge
+#define MAX_MIP_LEVEL                       11.0
+#define IMPORTANCE_SAMPLE_NUM               16
 #define TAA_HISTORY_SHARPNESS               0.5 // [0; 1], 0.5 matches Catmull-Rom
 #define TAA_MAX_HISTORY_WEIGHT              0.95
 #define TAA_MIN_HISTORY_WEIGHT              0.1
 #define TAA_MOTION_MAX_REUSE                0.1
-#define MAX_MIP_LEVEL                       11.0
-#define IMPORTANCE_SAMPLE_NUM               16
+#define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
 
 //=============================================================================================
 // CONSTANTS
@@ -62,6 +67,7 @@ Modifiers:
 // Denoiser
 #define REBLUR                              0
 #define RELAX                               1
+#define REFERENCE                           2
 
 // Resolution
 #define RESOLUTION_FULL                     0
@@ -79,10 +85,12 @@ Modifiers:
 #define SHOW_NORMAL                         7
 #define SHOW_ROUGHNESS                      8
 #define SHOW_METALNESS                      9
-#define SHOW_WORLD_UNITS                    10
-#define SHOW_INSTANCE_INDEX                 11
-#define SHOW_MIP_PRIMARY                    12
-#define SHOW_MIP_SPECULAR                   13
+#define SHOW_PSR_THROUGHPUT                 10
+#define SHOW_WORLD_UNITS                    11
+#define SHOW_INSTANCE_INDEX                 12
+#define SHOW_MIP_PRIMARY                    13
+#define SHOW_MIP_SPECULAR                   14
+#define SHOW_CURVATURE                      15
 
 // Predefined material override
 #define MAT_GYPSUM                          1
@@ -130,6 +138,8 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float gEmissionIntensity;
     float3 gViewDirection;
     float gOrthoMode;
+    float3 gCameraDelta;
+    float gNearZ;
     float2 gWindowSize;
     float2 gInvWindowSize;
     float2 gOutputSize;
@@ -140,7 +150,6 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float2 gInvRectSize;
     float2 gRectSizePrev;
     float2 gJitter;
-    float gNearZ;
     float gAmbientAccumSpeed;
     float gAmbient;
     float gSeparator;
@@ -153,9 +162,9 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float gTanPixelAngularRadius;
     float gDebug;
     float gTransparent;
-    float gReference;
-    float gUsePrevFrame;
+    float gPrevFrameConfidence;
     float gMinProbability;
+    float gUnproject;
     uint gDenoiserType;
     uint gDisableShadowsAndEnableImportanceSampling; // TODO: remove - modify GetSunIntensity to return 0 if sun is below horizon
     uint gOnScreen;
@@ -234,7 +243,7 @@ float3 GetMotion( float3 X, float3 Xprev )
         // IMPORTANT: scaling to "pixel" unit significantly improves utilization of FP16
         motion.xy = ( sampleUvPrev - sampleUv ) * gRectSize;
 
-        // IMPORTANT: 2.5D motion is preferred over 3D motion due to imprecision issues due to FP16 rounding negative effects
+        // IMPORTANT: 2.5D motion is preferred over 3D motion due to imprecision issues caused by FP16 rounding negative effects
         motion.z = viewZprev - viewZ;
     }
 
@@ -349,6 +358,9 @@ float3 GetSkyIntensity( float3 v, float3 sunDirection, float tanAngularRadius )
     float3 scatterColor = lerp( float3( 1.0, 1.0, 1.0 ), float3( 1.0, 0.3, 0.0 ) * 1.5, scatter );
     float3 skyColor = lerp( float3( 0.2, 0.4, 0.8 ), float3( scatterColor ), atmosphere / 1.3 );
     skyColor *= saturate( 1.0 + sunDirection.z );
+
+    float ground = 0.5 + 0.5 * STL::Math::SmoothStep( -1.0, 0.0, v.z );
+    skyColor *= ground;
 
     return STL::Color::GammaToLinear( saturate( skyColor ) ) * SKY_INTENSITY + GetSunIntensity( v, sunDirection, tanAngularRadius );
 }

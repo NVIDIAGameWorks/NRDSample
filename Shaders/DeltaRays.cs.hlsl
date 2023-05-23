@@ -13,8 +13,8 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 // Inputs
 NRI_RESOURCE( Texture2D<float>, gIn_ViewZ, t, 0, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Diff_ViewZ, t, 1, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Spec_ViewZ, t, 2, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_ComposedDiff, t, 1, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_ComposedSpec_ViewZ, t, 2, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 3, 1 );
 
 // Outputs
@@ -54,18 +54,18 @@ float3 TraceTransparent( TraceTransparentDesc desc )
     float eta = STL::BRDF::IOR::Air / STL::BRDF::IOR::Glass;
 
     GeometryProps geometryProps = desc.geometryProps;
-    float transmittance = 1.0;
+    float pathThroughput = 1.0;
     bool isReflection = desc.isReflection;
 
     [loop]
-    for( uint bounce = 1; bounce <= desc.bounceNum; bounce++ ) // TODO: stop if transmittance is low
+    for( uint bounce = 1; bounce <= desc.bounceNum; bounce++ ) // TODO: stop if pathThroughput is low
     {
         // Reflection or refraction?
         float NoV = abs( dot( geometryProps.N, geometryProps.V ) );
         float F = STL::BRDF::FresnelTerm_Dielectric( eta, NoV );
 
         if( bounce == 1 )
-            transmittance *= isReflection ? F : 1.0 - F;
+            pathThroughput *= isReflection ? F : 1.0 - F;
         else
             isReflection = STL::Rng::Hash::GetFloat( ) < F;
 
@@ -94,7 +94,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
         // TODO: glass internal extinction?
         // ideally each "medium" should have "eta" and "extinction" parameters in "TraceTransparentDesc" and "TraceOpaqueDesc"
         if( !isReflection )
-            transmittance *= 0.96;
+            pathThroughput *= 0.96;
 
         // Is opaque hit found?
         if( !geometryProps.IsTransparent( ) )
@@ -111,16 +111,17 @@ float3 TraceTransparent( TraceTransparentDesc desc )
             // Ambient estimation at the end of the path
             float3 BRDF = GetAmbientBRDF( geometryProps, materialProps );
             BRDF *= 1.0 + EstimateDiffuseProbability( geometryProps, materialProps, true );
+
             L += desc.Lamb * BRDF;
 
             // Previous frame
             float3 prevLdiff, prevLspec;
-            float reprojectionWeight = ReprojectRadiance( false, !isReflection, gIn_Diff_ViewZ, gIn_Spec_ViewZ, geometryProps, desc.pixelPos, prevLdiff, prevLspec );
+            float reprojectionWeight = ReprojectRadiance( false, !isReflection, gIn_ComposedDiff, gIn_ComposedSpec_ViewZ, geometryProps, desc.pixelPos, prevLdiff, prevLspec );
 
             L = lerp( L, prevLdiff + prevLspec, reprojectionWeight );
 
             // Output
-            return L * transmittance;
+            return L * pathThroughput;
         }
     }
 
@@ -150,15 +151,19 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float viewZ = gIn_ViewZ[ pixelPos ];
     float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
 
+    // Composed without glass
+    float3 diff = gIn_ComposedDiff[ pixelPos ];
+    float4 spec = gIn_ComposedSpec_ViewZ[ pixelPos ];
+    float3 Lsum = diff + spec.xyz * float( gOnScreen == SHOW_FINAL );
+
     // Primary ray for transparent geometry only
     float3 cameraRayOriginv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, gNearZ, gOrthoMode );
     float3 cameraRayOrigin = STL::Geometry::AffineTransform( gViewToWorld, cameraRayOriginv );
     float3 cameraRayDirection = gOrthoMode == 0 ? normalize( STL::Geometry::RotateVector( gViewToWorld, cameraRayOriginv ) ) : -gViewDirection;
 
-    float tmin0 = length( Xv );
+    float tmin0 = gOrthoMode == 0 ? length( Xv ) : abs( Xv.z );
     GeometryProps geometryPropsT = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, tmin0, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, gTransparent == 0.0 ? 0 : GEOMETRY_ONLY_TRANSPARENT, 0 );
 
-    float3 Ltransparent = 0.0;
     if( !geometryPropsT.IsSky( ) && geometryPropsT.tmin < tmin0 )
     {
         // Initialize RNG
@@ -190,23 +195,14 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         // IMPORTANT: use 1 reflection path and 1 refraction path at the primary glass hit to significantly reduce noise
         // TODO: use probabilistic split at the primary glass hit when denoising is available
         desc.isReflection = true;
-        Ltransparent = TraceTransparent( desc );
+        Lsum = TraceTransparent( desc );
 
         desc.isReflection = false;
-        Ltransparent += TraceTransparent( desc );
+        Lsum += TraceTransparent( desc );
     }
 
-    // Composition
-    float4 diff = gIn_Diff_ViewZ[ pixelPos ];
-    float4 spec = gIn_Spec_ViewZ[ pixelPos ] * float( gOnScreen == SHOW_FINAL );
-
-    float3 Lsum = diff.xyz + spec.xyz;
-
-    float mask = dot( Ltransparent, 1.0 );
-    Lsum = mask == 0.0 ? Lsum : Ltransparent;
-
     // Output
-    float z = diff.w;
+    float z = spec.w;
 
     gOut_Composed[ pixelPos ] = float4( Lsum, z );
 }

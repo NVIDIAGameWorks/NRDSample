@@ -15,17 +15,18 @@ NRI_RESOURCE( Texture2D<float>, gIn_ViewZ, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_Normal_Roughness, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_BaseColor_Metalness, t, 2, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_DirectLighting, t, 3, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 4, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 5, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 6, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_PsrThroughput, t, 4, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 5, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 6, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 7, 1 );
 #if( NRD_MODE == SH )
-    NRI_RESOURCE( Texture2D<float4>, gIn_DiffSh, t, 7, 1 );
-    NRI_RESOURCE( Texture2D<float4>, gIn_SpecSh, t, 8, 1 );
+    NRI_RESOURCE( Texture2D<float4>, gIn_DiffSh, t, 8, 1 );
+    NRI_RESOURCE( Texture2D<float4>, gIn_SpecSh, t, 9, 1 );
 #endif
 
 // Outputs
-NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedDiff, u, 0, 1 );
-NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedSpec, u, 1, 1 );
+NRI_RESOURCE( RWTexture2D<float3>, gOut_ComposedDiff, u, 0, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedSpec_ViewZ, u, 1, 1 );
 
 [numthreads( 16, 16, 1)]
 void main( int2 pixelPos : SV_DispatchThreadId )
@@ -53,8 +54,8 @@ void main( int2 pixelPos : SV_DispatchThreadId )
 
     if( abs( viewZ ) == INF )
     {
-        gOut_ComposedDiff[ pixelPos ] = float4( Ldirect * float( gOnScreen == SHOW_FINAL ), z );
-        gOut_ComposedSpec[ pixelPos ] = float4( 0, 0, 0, z );
+        gOut_ComposedDiff[ pixelPos ] = Ldirect * float( gOnScreen == SHOW_FINAL );
+        gOut_ComposedSpec_ViewZ[ pixelPos ] = float4( 0, 0, 0, z );
 
         return;
     }
@@ -186,8 +187,8 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 diffDemod = ( 1.0 - Fenv ) * albedo * 0.99 + 0.01;
     float3 specDemod = Fenv * 0.99 + 0.01;
 
-    float3 Ldiff = diff.xyz * ( gReference ? 1.0 : diffDemod );
-    float3 Lspec = spec.xyz * ( gReference ? 1.0 : specDemod );
+    float3 Ldiff = diff.xyz * diffDemod;
+    float3 Lspec = spec.xyz * specDemod;
 
     // Ambient
     float3 ambient = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
@@ -199,8 +200,17 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     Ldiff += ambient * diff.w * ( 1.0 - Fenv ) * albedo;
     Lspec += ambient * spec.w * Fenv * specAmbientAmount;
 
-    // IMPORTANT: we store diffuse and specular separately to be able to use reprojection trick.
-    // Let's assume that direct lighting can always be reprojected as diffuse
+    // Apply PSR throughput ( primary surface material before replacement )
+    #if( USE_PSR == 1 )
+        float3 psrThroughput = gIn_PsrThroughput[ pixelPos ];
+        Ldiff *= psrThroughput;
+        Lspec *= psrThroughput;
+        Ldirect *= psrThroughput;
+    #else
+        float3 psrThroughput = 1.0;
+    #endif
+
+    // IMPORTANT: we store diffuse and specular separately to be able to use the reprojection trick. Let's assume that direct lighting can always be reprojected as diffuse
     Ldiff += Ldirect;
 
     // Debug
@@ -222,10 +232,12 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         Ldiff = baseColorMetalness.w;
     else if( gOnScreen == SHOW_WORLD_UNITS )
         Ldiff = frac( X * gUnitToMetersMultiplier );
+    else if( gOnScreen == SHOW_PSR_THROUGHPUT )
+        Ldiff = psrThroughput;
     else if( gOnScreen != SHOW_FINAL )
         Ldiff = gOnScreen == SHOW_MIP_SPECULAR ? spec.xyz : Ldirect.xyz;
 
     // Output
-    gOut_ComposedDiff[ pixelPos ] = float4( Ldiff, z );
-    gOut_ComposedSpec[ pixelPos ] = float4( Lspec, z );
+    gOut_ComposedDiff[ pixelPos ] = Ldiff;
+    gOut_ComposedSpec_ViewZ[ pixelPos ] = float4( Lspec, z );
 }

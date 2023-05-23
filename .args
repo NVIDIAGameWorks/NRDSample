@@ -73,16 +73,16 @@
       "Command": "SCENES",
       "Items": [
         {
-          "Command": "--scene=ShaderBalls/ShaderBalls.obj"
+          "Command": "--scene=ShaderBalls/ShaderBalls.gltf"
         },
         {
-          "Command": "--scene=Bistro/BistroInterior.fbx"
+          "Command": "--scene=Bistro/BistroInterior.gltf"
         },
         {
-          "Command": "--scene=Bistro/BistroExterior.fbx"
+          "Command": "--scene=Bistro/BistroExterior.gltf"
         },
         {
-          "Command": "--scene=ZeroDay/MEASURE_SEVEN/MEASURE_SEVEN.fbx"
+          "Command": "--scene=Kitchen/Kitchen.gltf"
         }
       ]
     },

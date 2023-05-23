@@ -11,14 +11,19 @@ struct PrimitiveData
     float16_t2 t1;
 
     float16_t2 t2;
-    float16_t2 b0s_b1s;
-    float16_t2 b2s_worldToUvUnits;
-    float curvature;
+    float16_t curvature0;
+    float16_t curvature1;
+    float16_t curvature2;
+    float16_t bitangentSign;
+    float worldToUvUnits;
 };
 
 struct InstanceData
 {
     row_major float3x4 mWorldToWorldPrev;
+
+    float4 baseColorAndMetalnessScale;
+    float4 emissionAndRoughnessScale;
 
     uint baseTextureIndex;
     uint basePrimitiveIndex;
@@ -180,15 +185,18 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
     uint baseTexture = geometryProps.GetBaseTexture( );
     float3 mips = GetRealMip( baseTexture, geometryProps.mip );
 
+    InstanceData instanceData = gIn_InstanceData[ geometryProps.instanceIndex ];
+
     // Base color
     float4 color = gIn_Textures[ NonUniformResourceIndex( baseTexture ) ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.z );
+    color.xyz *= instanceData.baseColorAndMetalnessScale.xyz;
     color.xyz *= geometryProps.IsTransparent( ) ? 1.0 : STL::Math::PositiveRcp( color.w ); // Correct handling of BC1 with pre-multiplied alpha
     float3 baseColor = saturate( color.xyz );
 
     // Roughness and metalness
     float3 materialProps = gIn_Textures[ NonUniformResourceIndex( baseTexture + 1 ) ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.z ).xyz;
-    float roughness = materialProps.y;
-    float metalness = materialProps.z;
+    float roughness = saturate( materialProps.y * instanceData.emissionAndRoughnessScale.w );
+    float metalness = saturate( materialProps.z * instanceData.baseColorAndMetalnessScale.w );
 
     // Normal
     float2 packedNormal = gIn_Textures[ NonUniformResourceIndex( baseTexture + 2 ) ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.y ).xy;
@@ -199,6 +207,7 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
 
     // Emission
     float3 Lemi = gIn_Textures[ NonUniformResourceIndex( baseTexture + 3 ) ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.x ).xyz;
+    Lemi *= instanceData.emissionAndRoughnessScale.xyz;
     Lemi *= ( baseColor + 0.01 ) / ( max( baseColor, max( baseColor, baseColor ) ) + 0.01 );
     Lemi *= gEmissionIntensity;
 
@@ -320,7 +329,7 @@ float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps mat
 
 float ReprojectRadiance(
     bool isPrevFrame, bool isRefraction,
-    Texture2D<float4> diffAndViewZ, Texture2D<float4> specAndViewZ,
+    Texture2D<float3> texDiff, Texture2D<float4> texSpecViewZ,
     GeometryProps geometryProps, uint2 pixelPos,
     out float3 prevLdiff, out float3 prevLspec
 )
@@ -331,34 +340,41 @@ float ReprojectRadiance(
     float4 clip = STL::Geometry::ProjectiveTransform( isPrevFrame ? gWorldToClipPrev : gWorldToClip, geometryProps.X );
     float2 uv = ( clip.xy / clip.w ) * float2( 0.5, -0.5 ) + 0.5 - gJitter;
 
-    float4 data = diffAndViewZ.SampleLevel( gNearestSampler, uv * rescale, 0 );
+    float4 data = texSpecViewZ.SampleLevel( gNearestSampler, uv * rescale, 0 );
     float prevViewZ = abs( data.w ) / NRD_FP16_VIEWZ_SCALE;
 
-    prevLdiff = data.xyz;
-    prevLspec = specAndViewZ.SampleLevel( gNearestSampler, uv * rescale, 0 ).xyz;
+    prevLdiff = texDiff.SampleLevel( gNearestSampler, uv * rescale, 0 );
+    prevLspec = data.xyz;
 
     // Initial state
     float weight = 1.0;
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
 
-    // Confidence - viewZ
-    // IMPORTANT: no "abs" for clip.w, because if it's negative it is a back-projection!
-    float err = abs( prevViewZ - clip.w ) * STL::Math::PositiveRcp( max( prevViewZ, abs( clip.w ) ) );
-    weight *= STL::Math::LinearStep( 0.03, 0.01, err );
+    // Ignore back-projection
+    weight *= float( clip.w > 0.0 );
 
     // Ignore undenoised regions ( split screen mode is active )
     weight *= float( pixelUv.x > gSeparator );
     weight *= float( uv.x > gSeparator );
 
     // Relaxed checks for refractions
+    float viewZ = abs( STL::Geometry::AffineTransform( isPrevFrame ? gWorldToViewPrev : gWorldToView, geometryProps.X ).z );
+    float err = ( viewZ - prevViewZ ) * STL::Math::PositiveRcp( max( viewZ, prevViewZ ) );
+
     if( isRefraction )
     {
+        // Confidence - viewZ ( PSR makes prevViewZ further than the original primary surface )
+        weight *= STL::Math::LinearStep( 0.03, 0.01, saturate( err ) );
+
         // Fade-out on screen edges ( hard )
         weight *= all( saturate( uv ) == uv );
     }
     else
     {
-        // Fade-out on screen edges ( smooth )
+        // Confidence - viewZ
+        weight *= STL::Math::LinearStep( 0.03, 0.01, abs( err ) );
+
+        // Fade-out on screen edges ( soft )
         float2 f = STL::Math::LinearStep( 0.0, 0.1, uv ) * STL::Math::LinearStep( 1.0, 0.9, uv );
         weight *= f.x * f.y;
 
@@ -390,32 +406,6 @@ float ReprojectRadiance(
     weight *= float( gOnScreen < SHOW_AMBIENT_OCCLUSION );
 
     return weight;
-}
-
-float GetDiffuseLikeMotionAmount( GeometryProps geometryProps, MaterialProps materialProps )
-{
-    /*
-    IMPORTANT / TODO: This is just a cheap estimation! Ideally curvature at hits should be applied in the reversed order:
-
-        hitDist = hitT[ N ];
-        for( uint i = N; i >= 1; i++ )
-            hitDist = ApplyThinLensEquation( hitDist, curvature[ i - 1 ] ); // + lobe spread energy dissipation should be there too!
-
-    Since NRD computes curvature at primary hit ( or PSR ), hit distances must respect the following rules:
-    - For primary hits:
-        - hitT for 1st bounce must be provided "as is" ( NRD applies thin lens equation )
-        - hitT for 2nd+ bounces must be adjusted on the application side by taking into account:
-            - energy dissipation due to lobe spread
-            - curvature at bounces
-    - For PSR:
-        - hitT for bounces up to where PSR is found must be adjusted on the application side by taking into account curvature at each bounce ( it affects the virtual position location )
-        - plus, same rules as for primary hits
-    */
-
-    float diffProb = EstimateDiffuseProbability( geometryProps, materialProps, true );
-    diffProb = lerp( diffProb, 1.0, STL::Math::Sqrt01( materialProps.curvature ) );
-
-    return diffProb;
 }
 
 //====================================================================================================================================
@@ -461,7 +451,7 @@ float GetDiffuseLikeMotionAmount( GeometryProps geometryProps, MaterialProps mat
         float a = rayQuery.CandidateTriangleRayT( ); \
         a *= mipAndCone.y; \
         a *= STL::Math::PositiveRcp( NoR ); \
-        a *= primitiveData.b2s_worldToUvUnits.y * abs( instanceData.invScale ); \
+        a *= primitiveData.worldToUvUnits * abs( instanceData.invScale ); \
         \
         float mip = log2( a ); \
         mip += MAX_MIP_LEVEL; \
@@ -573,16 +563,17 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
         float3 N = barycentrics.x * n0 + barycentrics.y * n1 + barycentrics.z * n2;
         N = STL::Geometry::RotateVector( mObjectToWorld, N );
         N = normalize( N * flip );
-        props.N = N;
+        props.N = -N; // TODO: why negated?
 
         // Curvature
-        props.curvature = primitiveData.curvature;
+        props.curvature = barycentrics.x * primitiveData.curvature0 + barycentrics.y * primitiveData.curvature1 + barycentrics.z * primitiveData.curvature2;
+        props.curvature /= abs( instanceData.invScale );
 
         // Mip level (TODO: doesn't take into account integrated AO / SO - i.e. diffuse = lowest mip, but what if we see the sky through a tiny hole?)
         float NoR = abs( dot( direction, props.N ) );
         float a = props.tmin * mipAndCone.y;
         a *= STL::Math::PositiveRcp( NoR );
-        a *= primitiveData.b2s_worldToUvUnits.y * abs( instanceData.invScale );
+        a *= primitiveData.worldToUvUnits * abs( instanceData.invScale );
 
         float mip = log2( a );
         mip += MAX_MIP_LEVEL;
@@ -593,14 +584,14 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
         props.uv = barycentrics.x * primitiveData.uv0 + barycentrics.y * primitiveData.uv1 + barycentrics.z * primitiveData.uv2;
 
         // Tangent
-        float4 t0 = float4( STL::Packing::DecodeUnitVector( primitiveData.t0, true ), primitiveData.b0s_b1s.x );
-        float4 t1 = float4( STL::Packing::DecodeUnitVector( primitiveData.t1, true ), primitiveData.b0s_b1s.y );
-        float4 t2 = float4( STL::Packing::DecodeUnitVector( primitiveData.t2, true ), primitiveData.b2s_worldToUvUnits.x );
+        float3 t0 = STL::Packing::DecodeUnitVector( primitiveData.t0, true );
+        float3 t1 = STL::Packing::DecodeUnitVector( primitiveData.t1, true );
+        float3 t2 = STL::Packing::DecodeUnitVector( primitiveData.t2, true );
 
-        float4 T = barycentrics.x * t0 + barycentrics.y * t1 + barycentrics.z * t2;
-        T.xyz = STL::Geometry::RotateVector( mObjectToWorld, T.xyz );
-        T.xyz = normalize( T.xyz );
-        props.T = T;
+        float3 T = barycentrics.x * t0 + barycentrics.y * t1 + barycentrics.z * t2;
+        T = STL::Geometry::RotateVector( mObjectToWorld, T );
+        T = normalize( T );
+        props.T = float4( T, primitiveData.bitangentSign );
     }
 
     props.X = origin + direction * props.tmin;

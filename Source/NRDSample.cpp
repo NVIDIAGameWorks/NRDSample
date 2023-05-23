@@ -45,8 +45,9 @@ constexpr float ACCUMULATION_TIME                   = 0.5f; // seconds
 constexpr float NEAR_Z                              = 0.001f; // m
 constexpr float GLASS_THICKNESS                     = 0.002f; // m
 constexpr bool CAMERA_RELATIVE                      = true;
-constexpr bool CAMERA_LEFT_HANDED                   = true;
+constexpr bool CAMERA_POSITIVE_Z                    = true;
 constexpr bool ALLOW_BLAS_MERGING                   = true;
+constexpr bool NRD_ALLOW_DESCRIPTOR_CACHING         = true;
 
 //=================================================================================
 // Important tests, sensitive to regressions or just testing base functionality
@@ -157,7 +158,8 @@ enum class Texture : uint32_t
     ViewZ,
     Mv,
     Normal_Roughness,
-    PrimaryMipAndCurvature,
+    PrimaryMip_Curvature,
+    PsrThroughput,
     BaseColor_Metalness,
     DirectLighting,
     DirectEmission,
@@ -174,7 +176,7 @@ enum class Texture : uint32_t
     Final,
 
     // History
-    ComposedDiff_ViewZ,
+    ComposedDiff,
     ComposedSpec_ViewZ,
     TaaHistory,
     TaaHistoryPrev,
@@ -236,8 +238,10 @@ enum class Descriptor : uint32_t
     Mv_StorageTexture,
     Normal_Roughness_Texture,
     Normal_Roughness_StorageTexture,
-    PrimaryMipAndCurvature_Texture,
-    PrimaryMipAndCurvature_StorageTexture,
+    PrimaryMip_Curvature_Texture,
+    PrimaryMip_Curvature_StorageTexture,
+    PsrThroughput_Texture,
+    PsrThroughput_StorageTexture,
     BaseColor_Metalness_Texture,
     BaseColor_Metalness_StorageTexture,
     DirectLighting_Texture,
@@ -268,8 +272,8 @@ enum class Descriptor : uint32_t
     Final_StorageTexture,
 
     // History
-    ComposedDiff_ViewZ_Texture,
-    ComposedDiff_ViewZ_StorageTexture,
+    ComposedDiff_Texture,
+    ComposedDiff_StorageTexture,
     ComposedSpec_ViewZ_Texture,
     ComposedSpec_ViewZ_StorageTexture,
     TaaHistory_Texture,
@@ -322,6 +326,10 @@ enum class DescriptorSet : uint32_t
     MAX_NUM
 };
 
+// NRD sample doesn't use several instances of the same denoiser in one NRD instance (like REBLUR_DIFFUSE x 3),
+// thus we can use fields of "nrd::Denoiser" enum as unique identifiers
+#define NRD_ID(x) nrd::Identifier(nrd::Denoiser::x)
+
 struct NRIInterface
     : public nri::CoreInterface
     , public nri::SwapChainInterface
@@ -352,6 +360,7 @@ struct GlobalConstantBufferData
     float4 gCameraOrigin_gMipBias;
     float4 gTrimmingParams_gEmissionIntensity;
     float4 gViewDirection_gIsOrtho;
+    float4 gCameraDelta_gNearZ;
     float2 gWindowSize;
     float2 gInvWindowSize;
     float2 gOutputSize;
@@ -362,7 +371,6 @@ struct GlobalConstantBufferData
     float2 gInvRectSize;
     float2 gRectSizePrev;
     float2 gJitter;
-    float gNearZ;
     float gAmbientAccumSpeed;
     float gAmbient;
     float gSeparator;
@@ -375,9 +383,9 @@ struct GlobalConstantBufferData
     float gTanPixelAngularRadius;
     float gDebug;
     float gTransparent;
-    float gReference;
-    float gUsePrevFrame;
+    float gPrevFrameConfidence;
     float gMinProbability;
+    float gUnproject;
     uint32_t gDenoiserType;
     uint32_t gDisableShadowsAndEnableImportanceSampling;
     uint32_t gOnScreen;
@@ -552,9 +560,9 @@ struct PrimitiveData
     uint32_t t1oct;
 
     uint32_t t2oct;
-    uint32_t b0s_b1s;
-    uint32_t b2s_worldToUvUnits;
-    float curvature;
+    uint32_t curvature0_curvature1;
+    uint32_t curvature2_bitangentSign;
+    float worldToUvUnits;
 };
 
 struct InstanceData
@@ -562,6 +570,9 @@ struct InstanceData
     float4 mWorldToWorldPrev0;
     float4 mWorldToWorldPrev1;
     float4 mWorldToWorldPrev2;
+
+    float4 baseColorAndMetalnessScale;
+    float4 emissionAndRoughnessScale;
 
     uint32_t baseTextureIndex;
     uint32_t basePrimitiveIndex;
@@ -573,10 +584,7 @@ class Sample : public SampleBase
 {
 public:
     Sample() :
-        m_Reblur(BUFFERED_FRAME_MAX_NUM, "REBLUR"),
-        m_Relax(BUFFERED_FRAME_MAX_NUM, "RELAX"),
-        m_Sigma(BUFFERED_FRAME_MAX_NUM, "SIGMA"),
-        m_Reference(BUFFERED_FRAME_MAX_NUM, "REFERENCE")
+        m_NRD(BUFFERED_FRAME_MAX_NUM, "NRD")
     {}
 
     ~Sample();
@@ -660,10 +668,7 @@ public:
     { return 4.0f * m_Scene.aabb.GetRadius(); }
 
 private:
-    NrdIntegration m_Reblur;
-    NrdIntegration m_Relax;
-    NrdIntegration m_Sigma;
-    NrdIntegration m_Reference;
+    NrdIntegration m_NRD;
     DlssIntegration m_DLSS;
     NRIInterface NRI = {};
     utils::Scene m_Scene;
@@ -690,8 +695,8 @@ private:
     nrd::ReblurSettings m_ReblurSettings = {};
     nrd::ReferenceSettings m_ReferenceSettings = {};
     Settings m_Settings = {};
-    Settings m_PrevSettings = {};
-    Settings m_DefaultSettings = {};
+    Settings m_SettingsPrev = {};
+    Settings m_SettingsDefault = {};
     const std::vector<uint32_t>* m_checkMeTests = nullptr;
     const std::vector<uint32_t>* m_improveMeTests = nullptr;
     float3 m_PrevLocalPos = {};
@@ -724,10 +729,7 @@ Sample::~Sample()
 
     m_DLSS.Shutdown();
 
-    m_Reblur.Destroy();
-    m_Relax.Destroy();
-    m_Sigma.Destroy();
-    m_Reference.Destroy();
+    m_NRD.Destroy();
 
     for (Frame& frame : m_Frames)
     {
@@ -864,21 +866,21 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
                 h = 2160;
             }
 
-            for (uint32_t i = 0; i <= (uint32_t)nrd::Method::REFERENCE; i++)
+            for (uint32_t i = 0; i <= (uint32_t)nrd::Denoiser::REFERENCE; i++)
             {
-                nrd::Method method = (nrd::Method)i;
-                const char* methodName = nrd::GetMethodString(method);
+                nrd::Denoiser denoiser = (nrd::Denoiser)i;
+                const char* methodName = nrd::GetDenoiserString(denoiser);
 
-                const nrd::MethodDesc methodDesc = {method, w, h};
+                const nrd::DenoiserDesc denoiserDesc = {0, denoiser, w, h};
 
-                nrd::DenoiserCreationDesc denoiserCreationDesc = {};
-                denoiserCreationDesc.requestedMethods = &methodDesc;
-                denoiserCreationDesc.requestedMethodsNum = 1;
+                nrd::InstanceCreationDesc instanceCreationDesc = {};
+                instanceCreationDesc.denoisers = &denoiserDesc;
+                instanceCreationDesc.denoisersNum = 1;
 
-                NrdIntegration denoiser(2);
-                NRI_ABORT_ON_FALSE( denoiser.Initialize(denoiserCreationDesc, *m_Device, NRI, NRI) );
-                printf("| %10s | %36s | %16.2f | %16.2f | %16.2f |\n", i == 0 ? resolution : "", methodName, denoiser.GetTotalMemoryUsageInMb(), denoiser.GetPersistentMemoryUsageInMb(), denoiser.GetAliasableMemoryUsageInMb());
-                denoiser.Destroy();
+                NrdIntegration instance(2);
+                NRI_ABORT_ON_FALSE( instance.Initialize(instanceCreationDesc, *m_Device, NRI, NRI) );
+                printf("| %10s | %36s | %16.2f | %16.2f | %16.2f |\n", i == 0 ? resolution : "", methodName, instance.GetTotalMemoryUsageInMb(), instance.GetPersistentMemoryUsageInMb(), instance.GetAliasableMemoryUsageInMb());
+                instance.Destroy();
             }
 
             if (j != 2)
@@ -889,7 +891,10 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     #endif
 
     LoadScene();
-    AddInnerGlassSurfaces();
+
+    if (m_SceneFile.find("BistroInterior") != std::string::npos)
+        AddInnerGlassSurfaces();
+
     GenerateAnimatedCubes();
 
     nri::Format swapChainFormat = CreateSwapChain();
@@ -908,96 +913,67 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     m_Scene.UnloadTextureData();
     m_Scene.UnloadGeometryData();
 
-    { // REBLUR
-        const nrd::MethodDesc methodDescs[] =
-        {
-    #if( NRD_MODE == OCCLUSION )
-        #if( NRD_COMBINED == 1 )
-            { nrd::Method::REBLUR_DIFFUSE_SPECULAR_OCCLUSION, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-        #else
-            { nrd::Method::REBLUR_DIFFUSE_OCCLUSION, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-            { nrd::Method::REBLUR_SPECULAR_OCCLUSION, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-        #endif
-    #elif( NRD_MODE == SH )
-        #if( NRD_COMBINED == 1 )
-            { nrd::Method::REBLUR_DIFFUSE_SPECULAR_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-        #else
-            { nrd::Method::REBLUR_DIFFUSE_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-            { nrd::Method::REBLUR_SPECULAR_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-        #endif
-    #elif( NRD_MODE == DIRECTIONAL_OCCLUSION )
-            { nrd::Method::REBLUR_DIFFUSE_DIRECTIONAL_OCCLUSION, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+    const nrd::DenoiserDesc denoisersDescs[] =
+    {
+        // REBLUR
+#if( NRD_MODE == OCCLUSION )
+    #if( NRD_COMBINED == 1 )
+        { NRD_ID(REBLUR_DIFFUSE_SPECULAR_OCCLUSION), nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR_OCCLUSION, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
     #else
-        #if( NRD_COMBINED == 1 )
-            { nrd::Method::REBLUR_DIFFUSE_SPECULAR, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-        #else
-            { nrd::Method::REBLUR_DIFFUSE, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-            { nrd::Method::REBLUR_SPECULAR, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-        #endif
+        { NRD_ID(REBLUR_DIFFUSE_OCCLUSION), nrd::Denoiser::REBLUR_DIFFUSE_OCCLUSION, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+        { NRD_ID(REBLUR_SPECULAR_OCCLUSION), nrd::Denoiser::REBLUR_SPECULAR_OCCLUSION, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
     #endif
-        };
+#elif( NRD_MODE == SH )
+    #if( NRD_COMBINED == 1 )
+        { NRD_ID(REBLUR_DIFFUSE_SPECULAR_SH), nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+    #else
+        { NRD_ID(REBLUR_DIFFUSE_SH), nrd::Denoiser::REBLUR_DIFFUSE_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+        { NRD_ID(REBLUR_SPECULAR_SH), nrd::Denoiser::REBLUR_SPECULAR_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+    #endif
+#elif( NRD_MODE == DIRECTIONAL_OCCLUSION )
+        { NRD_ID(REBLUR_DIFFUSE_DIRECTIONAL_OCCLUSION), nrd::Denoiser::REBLUR_DIFFUSE_DIRECTIONAL_OCCLUSION, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+#else
+    #if( NRD_COMBINED == 1 )
+        { NRD_ID(REBLUR_DIFFUSE_SPECULAR), nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+    #else
+        { NRD_ID(REBLUR_DIFFUSE), nrd::Denoiser::REBLUR_DIFFUSE, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+        { NRD_ID(REBLUR_SPECULAR), nrd::Denoiser::REBLUR_SPECULAR, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+    #endif
+#endif
 
-        nrd::DenoiserCreationDesc denoiserCreationDesc = {};
-        denoiserCreationDesc.requestedMethods = methodDescs;
-        denoiserCreationDesc.requestedMethodsNum = helper::GetCountOf(methodDescs);
+        // RELAX
+#if( NRD_MODE == SH )
+    #if( NRD_COMBINED == 1 )
+        { NRD_ID(RELAX_DIFFUSE_SPECULAR_SH), nrd::Denoiser::RELAX_DIFFUSE_SPECULAR_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+    #else
+        { NRD_ID(RELAX_DIFFUSE_SH), nrd::Denoiser::RELAX_DIFFUSE_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+        { NRD_ID(RELAX_SPECULAR_SH), nrd::Denoiser::RELAX_SPECULAR_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+    #endif
+#else
+    #if( NRD_COMBINED == 1 )
+        { NRD_ID(RELAX_DIFFUSE_SPECULAR), nrd::Denoiser::RELAX_DIFFUSE_SPECULAR, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+    #else
+        { NRD_ID(RELAX_DIFFUSE), nrd::Denoiser::RELAX_DIFFUSE, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+        { NRD_ID(RELAX_SPECULAR), nrd::Denoiser::RELAX_SPECULAR, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+    #endif
+#endif
 
-        NRI_ABORT_ON_FALSE( m_Reblur.Initialize(denoiserCreationDesc, *m_Device, NRI, NRI) );
-    }
+        // SIGMA
+#if( NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION )
+        { NRD_ID(SIGMA_SHADOW_TRANSLUCENCY), nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+#endif
 
-    { // RELAX
-        const nrd::MethodDesc methodDescs[] =
-        {
-            #if( NRD_MODE == SH )
-                #if( NRD_COMBINED == 1 )
-                    { nrd::Method::RELAX_DIFFUSE_SPECULAR_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-                #else
-                    { nrd::Method::RELAX_DIFFUSE_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-                    { nrd::Method::RELAX_SPECULAR_SH, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-                #endif
-            #else
-                #if( NRD_COMBINED == 1 )
-                    { nrd::Method::RELAX_DIFFUSE_SPECULAR, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-                #else
-                    { nrd::Method::RELAX_DIFFUSE, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-                    { nrd::Method::RELAX_SPECULAR, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-                #endif
-            #endif
-        };
+        // REFERENCE
+        { NRD_ID(REFERENCE), nrd::Denoiser::REFERENCE, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
+    };
 
-        nrd::DenoiserCreationDesc denoiserCreationDesc = {};
-        denoiserCreationDesc.requestedMethods = methodDescs;
-        denoiserCreationDesc.requestedMethodsNum = helper::GetCountOf(methodDescs);
+    nrd::InstanceCreationDesc instanceCreationDesc = {};
+    instanceCreationDesc.denoisers = denoisersDescs;
+    instanceCreationDesc.denoisersNum = helper::GetCountOf(denoisersDescs);
 
-        NRI_ABORT_ON_FALSE( m_Relax.Initialize(denoiserCreationDesc, *m_Device, NRI, NRI) );
-    }
+    NRI_ABORT_ON_FALSE( m_NRD.Initialize(instanceCreationDesc, *m_Device, NRI, NRI) );
 
-    { // SIGMA
-        const nrd::MethodDesc methodDescs[] =
-        {
-            { nrd::Method::SIGMA_SHADOW_TRANSLUCENCY, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-        };
-
-        nrd::DenoiserCreationDesc denoiserCreationDesc = {};
-        denoiserCreationDesc.requestedMethods = methodDescs;
-        denoiserCreationDesc.requestedMethodsNum = helper::GetCountOf(methodDescs);
-
-        NRI_ABORT_ON_FALSE( m_Sigma.Initialize(denoiserCreationDesc, *m_Device, NRI, NRI) );
-    }
-
-    { // REFERENCE
-        const nrd::MethodDesc methodDescs[] =
-        {
-            { nrd::Method::REFERENCE, (uint16_t)m_RenderResolution.x, (uint16_t)m_RenderResolution.y },
-        };
-
-        nrd::DenoiserCreationDesc denoiserCreationDesc = {};
-        denoiserCreationDesc.requestedMethods = methodDescs;
-        denoiserCreationDesc.requestedMethodsNum = helper::GetCountOf(methodDescs);
-
-        NRI_ABORT_ON_FALSE( m_Reference.Initialize(denoiserCreationDesc, *m_Device, NRI, NRI) );
-    }
-
-    m_DefaultSettings = m_Settings;
+    m_SettingsDefault = m_Settings;
 
     return CreateUserInterface(*m_Device, NRI, NRI, swapChainFormat);
 }
@@ -1005,7 +981,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
 void Sample::PrepareFrame(uint32_t frameIndex)
 {
     m_ForceHistoryReset = false;
-    m_PrevSettings = m_Settings;
+    m_SettingsPrev = m_Settings;
     m_Camera.SavePreviousState();
 
     PrepareUserInterface();
@@ -1094,10 +1070,12 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         "Normal",
                         "Roughness",
                         "Metalness",
+                        "PSR throughput",
                         "World units",
                         "Instance index",
                         "Mip level (primary)",
                         "Mip level (specular)",
+                        "Curvature",
                 #endif
                     };
 
@@ -1219,7 +1197,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                 }
                 ImGui::PopID();
 
-                if (m_Settings.onScreen == 10)
+                if (m_Settings.onScreen == 11)
                     ImGui::SliderFloat("Units in 1 meter", &m_Settings.meterToUnitsMultiplier, 0.001f, 100.0f, "%.4f", ImGuiSliderFlags_Logarithmic);
                 else
                 {
@@ -1237,11 +1215,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     if (isUnfolded)
                     {
                         ImGui::Checkbox("Animate sun", &m_Settings.animateSun);
-                        if (!m_Scene.animations.empty() && m_Scene.animations[m_Settings.activeAnimation].cameraNode.animationNodeIndex != utils::InvalidIndex)
-                        {
-                            ImGui::SameLine();
-                            ImGui::Checkbox("Animate camera", &m_Settings.animateCamera);
-                        }
                         if (m_Settings.animateSun || m_Settings.animatedObjects || m_Settings.animateCamera)
                         {
                             ImGui::SameLine();
@@ -1280,9 +1253,9 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 char* iterator = items;
                                 for (auto animation : m_Scene.animations)
                                 {
-                                    const size_t size = std::min(sizeof(items), animation.animationName.length() + 1);
-                                    memcpy(iterator + offset, animation.animationName.c_str(), size);
-                                    offset += animation.animationName.length() + 1;
+                                    const size_t size = std::min(sizeof(items), animation.name.length() + 1);
+                                    memcpy(iterator + offset, animation.name.c_str(), size);
+                                    offset += animation.name.length() + 1;
                                 }
                                 ImGui::Combo("Animated scene", &m_Settings.activeAnimation, items, helper::GetCountOf(m_Scene.animations));
                             }
@@ -1346,14 +1319,15 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         ImGui::PopStyleColor();
 
                         if (m_Settings.tracingMode != RESOLUTION_HALF)
-                        {
                             ImGui::SameLine();
-                            ImGui::Checkbox("PSR", &m_Settings.PSR);
-                        }
-                    #else
-                        if (m_Settings.tracingMode != RESOLUTION_HALF)
-                            ImGui::Checkbox("PSR", &m_Settings.PSR);
                     #endif
+
+                        if (m_Settings.tracingMode != RESOLUTION_HALF)
+                        {
+                            ImGui::PushStyleColor(ImGuiCol_Text, m_Settings.PSR ? UI_GREEN : UI_YELLOW);
+                                ImGui::Checkbox("PSR", &m_Settings.PSR);
+                            ImGui::PopStyleColor();
+                        }
                     }
                     ImGui::PopID();
 
@@ -1362,14 +1336,17 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     {
                     #if( NRD_MODE == OCCLUSION )
                         "REBLUR_OCCLUSION",
+                        "(unsupported)",
                     #elif( NRD_MODE == SH )
                         "REBLUR_SH + SIGMA",
+                        "RELAX_SH + SIGMA",
                     #elif( NRD_MODE == DIRECTIONAL_OCCLUSION )
                         "REBLUR_DIRECTIONAL_OCCLUSION",
+                        "(unsupported)",
                     #else
                         "REBLUR + SIGMA",
-                    #endif
                         "RELAX + SIGMA",
+                    #endif
                         "REFERENCE",
                     };
                     const nrd::LibraryDesc& nrdLibraryDesc = nrd::GetLibraryDesc();
@@ -1420,12 +1397,18 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         if (m_Settings.denoiser == REBLUR)
                         {
                             nrd::ReblurSettings defaults = {};
+                            defaults.antilagIntensitySettings.enable = true;
 
                             if (m_Settings.tracingMode == RESOLUTION_FULL_PROBABILISTIC)
                             {
                                 defaults.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
                                 defaults.diffusePrepassBlurRadius = defaults.specularPrepassBlurRadius;
                             }
+
+                            // Helps to mitigate fireflies emphasized by DLSS
+                            #if( NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION )
+                                defaults.enableAntiFirefly = m_DlssQuality != -1 && m_DLSS.IsInitialized() && m_Settings.DLSS;
+                            #endif
 
                             bool isSame = true;
                             if (m_ReblurSettings.historyFixFrameNum != defaults.historyFixFrameNum)
@@ -1454,9 +1437,9 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 isSame = false;
                             else if (m_ReblurSettings.enablePerformanceMode != defaults.enablePerformanceMode)
                                 isSame = false;
-                            else if (m_ReblurSettings.antilagHitDistanceSettings.enable != true)
+                            else if (m_ReblurSettings.antilagHitDistanceSettings.enable != defaults.antilagHitDistanceSettings.enable)
                                 isSame = false;
-                            else if (m_ReblurSettings.antilagIntensitySettings.enable != true)
+                            else if (m_ReblurSettings.antilagIntensitySettings.enable != defaults.antilagHitDistanceSettings.enable)
                                 isSame = false;
 
                             ImGui::SameLine();
@@ -1480,11 +1463,8 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
                             ImGui::SameLine();
                             ImGui::PushStyleColor(ImGuiCol_Text, isSame ? UI_DEFAULT : UI_YELLOW);
-                            if (ImGui::Button("Defaults"))
-                            {
+                            if (ImGui::Button("Defaults") || frameIndex == 0)
                                 m_ReblurSettings = defaults;
-                                m_ReblurSettings.antilagIntensitySettings.enable = true;
-                            }
                             ImGui::PopStyleColor();
 
                             ImGui::Checkbox("Adaptive radius", &m_Settings.adaptRadiusToResolution);
@@ -1498,7 +1478,9 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             ImGui::Checkbox("Perf mode", &m_ReblurSettings.enablePerformanceMode);
                         #if( NRD_MODE == SH || NRD_MODE == DIRECTIONAL_OCCLUSION )
                             ImGui::SameLine();
-                            ImGui::Checkbox("Resolve", &m_Resolve);
+                            ImGui::PushStyleColor(ImGuiCol_Text, m_Resolve ? UI_GREEN : UI_RED);
+                                ImGui::Checkbox("Resolve", &m_Resolve);
+                            ImGui::PopStyleColor();
                         #endif
 
                             ImGui::SliderFloat("Disocclusion (%)", &m_Settings.disocclusionThreshold, 0.25f, 5.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
@@ -1558,6 +1540,11 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 defaults.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
                                 defaults.diffusePrepassBlurRadius = defaults.specularPrepassBlurRadius;
                             }
+
+                            // Helps to mitigate fireflies emphasized by DLSS
+                            #if( NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION )
+                                //defaults.enableAntiFirefly = m_DlssQuality != -1 && m_DLSS.IsInitialized() && m_Settings.DLSS; // TODO: currently doesn't help in this case, but makes the image darker
+                            #endif
 
                             bool isSame = true;
                             if (m_RelaxSettings.historyFixFrameNum != defaults.historyFixFrameNum)
@@ -1628,7 +1615,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
                             ImGui::SameLine();
                             ImGui::PushStyleColor(ImGuiCol_Text, isSame ? UI_DEFAULT : UI_YELLOW);
-                            if (ImGui::Button("Defaults"))
+                            if (ImGui::Button("Defaults") || frameIndex == 0)
                                 m_RelaxSettings = defaults;
                             ImGui::PopStyleColor();
 
@@ -1721,7 +1708,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         if (ImGui::Button("Defaults"))
                         {
                             m_Camera.Initialize(m_Scene.aabb.GetCenter(), m_Scene.aabb.vMin, CAMERA_RELATIVE);
-                            m_Settings = m_DefaultSettings;
+                            m_Settings = m_SettingsDefault;
                             m_RelaxSettings = {};
                             m_ReblurSettings = {};
                             m_ReblurSettings.antilagIntensitySettings.enable = true;
@@ -1854,13 +1841,13 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                     if (elemNum != 1)
                                     {
                                         m_Camera.Initialize(m_Scene.aabb.GetCenter(), m_Scene.aabb.vMin, CAMERA_RELATIVE);
-                                        m_Settings = m_DefaultSettings;
+                                        m_Settings = m_SettingsDefault;
                                     }
 
                                     // Reset some settings to defaults to avoid a potential confusion
                                     m_Settings.debug = 0.0f;
                                     m_Settings.denoiser = REBLUR;
-                                    m_Settings.DLSS = m_DefaultSettings.DLSS;
+                                    m_Settings.DLSS = m_SettingsDefault.DLSS;
                                     m_ForceHistoryReset = true;
                                 }
 
@@ -1939,7 +1926,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     desc.nearZ = NEAR_Z * m_Settings.meterToUnitsMultiplier;
     desc.farZ = 10000.0f * m_Settings.meterToUnitsMultiplier;
     desc.isCustomMatrixSet = m_Settings.animateCamera;
-    desc.isLeftHanded = CAMERA_LEFT_HANDED;
+    desc.isPositiveZ = CAMERA_POSITIVE_Z;
     desc.orthoRange = m_Settings.ortho ? Tan( DegToRad( m_Settings.camFov ) * 0.5f ) * 3.0f * m_Settings.meterToUnitsMultiplier : 0.0f;
     GetCameraDescFromInputDevices(desc);
 
@@ -1985,7 +1972,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     }
 
     if (!m_Scene.animations.empty())
-        m_Scene.Animate(animationSpeed, m_Timer.GetFrameTime(), m_Settings.animationProgress, m_Settings.activeAnimation, m_Settings.animateCamera ? &desc.customMatrix : nullptr);
+        m_Scene.Animate(animationSpeed, m_Timer.GetFrameTime(), m_Settings.animationProgress, m_Settings.activeAnimation);
 
     m_Camera.Update(desc, frameIndex);
 
@@ -2016,7 +2003,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
                 float x = float(i) * scale * 4.0f;
                 float y = float(j) * scale * 4.0f;
-                float z = 10.0f * scale * (CAMERA_LEFT_HANDED ? 1.0f : -1.0f);
+                float z = 10.0f * scale * (CAMERA_POSITIVE_Z ? 1.0f : -1.0f);
 
                 float3 pos = basePos + vRight * x + vTop * y + vForward * z;
 
@@ -2042,7 +2029,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     }
 
     // Adjust settings if tracing mode has been changed to / from "probabilistic sampling"
-    if (m_Settings.tracingMode != m_PrevSettings.tracingMode && (m_Settings.tracingMode == RESOLUTION_FULL_PROBABILISTIC || m_PrevSettings.tracingMode == RESOLUTION_FULL_PROBABILISTIC))
+    if (m_Settings.tracingMode != m_SettingsPrev.tracingMode && (m_Settings.tracingMode == RESOLUTION_FULL_PROBABILISTIC || m_SettingsPrev.tracingMode == RESOLUTION_FULL_PROBABILISTIC))
     {
         nrd::ReblurSettings reblurDefaults = {};
         nrd::ReblurSettings relaxDefaults = {};
@@ -2070,9 +2057,9 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     }
 
     // Print out information
-    if (m_PrevSettings.resolutionScale != m_Settings.resolutionScale ||
-        m_PrevSettings.tracingMode != m_Settings.tracingMode ||
-        m_PrevSettings.rpp != m_Settings.rpp ||
+    if (m_SettingsPrev.resolutionScale != m_Settings.resolutionScale ||
+        m_SettingsPrev.tracingMode != m_Settings.tracingMode ||
+        m_SettingsPrev.rpp != m_Settings.rpp ||
         frameIndex == 0)
     {
         std::array<uint32_t, 4> rppScale = {2, 1, 2, 2};
@@ -2099,7 +2086,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
         );
     }
 
-    if (m_PrevSettings.denoiser != m_Settings.denoiser || frameIndex == 0)
+    if (m_SettingsPrev.denoiser != m_Settings.denoiser || frameIndex == 0)
     {
         m_checkMeTests = nullptr;
         m_improveMeTests = nullptr;
@@ -2118,7 +2105,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 void Sample::LoadScene()
 {
     // Proxy geometry, which will be instancinated
-    std::string sceneFile = utils::GetFullPath("Cubes/Cubes.obj", utils::DataFolder::SCENES);
+    std::string sceneFile = utils::GetFullPath("Cubes/Cubes.gltf", utils::DataFolder::SCENES);
     NRI_ABORT_ON_FALSE( utils::LoadScene(sceneFile, m_Scene, !ALLOW_BLAS_MERGING) );
 
     m_ProxyInstancesNum = helper::GetCountOf(m_Scene.instances);
@@ -2146,23 +2133,12 @@ void Sample::LoadScene()
     }
     else if (m_SceneFile.find("ShaderBalls") != std::string::npos)
         m_Settings.exposure = 1.7f;
-    else if (m_SceneFile.find("ZeroDay") != std::string::npos)
-    {
-        m_Settings.exposure = 25.0f;
-        m_Settings.emissionIntensity = 2.3f;
-        m_Settings.emission = true;
-        m_Settings.roughnessOverride = 0.07f;
-        m_Settings.metalnessOverride = 0.25f;
-        m_Settings.camFov = 75.0f;
-        m_Settings.animationSpeed = -0.6f;
-        m_Settings.sunElevation = -90.0f;
-        m_Settings.sunAngularDiameter = 0.0f;
-    }
 }
 
 void Sample::AddInnerGlassSurfaces()
 {
     // IMPORTANT: this is only valid for non-merged instances, when each instance represents a single object
+    // TODO: try thickness emulation in DeltaRays shader
 
     size_t instanceNum = m_Scene.instances.size();
     for (size_t i = 0; i < instanceNum; i++)
@@ -2170,6 +2146,7 @@ void Sample::AddInnerGlassSurfaces()
         const utils::Instance& instance = m_Scene.instances[i];
         const utils::Material& material = m_Scene.materials[instance.materialIndex];
 
+        // Skip non-transparent objects
         if (!material.IsTransparent())
             continue;
 
@@ -2177,9 +2154,17 @@ void Sample::AddInnerGlassSurfaces()
         float3 size = mesh.aabb.vMax - mesh.aabb.vMin;
         size *= instance.rotation.GetScale();
 
+        // Skip too thin objects
         float minSize = Min(size.x, Min(size.y, size.z));
         if (minSize < GLASS_THICKNESS * 2.0f)
             continue;
+
+        // Skip objects, which look "merged"
+        /*
+        float maxSize = Max(size.x, Max(size.y, size.z));
+        if (maxSize > 0.5f)
+            continue;
+        */
 
         utils::Instance innerInstance = instance;
         innerInstance.scale = (size - GLASS_THICKNESS) / (size + 1e-15f);
@@ -2330,10 +2315,7 @@ void Sample::CreatePipelines()
             NRI.DestroyPipeline(*m_Pipelines[i]);
         m_Pipelines.clear();
 
-        m_Reblur.CreatePipelines();
-        m_Relax.CreatePipelines();
-        m_Sigma.CreatePipelines();
-        m_Reference.CreatePipelines();
+        m_NRD.CreatePipelines();
     }
 
     utils::ShaderCodeStorage shaderCodeStorage;
@@ -2946,7 +2928,9 @@ void Sample::CreateResources(nri::Format swapChainFormat)
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::Normal_Roughness", normalFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
-    CreateTexture(descriptorDescs, "Texture::PrimaryMipAndCurvature", nri::Format::RG8_UNORM, w, h, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::PrimaryMip_Curvature", nri::Format::RG8_UNORM, w, h, 1, 1,
+        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
+    CreateTexture(descriptorDescs, "Texture::PsrThroughput", nri::Format::R10_G10_B10_A2_UNORM, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::BaseColor_Metalness", nri::Format::RGBA8_SRGB, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
@@ -2977,7 +2961,7 @@ void Sample::CreateResources(nri::Format swapChainFormat)
     CreateTexture(descriptorDescs, "Texture::Final", swapChainFormat, (uint16_t)GetWindowResolution().x, (uint16_t)GetWindowResolution().y, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::COPY_SOURCE);
 
-    CreateTexture(descriptorDescs, "Texture::ComposedDiff_ViewZ", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::ComposedDiff", nri::Format::R11_G11_B10_UFLOAT, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
     CreateTexture(descriptorDescs, "Texture::ComposedSpec_ViewZ", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
@@ -3132,7 +3116,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::ViewZ_StorageTexture),
             Get(Descriptor::Normal_Roughness_StorageTexture),
             Get(Descriptor::BaseColor_Metalness_StorageTexture),
-            Get(Descriptor::PrimaryMipAndCurvature_StorageTexture),
+            Get(Descriptor::PrimaryMip_Curvature_StorageTexture),
             Get(Descriptor::DirectLighting_StorageTexture),
             Get(Descriptor::DirectEmission_StorageTexture),
             Get(Descriptor::Unfiltered_ShadowData_StorageTexture),
@@ -3178,8 +3162,8 @@ void Sample::CreateDescriptorSets()
     { // DescriptorSet::IndirectRays1
         const nri::Descriptor* textures[] =
         {
-            Get(Descriptor::PrimaryMipAndCurvature_Texture),
-            Get(Descriptor::ComposedDiff_ViewZ_Texture),
+            Get(Descriptor::PrimaryMip_Curvature_Texture),
+            Get(Descriptor::ComposedDiff_Texture),
             Get(Descriptor::ComposedSpec_ViewZ_Texture),
             Get(Descriptor::Ambient_Texture),
         };
@@ -3191,6 +3175,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Normal_Roughness_StorageTexture),
             Get(Descriptor::ViewZ_StorageTexture),
             Get(Descriptor::Mv_StorageTexture),
+            Get(Descriptor::PsrThroughput_StorageTexture),
             Get(Descriptor::Unfiltered_Diff_StorageTexture),
             Get(Descriptor::Unfiltered_Spec_StorageTexture),
 #if( NRD_MODE == SH )
@@ -3218,6 +3203,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Normal_Roughness_Texture),
             Get(Descriptor::BaseColor_Metalness_Texture),
             Get(Descriptor::DirectLighting_Texture),
+            Get(Descriptor::PsrThroughput_Texture),
             Get(Descriptor::Ambient_Texture),
             Get(Descriptor::Diff_Texture),
             Get(Descriptor::Spec_Texture),
@@ -3229,7 +3215,7 @@ void Sample::CreateDescriptorSets()
 
         const nri::Descriptor* storageTextures[] =
         {
-            Get(Descriptor::ComposedDiff_ViewZ_StorageTexture),
+            Get(Descriptor::ComposedDiff_StorageTexture),
             Get(Descriptor::ComposedSpec_ViewZ_StorageTexture),
         };
 
@@ -3249,7 +3235,7 @@ void Sample::CreateDescriptorSets()
         const nri::Descriptor* textures[] =
         {
             Get(Descriptor::ViewZ_Texture),
-            Get(Descriptor::ComposedDiff_ViewZ_Texture),
+            Get(Descriptor::ComposedDiff_Texture),
             Get(Descriptor::ComposedSpec_ViewZ_Texture),
             Get(Descriptor::Ambient_Texture),
         };
@@ -3477,10 +3463,10 @@ void Sample::CreateDescriptorSets()
             const size_t index = i * TEXTURES_PER_MATERIAL;
             const utils::Material& material = m_Scene.materials[i];
 
-            textures[index] = Get( Descriptor((uint32_t)Descriptor::MaterialTextures + material.diffuseMapIndex) );
-            textures[index + 1] = Get( Descriptor((uint32_t)Descriptor::MaterialTextures + material.specularMapIndex) );
-            textures[index + 2] = Get( Descriptor((uint32_t)Descriptor::MaterialTextures + material.normalMapIndex) );
-            textures[index + 3] = Get( Descriptor((uint32_t)Descriptor::MaterialTextures + material.emissiveMapIndex) );
+            textures[index] = Get( Descriptor((uint32_t)Descriptor::MaterialTextures + material.baseColorTexIndex) );
+            textures[index + 1] = Get( Descriptor((uint32_t)Descriptor::MaterialTextures + material.roughnessMetalnessTexIndex) );
+            textures[index + 2] = Get( Descriptor((uint32_t)Descriptor::MaterialTextures + material.normalTexIndex) );
+            textures[index + 3] = Get( Descriptor((uint32_t)Descriptor::MaterialTextures + material.emissiveTexIndex) );
         }
 
         const nri::Descriptor* structuredBuffers[] =
@@ -3551,7 +3537,6 @@ void Sample::UploadStaticData()
         for (uint32_t j = 0; j < triangleNum; j++)
         {
             uint32_t primitiveIndex = mesh.indexOffset / 3 + j;
-            const utils::Primitive& primitive = m_Scene.primitives[primitiveIndex];
 
             const utils::UnpackedVertex& v0 = m_Scene.unpackedVertices[ mesh.vertexOffset + m_Scene.indices[primitiveIndex * 3] ];
             const utils::UnpackedVertex& v1 = m_Scene.unpackedVertices[ mesh.vertexOffset + m_Scene.indices[primitiveIndex * 3 + 1] ];
@@ -3561,9 +3546,9 @@ void Sample::UploadStaticData()
             float2 n1 = Packed::EncodeUnitVector( float3(v1.normal), true );
             float2 n2 = Packed::EncodeUnitVector( float3(v2.normal), true );
 
-            float2 t0 = Packed::EncodeUnitVector( float3(v0.tangent), true );
-            float2 t1 = Packed::EncodeUnitVector( float3(v1.tangent), true );
-            float2 t2 = Packed::EncodeUnitVector( float3(v2.tangent), true );
+            float2 t0 = Packed::EncodeUnitVector( float3(v0.tangent) + 1e-6f, true );
+            float2 t1 = Packed::EncodeUnitVector( float3(v1.tangent) + 1e-6f, true );
+            float2 t2 = Packed::EncodeUnitVector( float3(v2.tangent) + 1e-6f, true );
 
             PrimitiveData& data = primitiveData[n++];
             data.uv0 = Packed::sf2_to_h2(v0.uv[0], v0.uv[1]);
@@ -3578,9 +3563,11 @@ void Sample::UploadStaticData()
             data.t1oct = Packed::sf2_to_h2(t1.x, t1.y);
             data.t2oct = Packed::sf2_to_h2(t2.x, t2.y);
 
-            data.b0s_b1s = Packed::sf2_to_h2(v0.tangent[3], v1.tangent[3]);
-            data.b2s_worldToUvUnits = Packed::sf2_to_h2(v2.tangent[3], primitive.worldToUvUnits);
-            data.curvature = primitive.curvature;
+            data.curvature0_curvature1 = Packed::sf2_to_h2(v0.curvature, v1.curvature);
+            data.curvature2_bitangentSign = Packed::sf2_to_h2(v2.curvature, v0.tangent[3]);
+
+            const utils::Primitive& primitive = m_Scene.primitives[primitiveIndex];
+            data.worldToUvUnits = primitive.worldToUvUnits;
         }
     }
 
@@ -3769,8 +3756,10 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
 
             if (instance.allowUpdate)
             {
-                // Current matrix
+                // Current & previous transform
                 mObjectToWorld = instance.rotation;
+                float4x4 mObjectToWorldPrev = instance.rotationPrev;
+
                 if (instance.scale != float3(1.0f))
                 {
                     const utils::Mesh& mesh = m_Scene.meshes[instance.meshIndex];
@@ -3778,21 +3767,24 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
                     float4x4 translation;
                     translation.SetupByTranslation( ToFloat(instance.position) - mesh.aabb.GetCenter() );
 
-                    float4x4 translationInv = translation;
-                    translationInv.InvertOrtho();
-
                     float4x4 scale;
                     scale.SetupByScale(instance.scale);
 
-                    mObjectToWorld = mObjectToWorld * translationInv * scale * translation;
-                }
-                mObjectToWorld.AddTranslation( m_Camera.GetRelative(instance.position) );
+                    float4x4 translationInv = translation;
+                    translationInv.InvertOrtho();
 
-                // Previous transform
-                float4x4 mObjectToWorldPrev = instance.rotationPrev;
+                    float4x4 transform = translationInv * (scale * translation);
+
+                    mObjectToWorld = mObjectToWorld * transform;
+                    mObjectToWorldPrev = mObjectToWorldPrev * transform;
+                }
+
+                mObjectToWorld.AddTranslation( m_Camera.GetRelative(instance.position) );
                 mObjectToWorldPrev.AddTranslation( m_Camera.GetRelative(instance.positionPrev) );
 
-                double4x4 dmWorldToObject = ToDouble(mObjectToWorld); // TODO: FP64 used to avoid imprecision problems on close up views (InvertOrtho can't be used due to scaling factors)
+                // World to world (previous state) transform
+                // FP64 used to avoid imprecision problems on close up views (InvertOrtho can't be used due to scaling factors)
+                double4x4 dmWorldToObject = ToDouble(mObjectToWorld);
                 dmWorldToObject.Invert();
 
                 double4x4 dmObjectToWorldPrev = ToDouble(mObjectToWorldPrev);
@@ -3818,15 +3810,17 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
 
             // Add instance data
             const utils::Mesh& mesh = m_Scene.meshes[instance.meshIndex];
-            uint32_t basePrimitiveIndex = mesh.indexOffset / 3;
+            float3 scale = instance.rotation.GetScale();
 
-            instanceData->baseTextureIndex = instance.materialIndex * TEXTURES_PER_MATERIAL;
-            instanceData->basePrimitiveIndex = basePrimitiveIndex;
-            instanceData->isStatic = instance.allowUpdate ? 0 : 1;
-            instanceData->invScale = (isLeftHanded ? -1.0f : 1.0f) / Length( instance.rotation.GetScale() );
             instanceData->mWorldToWorldPrev0 = mWorldToWorldPrev.col0;
             instanceData->mWorldToWorldPrev1 = mWorldToWorldPrev.col1;
             instanceData->mWorldToWorldPrev2 = mWorldToWorldPrev.col2;
+            instanceData->baseColorAndMetalnessScale = material.baseColorAndMetalnessScale;
+            instanceData->emissionAndRoughnessScale = material.emissiveAndRoughnessScale;
+            instanceData->baseTextureIndex = instance.materialIndex * TEXTURES_PER_MATERIAL;
+            instanceData->basePrimitiveIndex = mesh.indexOffset / 3;
+            instanceData->isStatic = instance.allowUpdate ? 0 : 1;
+            instanceData->invScale = (isLeftHanded ? -1.0f : 1.0f) / Max(scale.x, Max(scale.y, scale.z));
             instanceData++;
 
             // Add dynamic geometry
@@ -3895,11 +3889,12 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
 
     uint32_t rectW = uint32_t(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
     uint32_t rectH = uint32_t(m_RenderResolution.y * m_Settings.resolutionScale + 0.5f);
-    uint32_t rectWprev = uint32_t(m_RenderResolution.x * m_PrevSettings.resolutionScale + 0.5f);
-    uint32_t rectHprev = uint32_t(m_RenderResolution.y * m_PrevSettings.resolutionScale + 0.5f);
+    uint32_t rectWprev = uint32_t(m_RenderResolution.x * m_SettingsPrev.resolutionScale + 0.5f);
+    uint32_t rectHprev = uint32_t(m_RenderResolution.y * m_SettingsPrev.resolutionScale + 0.5f);
 
     float emissionIntensity = m_Settings.emissionIntensity * float(m_Settings.emission);
     float baseMipBias = ((m_Settings.TAA || m_Settings.DLSS) ? -1.0f : 0.0f) + log2f(m_Settings.resolutionScale);
+    float nearZ = (CAMERA_POSITIVE_Z ? 1.0f : -1.0f) * NEAR_Z * m_Settings.meterToUnitsMultiplier;
 
     float2 renderSize = float2(float(m_RenderResolution.x), float(m_RenderResolution.y));
     float2 outputSize = float2(float(GetOutputResolution().x), float(GetOutputResolution().y));
@@ -3908,7 +3903,8 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
     float2 rectSizePrev = float2( float(rectWprev), float(rectHprev) );
     float2 jitter = (m_Settings.cameraJitter ? m_Camera.state.viewportJitter : 0.0f) / rectSize;
 
-    float3 viewDir = float3(m_Camera.state.mViewToWorld.GetCol2().xmm) * (CAMERA_LEFT_HANDED ? -1.0f : 1.0f);
+    float3 viewDir = float3(m_Camera.state.mViewToWorld.GetCol2().xmm) * (CAMERA_POSITIVE_Z ? -1.0f : 1.0f);
+    float3 cameraDelta = ToFloat(m_Camera.statePrev.globalPosition - m_Camera.state.globalPosition);
 
     nrd::HitDistanceParameters hitDistanceParameters = {};
     hitDistanceParameters.A = m_Settings.hitDistScale * m_Settings.meterToUnitsMultiplier;
@@ -3929,6 +3925,12 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
             minProbability = 1.0f / 16.0f;
     }
 
+    float project[3];
+    float4 frustum;
+    uint32_t flags = 0;
+    DecomposeProjection(NDC_D3D, NDC_D3D, m_Camera.state.mViewToClip, &flags, nullptr, nullptr, frustum.pv, project, nullptr);
+    float orthoMode = ( flags & PROJ_ORTHO ) == 0 ? 0.0f : -1.0f;
+
     const uint32_t bufferedFrameIndex = frameIndex % BUFFERED_FRAME_MAX_NUM;
     const uint64_t rangeOffset = m_Frames[bufferedFrameIndex].globalConstantBufferOffset;
     nri::Buffer* globalConstants = Get(Buffer::GlobalConstants);
@@ -3941,14 +3943,15 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
         data->gWorldToClip                                  = m_Camera.state.mWorldToClip;
         data->gWorldToClipPrev                              = m_Camera.statePrev.mWorldToClip;
         data->gHitDistParams                                = float4(hitDistanceParameters.A, hitDistanceParameters.B, hitDistanceParameters.C, hitDistanceParameters.D);
-        data->gCameraFrustum                                = m_Camera.state.frustum;
+        data->gCameraFrustum                                = frustum;
         data->gSunDirection_gExposure                       = sunDirection;
         data->gSunDirection_gExposure.w                     = m_Settings.exposure;
         data->gCameraOrigin_gMipBias                        = m_Camera.state.position;
         data->gCameraOrigin_gMipBias.w                      = baseMipBias + log2f(renderSize.x / outputSize.x);
         data->gTrimmingParams_gEmissionIntensity            = GetSpecularLobeTrimming();
         data->gTrimmingParams_gEmissionIntensity.w          = emissionIntensity;
-        data->gViewDirection_gIsOrtho                       = float4( viewDir.x, viewDir.y, viewDir.z, m_Camera.m_IsOrtho );
+        data->gViewDirection_gIsOrtho                       = float4(viewDir.x, viewDir.y, viewDir.z, orthoMode);
+        data->gCameraDelta_gNearZ                           = float4(cameraDelta.x, cameraDelta.y, cameraDelta.z, nearZ);
         data->gWindowSize                                   = windowSize;
         data->gInvWindowSize                                = float2(1.0f, 1.0f) / windowSize;
         data->gOutputSize                                   = outputSize;
@@ -3959,7 +3962,6 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
         data->gInvRectSize                                  = float2(1.0f, 1.0f) / rectSize;
         data->gRectSizePrev                                 = rectSizePrev;
         data->gJitter                                       = jitter;
-        data->gNearZ                                        = (CAMERA_LEFT_HANDED ? 1.0f : -1.0f) * NEAR_Z * m_Settings.meterToUnitsMultiplier;
         data->gAmbientAccumSpeed                            = 1.0f / (1.0f + m_AmbientAccumFrameNum);
         data->gAmbient                                      = m_Settings.ambient ? 1.0f : 0.0f;
         data->gSeparator                                    = m_Settings.separator;
@@ -3972,9 +3974,9 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float globalResetFactor)
         data->gTanPixelAngularRadius                        = Tan( 0.5f * DegToRad(m_Settings.camFov) / outputSize.x );
         data->gDebug                                        = m_Settings.debug;
         data->gTransparent                                  = (m_HasTransparent && NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION && ( m_Settings.onScreen == 0 || m_Settings.onScreen == 2 )) ? 1.0f : 0.0f;
-        data->gReference                                    = m_Settings.denoiser == REFERENCE ? 1.0f : 0.0f;
-        data->gUsePrevFrame                                 = m_Settings.usePrevFrame;
+        data->gPrevFrameConfidence                          = (m_Settings.usePrevFrame ? 1.0f : 0.0f) * m_AmbientAccumFrameNum / (1.0f + m_AmbientAccumFrameNum);
         data->gMinProbability                               = minProbability;
+        data->gUnproject                                    = 1.0f / (0.5f * rectH * project[1]);
         data->gDenoiserType                                 = (uint32_t)m_Settings.denoiser;
         data->gDisableShadowsAndEnableImportanceSampling    = (sunDirection.z < 0.0f && m_Settings.importanceSampling) ? 1 : 0;
         data->gOnScreen                                     = m_Settings.onScreen + ((NRD_MODE == OCCLUSION || NRD_MODE == DIRECTIONAL_OCCLUSION) ? 3 : 0); // preserve original mapping
@@ -4074,16 +4076,16 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
     // Global history reset
     float sunCurr = Smoothstep( -0.9f, 0.05f, Sin( DegToRad(m_Settings.sunElevation) ) );
-    float sunPrev = Smoothstep( -0.9f, 0.05f, Sin( DegToRad(m_PrevSettings.sunElevation) ) );
+    float sunPrev = Smoothstep( -0.9f, 0.05f, Sin( DegToRad(m_SettingsPrev.sunElevation) ) );
     float resetHistoryFactor = 1.0f - Smoothstep( 0.0f, 0.2f, Abs(sunCurr - sunPrev) );
 
-    if (m_PrevSettings.denoiser != m_Settings.denoiser)
+    if (m_SettingsPrev.denoiser != m_Settings.denoiser)
         m_ForceHistoryReset = true;
-    if (m_PrevSettings.denoiser == REFERENCE && m_PrevSettings.tracingMode != m_Settings.tracingMode)
+    if (m_SettingsPrev.denoiser == REFERENCE && m_SettingsPrev.tracingMode != m_Settings.tracingMode)
         m_ForceHistoryReset = true;
-    if (m_PrevSettings.ortho != m_Settings.ortho)
+    if (m_SettingsPrev.ortho != m_Settings.ortho)
         m_ForceHistoryReset = true;
-    if (m_PrevSettings.onScreen != m_Settings.onScreen)
+    if (m_SettingsPrev.onScreen != m_Settings.onScreen)
         m_ForceHistoryReset = true;
 
     // Sizes
@@ -4094,7 +4096,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
     uint32_t windowGridW = (GetWindowResolution().x + 15) / 16;
     uint32_t windowGridH = (GetWindowResolution().y + 15) / 16;
 
-    // NRD settings
+    // NRD common settings
     if (m_Settings.adaptiveAccumulation)
     {
         bool isFastHistoryEnabled = m_Settings.maxAccumulatedFrameNum > m_Settings.maxFastAccumulatedFrameNum;
@@ -4120,8 +4122,12 @@ void Sample::RenderFrame(uint32_t frameIndex)
     commonSettings.motionVectorScale[2] = m_Settings.mvType != MV_2D ? 1.0f : 0.0f;
     commonSettings.cameraJitter[0] = m_Settings.cameraJitter ? m_Camera.state.viewportJitter.x : 0.0f;
     commonSettings.cameraJitter[1] = m_Settings.cameraJitter ? m_Camera.state.viewportJitter.y : 0.0f;
+    commonSettings.cameraJitterPrev[0] = m_Settings.cameraJitter ? m_Camera.statePrev.viewportJitter.x : 0.0f;
+    commonSettings.cameraJitterPrev[1] = m_Settings.cameraJitter ? m_Camera.statePrev.viewportJitter.y : 0.0f;
     commonSettings.resolutionScale[0] = m_Settings.resolutionScale;
     commonSettings.resolutionScale[1] = m_Settings.resolutionScale;
+    commonSettings.resolutionScalePrev[0] = m_SettingsPrev.resolutionScale;
+    commonSettings.resolutionScalePrev[1] = m_SettingsPrev.resolutionScale;
     commonSettings.denoisingRange = GetDenoisingRange();
     commonSettings.disocclusionThreshold = m_Settings.disocclusionThreshold * 0.01f;
     commonSettings.splitScreen = m_Settings.denoiser == REFERENCE ? 1.0f : m_Settings.separator;
@@ -4131,6 +4137,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
     commonSettings.isMotionVectorInWorldSpace = m_Settings.mvType == MV_3D;
     commonSettings.isBaseColorMetalnessAvailable = true;
     commonSettings.enableValidation = m_DebugNRD && m_ShowValidationOverlay;
+
+    m_NRD.NewFrame(frameIndex);
+    m_NRD.SetCommonSettings(commonSettings);
 
     // NRD user pool
     NrdUserPool userPool = {};
@@ -4251,7 +4260,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::BaseColor_Metalness, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::PrimaryMipAndCurvature, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::PrimaryMip_Curvature, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::DirectLighting, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::DirectEmission, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::Unfiltered_ShadowData, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
@@ -4267,16 +4276,19 @@ void Sample::RenderFrame(uint32_t frameIndex)
             NRI.CmdDispatch(commandBuffer, rectGridW, rectGridH, 1);
         }
 
+    #if( NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION )
         { // Shadow denoising
             helper::Annotation annotation(NRI, commandBuffer, "Shadow denoising");
 
             nrd::SigmaSettings shadowSettings = {};
+            nrd::Identifier denoiser = NRD_ID(SIGMA_SHADOW_TRANSLUCENCY);
 
-            m_Sigma.SetMethodSettings(nrd::Method::SIGMA_SHADOW_TRANSLUCENCY, &shadowSettings);
-            m_Sigma.Denoise(frameIndex, commandBuffer, commonSettings, userPool, true);
+            m_NRD.SetDenoiserSettings(denoiser, &shadowSettings);
+            m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool, NRD_ALLOW_DESCRIPTOR_CACHING);
 
             RestoreBindings(commandBuffer, frame);
         }
+    #endif
 
         { // Direct lighting
             helper::Annotation annotation(NRI, commandBuffer, "Direct lighting");
@@ -4305,8 +4317,8 @@ void Sample::RenderFrame(uint32_t frameIndex)
             const TextureState transitions[] =
             {
                 // Input
-                {Texture::PrimaryMipAndCurvature, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::ComposedDiff_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::PrimaryMip_Curvature, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::ComposedDiff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 // Output
@@ -4315,6 +4327,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::PsrThroughput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::Unfiltered_Diff, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::Unfiltered_Spec, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
 #if( NRD_MODE == SH )
@@ -4386,30 +4399,30 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
         #if( NRD_MODE == OCCLUSION )
             #if( NRD_COMBINED == 1 )
-                m_Reblur.SetMethodSettings(nrd::Method::REBLUR_DIFFUSE_SPECULAR_OCCLUSION, &m_ReblurSettings);
+                const nrd::Identifier denoisers[] = {NRD_ID(REBLUR_DIFFUSE_SPECULAR_OCCLUSION)};
             #else
-                m_Reblur.SetMethodSettings(nrd::Method::REBLUR_DIFFUSE_OCCLUSION, &m_ReblurSettings);
-                m_Reblur.SetMethodSettings(nrd::Method::REBLUR_SPECULAR_OCCLUSION, &m_ReblurSettings);
+                const nrd::Identifier denoisers[] = {NRD_ID(REBLUR_DIFFUSE_OCCLUSION), NRD_ID(REBLUR_SPECULAR_OCCLUSION)};
             #endif
         #elif( NRD_MODE == SH )
             #if( NRD_COMBINED == 1 )
-                m_Reblur.SetMethodSettings(nrd::Method::REBLUR_DIFFUSE_SPECULAR_SH, &settings);
+                const nrd::Identifier denoisers[] = {NRD_ID(REBLUR_DIFFUSE_SPECULAR_SH)};
             #else
-                m_Reblur.SetMethodSettings(nrd::Method::REBLUR_DIFFUSE_SH, &m_ReblurSettings);
-                m_Reblur.SetMethodSettings(nrd::Method::REBLUR_SPECULAR_SH, &m_ReblurSettings);
+                const nrd::Identifier denoisers[] = {NRD_ID(REBLUR_DIFFUSE_SH), NRD_ID(REBLUR_SPECULAR_SH)};
             #endif
         #elif( NRD_MODE == DIRECTIONAL_OCCLUSION )
-                m_Reblur.SetMethodSettings(nrd::Method::REBLUR_DIFFUSE_DIRECTIONAL_OCCLUSION, &settings);
+                const nrd::Identifier denoisers[] = {NRD_ID(REBLUR_DIFFUSE_DIRECTIONAL_OCCLUSION)};
         #else
             #if( NRD_COMBINED == 1 )
-                m_Reblur.SetMethodSettings(nrd::Method::REBLUR_DIFFUSE_SPECULAR, &settings);
+                const nrd::Identifier denoisers[] = {NRD_ID(REBLUR_DIFFUSE_SPECULAR)};
             #else
-                m_Reblur.SetMethodSettings(nrd::Method::REBLUR_DIFFUSE, &m_ReblurSettings);
-                m_Reblur.SetMethodSettings(nrd::Method::REBLUR_SPECULAR, &m_ReblurSettings);
+                const nrd::Identifier denoisers[] = {NRD_ID(REBLUR_DIFFUSE), NRD_ID(REBLUR_SPECULAR)};
             #endif
         #endif
 
-                m_Reblur.Denoise(frameIndex, commandBuffer, commonSettings, userPool, true);
+                for (uint32_t i = 0; i < helper::GetCountOf(denoisers); i++)
+                    m_NRD.SetDenoiserSettings(denoisers[i], &m_ReblurSettings);
+
+                m_NRD.Denoise(denoisers, helper::GetCountOf(denoisers), commandBuffer, userPool, NRD_ALLOW_DESCRIPTOR_CACHING);
             }
             else if (m_Settings.denoiser == RELAX)
             {
@@ -4428,10 +4441,12 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
                 #if( NRD_COMBINED == 1 )
                     #if( NRD_MODE == SH )
-                        m_Relax.SetMethodSettings(nrd::Method::RELAX_DIFFUSE_SPECULAR_SH, &m_RelaxSettings);
+                        const nrd::Identifier denoisers[] = {NRD_ID(RELAX_DIFFUSE_SPECULAR_SH)};
                     #else
-                        m_Relax.SetMethodSettings(nrd::Method::RELAX_DIFFUSE_SPECULAR, &m_RelaxSettings);
+                        const nrd::Identifier denoisers[] = {NRD_ID(RELAX_DIFFUSE_SPECULAR)};
                     #endif
+
+                    m_NRD.SetDenoiserSettings(denoisers[0], &m_RelaxSettings);
                 #else
                     nrd::RelaxDiffuseSettings diffuseSettings = {};
                     diffuseSettings.prepassBlurRadius                            = settings.diffusePrepassBlurRadius;
@@ -4480,15 +4495,16 @@ void Sample::RenderFrame(uint32_t frameIndex)
                     specularSettings.enableMaterialTest                          = settings.enableMaterialTestForSpecular;
 
                     #if( NRD_MODE == SH )
-                        m_Relax.SetMethodSettings(nrd::Method::RELAX_DIFFUSE_SH, &diffuseSettings);
-                        m_Relax.SetMethodSettings(nrd::Method::RELAX_SPECULAR_SH, &specularSettings);
+                        const nrd::Identifier denoisers[] = {NRD_ID(RELAX_DIFFUSE_SH), NRD_ID(RELAX_SPECULAR_SH)};
                     #else
-                        m_Relax.SetMethodSettings(nrd::Method::RELAX_DIFFUSE, &diffuseSettings);
-                        m_Relax.SetMethodSettings(nrd::Method::RELAX_SPECULAR, &specularSettings);
+                        const nrd::Identifier denoisers[] = {NRD_ID(RELAX_DIFFUSE), NRD_ID(RELAX_SPECULAR)};
                     #endif
+
+                    m_NRD.SetDenoiserSettings(denoisers[0], &diffuseSettings);
+                    m_NRD.SetDenoiserSettings(denoisers[1], &specularSettings);
                 #endif
 
-                m_Relax.Denoise(frameIndex, commandBuffer, commonSettings, userPool, true);
+                m_NRD.Denoise(denoisers, helper::GetCountOf(denoisers), commandBuffer, userPool, NRD_ALLOW_DESCRIPTOR_CACHING);
             }
 
             RestoreBindings(commandBuffer, frame);
@@ -4504,6 +4520,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::BaseColor_Metalness, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::DirectLighting, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::PsrThroughput, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::Diff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::Spec, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
@@ -4513,7 +4530,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
             #endif
                 // Output
                 {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::ComposedDiff_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::ComposedDiff, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
             };
             transitionBarriers.textures = optimizedTransitions.data();
@@ -4532,8 +4549,10 @@ void Sample::RenderFrame(uint32_t frameIndex)
             const TextureState transitions[] =
             {
                 // Input
-                {Texture::Diff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::Spec, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::ComposedDiff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 // Output
                 {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
@@ -4556,8 +4575,11 @@ void Sample::RenderFrame(uint32_t frameIndex)
             commonSettings.resolutionScale[1] = 1.0f;
             commonSettings.splitScreen = m_Settings.separator;
 
-            m_Reference.SetMethodSettings(nrd::Method::REFERENCE, &m_ReferenceSettings);
-            m_Reference.Denoise(frameIndex, commandBuffer, commonSettings, userPool, true);
+            nrd::Identifier denoiser = NRD_ID(REFERENCE);
+
+            m_NRD.SetCommonSettings(commonSettings);
+            m_NRD.SetDenoiserSettings(denoiser, &m_ReferenceSettings);
+            m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool, NRD_ALLOW_DESCRIPTOR_CACHING);
 
             RestoreBindings(commandBuffer, frame);
         }
