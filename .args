@@ -5,9 +5,6 @@
       "Command": "API",
       "Items": [
         {
-          "Command": "--api=D3D11"
-        },
-        {
           "Command": "--api=D3D12"
         },
         {

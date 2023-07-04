@@ -30,9 +30,6 @@ struct TraceTransparentDesc
     // Geometry properties
     GeometryProps geometryProps;
 
-    // Ambient to be applied at the end of the path
-    float3 Lamb;
-
     // Pixel position
     uint2 pixelPos;
 
@@ -101,27 +98,35 @@ float3 TraceTransparent( TraceTransparentDesc desc )
         {
             MaterialProps materialProps = GetMaterialProps( geometryProps );
 
-            // Compute lighting at hit point
-            float3 L = materialProps.Ldirect;
-            if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
-                L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), gSunDirection, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness ), gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
-
-            L += materialProps.Lemi;
-
-            // Ambient estimation at the end of the path
-            float3 BRDF = GetAmbientBRDF( geometryProps, materialProps );
-            BRDF *= 1.0 + EstimateDiffuseProbability( geometryProps, materialProps, true );
-
-            L += desc.Lamb * BRDF;
-
-            // Previous frame
+            // L1 cache - reproject previous frame, carefully treating specular
             float3 prevLdiff, prevLspec;
             float reprojectionWeight = ReprojectRadiance( false, !isReflection, gIn_ComposedDiff, gIn_ComposedSpec_ViewZ, geometryProps, desc.pixelPos, prevLdiff, prevLspec );
+            float4 Lcached = float4( prevLdiff + prevLspec, reprojectionWeight );
 
-            L = lerp( L, prevLdiff + prevLspec, reprojectionWeight );
+            // Compute lighting at hit point
+            if( Lcached.w != 1.0 )
+            {
+                float3 L = materialProps.Ldirect;
+                if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
+                    L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), gSunDirection, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness ), gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
+
+                L += materialProps.Lemi;
+
+                // Ambient estimation at the end of the path
+                float3 BRDF = GetAmbientBRDF( geometryProps, materialProps );
+                BRDF *= 1.0 + EstimateDiffuseProbability( geometryProps, materialProps, true );
+
+                float3 Lamb = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
+                Lamb *= gAmbient;
+
+                L += Lamb * BRDF;
+
+                // Mix
+                Lcached.xyz = lerp( L, Lcached.xyz, Lcached.w );
+            }
 
             // Output
-            return L * pathThroughput;
+            return Lcached.xyz * pathThroughput;
         }
     }
 
@@ -143,14 +148,6 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
     float2 sampleUv = pixelUv + gJitter;
 
-    // Ambient level
-    float3 Lamb = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
-    Lamb *= gAmbient;
-
-    // Transparent lighting
-    float viewZ = gIn_ViewZ[ pixelPos ];
-    float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
-
     // Composed without glass
     float3 diff = gIn_ComposedDiff[ pixelPos ];
     float4 spec = gIn_ComposedSpec_ViewZ[ pixelPos ];
@@ -161,7 +158,10 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 cameraRayOrigin = STL::Geometry::AffineTransform( gViewToWorld, cameraRayOriginv );
     float3 cameraRayDirection = gOrthoMode == 0 ? normalize( STL::Geometry::RotateVector( gViewToWorld, cameraRayOriginv ) ) : -gViewDirection;
 
+    float viewZ = gIn_ViewZ[ pixelPos ];
+    float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
     float tmin0 = gOrthoMode == 0 ? length( Xv ) : abs( Xv.z );
+
     GeometryProps geometryPropsT = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, tmin0, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, gTransparent == 0.0 ? 0 : GEOMETRY_ONLY_TRANSPARENT, 0 );
 
     if( !geometryPropsT.IsSky( ) && geometryPropsT.tmin < tmin0 )
@@ -186,9 +186,9 @@ void main( int2 pixelPos : SV_DispatchThreadId )
             gInOut_Mv[ pixelPos ] = motion;
         }
 
+        // Trace transparent stuff
         TraceTransparentDesc desc = ( TraceTransparentDesc )0;
         desc.geometryProps = geometryPropsT;
-        desc.Lamb = Lamb;
         desc.pixelPos = pixelPos;
         desc.bounceNum = 10;
 

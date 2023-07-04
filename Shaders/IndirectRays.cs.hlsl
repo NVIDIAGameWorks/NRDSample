@@ -31,7 +31,7 @@ NRI_RESOURCE( RWTexture2D<float4>, gOut_Spec, u, 7, 1 );
     NRI_RESOURCE( RWTexture2D<float4>, gOut_SpecSh, u, 9, 1 );
 #endif
 
-float MixWithRadianceFromPreviousFrame( inout float3 L, GeometryProps geometryProps, MaterialProps materialProps, uint2 pixelPos, bool isDiffuse )
+float4 GetRadianceFromPreviousFrame( GeometryProps geometryProps, MaterialProps materialProps, uint2 pixelPos, bool isDiffuse )
 {
     // Reproject previous frame
     float3 prevLdiff, prevLspec;
@@ -45,22 +45,7 @@ float MixWithRadianceFromPreviousFrame( inout float3 L, GeometryProps geometryPr
     float diffuseLikeMotion = lerp( diffuseProbabilityBiased, 1.0, STL::Math::Sqrt01( materialProps.curvature ) );
     prevFrameWeight *= isDiffuse ? 1.0 : diffuseLikeMotion;
 
-    // Reduce the previous frame contribution if specular prevails and view dependency is significant
-    float a = STL::Color::Luminance( prevLspec );
-    float b = STL::Color::Luminance( prevLdiff );
-    float ratio = a / ( a + b + 1e-6 );
-    prevFrameWeight *= lerp( 1.0, diffuseProbabilityBiased, ratio );
-
-    // Prefer the current frame lighting if it's brighter
-    a = STL::Color::Luminance( prevLsum );
-    b = STL::Color::Luminance( L );
-    ratio = a / ( a + b + 1e-6 );
-    prevFrameWeight *= ratio;
-
-    // Final mix
-    L = lerp( L, prevLsum, prevFrameWeight );
-
-    return prevFrameWeight;
+    return float4( prevLsum, prevFrameWeight );
 }
 
 //========================================================================================
@@ -92,9 +77,6 @@ struct TraceOpaqueDesc
 
     // Material properties
     MaterialProps materialProps;
-
-    // Ambient to be applied at the end of the path
-    float3 Lamb;
 
     // Pixel position
     uint2 pixelPos;
@@ -136,11 +118,7 @@ bool IsPsrAllowed( MaterialProps materialProps )
 
 TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 {
-    // TODO: for RESOLUTION_FULL_PROBABILISTIC with 1 path per pixel the tracer can be significantly simplified:
-    // - only one "float3" needed for radiance, hit distance and direction ( diff or spec )
-    // - tracing to PSR can be embedded into the main loop
-    // - temp vars "materialProps" and "geometryProps" not needed if "desc" modification is allowed ( or "desc" modification not needed )
-    // - "psrThroughput" and "psrLsum" not needed
+    // TODO: for RESOLUTION_FULL_PROBABILISTIC with 1 path per pixel the tracer can be significantly simplified
 
     //=====================================================================================================================================================================
     // Primary surface replacement ( PSR )
@@ -222,29 +200,34 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 }
             }
 
-            // Compute lighting at hit point
-            float3 L = materialProps.Ldirect;
+            // L1 cache - reproject previous frame, carefully treating specular
+            float4 Lcached = GetRadianceFromPreviousFrame( geometryProps, materialProps, desc.pixelPos, false );
 
-            if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
+            // Compute lighting at hit, if not found in caches
+            if( Lcached.w != 1.0 )
             {
-                float2 rnd = STL::Rng::Hash::GetFloat2( );
-                rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;
-                rnd *= gTanSunAngularRadius;
+                float3 L = materialProps.Ldirect;
+                if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
+                {
+                    float2 rnd = STL::Rng::Hash::GetFloat2( );
+                    rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;
+                    rnd *= gTanSunAngularRadius;
 
-                float3x3 mSunBasis = STL::Geometry::GetBasis( gSunDirection ); // TODO: move to CB
-                float3 sunDirection = normalize( mSunBasis[ 0 ] * rnd.x + mSunBasis[ 1 ] * rnd.y + mSunBasis[ 2 ] );
+                    float3x3 mSunBasis = STL::Geometry::GetBasis( gSunDirection ); // TODO: move to CB
+                    float3 sunDirection = normalize( mSunBasis[ 0 ] * rnd.x + mSunBasis[ 1 ] * rnd.y + mSunBasis[ 2 ] );
 
-                float2 mipAndCone = GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness );
-                L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), sunDirection, 0.0, INF, mipAndCone, gWorldTlas, desc.instanceInclusionMask, desc.rayFlags );
+                    float2 mipAndCone = GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness );
+                    L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), sunDirection, 0.0, INF, mipAndCone, gWorldTlas, desc.instanceInclusionMask, desc.rayFlags );
+                }
+
+                L += materialProps.Lemi;
+
+                // Mix
+                Lcached.xyz = lerp( L, Lcached.xyz, Lcached.w );
             }
 
-            L += materialProps.Lemi;
-
-            // Reuse previous frame carefully treating specular ( if specular contribution is high it can't be reused because it was computed for a different view vector! )
-            MixWithRadianceFromPreviousFrame( L, geometryProps, materialProps, desc.pixelPos, false ); // TODO: use weight?
-
             // Throughput will be applied later
-            psrLsum = L;
+            psrLsum = Lcached.xyz;
 
             // Update materials and INF emission
             if( !geometryProps.IsSky( ) )
@@ -259,7 +242,10 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 gInOut_Normal_Roughness[ desc.pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( psrNormal, materialProps.roughness, materialID );
             }
             else
-                gInOut_DirectLighting[ desc.pixelPos ] = psrLsum;
+            {
+                // Composition pass doesn't apply "psrThroughput" to INF pixels
+                gInOut_DirectLighting[ desc.pixelPos ] = psrLsum * psrThroughput;
+            }
 
             // Update viewZ
             float3 Xvirtual = desc.geometryProps.X - desc.geometryProps.V * accumulatedHitDist;
@@ -302,8 +288,8 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
         GeometryProps geometryProps = desc.geometryProps;
         MaterialProps materialProps = desc.materialProps;
 
-        float accumulatedHitDist = 0.0;
-        float accumulatedDiffuseLikeMotion = 0.0;
+        float accumulatedHitDist = 0;
+        float accumulatedDiffuseLikeMotion = 0;
 
         float3 Lsum = psrLsum;
         float3 pathThroughput = 1.0;
@@ -346,7 +332,6 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 // Choose a ray
                 float3x3 mLocalBasis = STL::Geometry::GetBasis( materialProps.N );
                 float3 Vlocal = STL::Geometry::RotateVector( mLocalBasis, geometryProps.V );
-                float trimmingFactor = gTrimmingParams.x * STL::Math::SmoothStep( gTrimmingParams.y, gTrimmingParams.z, materialProps.roughness );
                 float3 ray = 0;
                 uint samplesNum = 0;
                 uint maxSamplesNum = gDisableShadowsAndEnableImportanceSampling && bounceIndex == 1 && ( isDiffuse || STL::Rng::Hash::GetFloat( ) < materialProps.roughness ) ? IMPORTANCE_SAMPLE_NUM : 1;
@@ -367,7 +352,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                     }
                     else
                     {
-                        float3 Hlocal = STL::ImportanceSampling::VNDF::GetRay( rnd, materialProps.roughness, Vlocal, trimmingFactor );
+                        float3 Hlocal = STL::ImportanceSampling::VNDF::GetRay( rnd, materialProps.roughness, Vlocal, SPEC_LOBE_ENERGY );
                         r = reflect( -Vlocal, Hlocal );
                     }
 
@@ -379,18 +364,18 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                     // Importance sampling for direct lighting
                     // TODO: move direct lighting tracing into a separate pass:
-                    // - currently AO and SO in case of IS represent get replaced with useless distances to closest lights
-                    // - better separate denoising into direct and indirect
+                    // - currently AO and SO get replaced with useless distances to closest lights if IS is on
+                    // - better separate direct and indirect lighting denoising
 
-                    // If IS enabled, check the ray in LightBVH
+                    //   1. If IS enabled, check the ray in LightBVH
                     if( !isMiss && maxSamplesNum != 1 )
                         isMiss = CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), r, 0.0, INF, mipAndCone, gLightTlas, GEOMETRY_ALL, desc.rayFlags );
 
-                    // Count rays hitting emissive surfaces
+                    //   2. Count rays hitting emissive surfaces
                     if( !isMiss )
                         samplesNum++;
 
-                    // Save either the first ray or the current ray hitting an emissive
+                    //   3. Save either the first ray or the current ray hitting an emissive
                     if( !isMiss || sampleIndex == 0 )
                         ray = r;
                 }
@@ -485,33 +470,38 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
             //=============================================================================================================================================================
 
             {
-                // Compute lighting at hit point
-                float3 L = materialProps.Ldirect;
+                // L1 cache - reproject previous frame, carefully treating specular
+                float4 Lcached = GetRadianceFromPreviousFrame( geometryProps, materialProps, desc.pixelPos, false );
 
-                if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
+                // Compute lighting at hit, if not found in caches
+                if( Lcached.w != 1.0 )
                 {
-                    float2 rnd = STL::Rng::Hash::GetFloat2( );
-                    rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;
-                    rnd *= gTanSunAngularRadius;
+                    float3 L = materialProps.Ldirect;
+                    if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
+                    {
+                        float2 rnd = STL::Rng::Hash::GetFloat2( );
+                        rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;
+                        rnd *= gTanSunAngularRadius;
 
-                    float3x3 mSunBasis = STL::Geometry::GetBasis( gSunDirection ); // TODO: move to CB
-                    float3 sunDirection = normalize( mSunBasis[ 0 ] * rnd.x + mSunBasis[ 1 ] * rnd.y + mSunBasis[ 2 ] );
+                        float3x3 mSunBasis = STL::Geometry::GetBasis( gSunDirection ); // TODO: move to CB
+                        float3 sunDirection = normalize( mSunBasis[ 0 ] * rnd.x + mSunBasis[ 1 ] * rnd.y + mSunBasis[ 2 ] );
 
-                    float2 mipAndCone = GetConeAngleFromRoughness( geometryProps.mip, isDiffuse ? 1.0 : materialProps.roughness );
-                    L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), sunDirection, 0.0, INF, mipAndCone, gWorldTlas, desc.instanceInclusionMask, desc.rayFlags );
+                        float2 mipAndCone = GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness );
+                        L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), sunDirection, 0.0, INF, mipAndCone, gWorldTlas, desc.instanceInclusionMask, desc.rayFlags );
+                    }
+
+                    L += materialProps.Lemi;
+
+                    // Mix
+                    Lcached.xyz = lerp( L, Lcached.xyz, Lcached.w );
                 }
 
-                L += materialProps.Lemi;
-
-                // Reuse previous frame carefully treating specular ( if specular contribution is high it can't be reused because it was computed for a different view vector! )
-                float prevFrameWeight = MixWithRadianceFromPreviousFrame( L, geometryProps, materialProps, desc.pixelPos, isDiffuse );
-
                 // Accumulate lighting
-                L *= pathThroughput;
+                float3 L = Lcached.xyz * pathThroughput;
                 Lsum += L;
 
                 // ( Biased ) Reduce contribution of next samples if previous frame is sampled, which already has multi-bounce information
-                pathThroughput *= 1.0 - prevFrameWeight;
+                pathThroughput *= 1.0 - Lcached.w;
 
                 // Accumulate path length for NRD ( see "README/NOISY INPUTS" )
                 /*
@@ -553,7 +543,10 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
         occlusion *= exp2( AMBIENT_FADE * STL::Math::LengthSquared( geometryProps.X - gCameraOrigin ) );
         occlusion *= 1.0 - GetSpecMagicCurve( isDiffusePath ? 1.0 : desc.materialProps.roughness );
 
-        Lsum += pathThroughput * desc.Lamb * occlusion;
+        float3 Lamb = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
+        Lamb *= gAmbient;
+
+        Lsum += pathThroughput * Lamb * occlusion;
 
         // Debug visualization: specular mip level at the end of the path
         if( gOnScreen == SHOW_MIP_SPECULAR )
@@ -623,16 +616,57 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 // MAIN
 //========================================================================================
 
+void WriteResult( uint checkerboard, uint2 outPixelPos, float4 diff, float4 spec, float4 diffSh, float4 specSh )
+{
+    if( gTracingMode == RESOLUTION_HALF )
+    {
+        if( checkerboard )
+        {
+            gOut_Diff[ outPixelPos ] = diff;
+            #if( NRD_MODE == SH )
+                gOut_DiffSh[ outPixelPos ] = diffSh;
+            #endif
+        }
+        else
+        {
+            gOut_Spec[ outPixelPos ] = spec;
+            #if( NRD_MODE == SH )
+                gOut_SpecSh[ outPixelPos ] = specSh;
+            #endif
+        }
+    }
+    else
+    {
+        gOut_Diff[ outPixelPos ] = diff;
+        gOut_Spec[ outPixelPos ] = spec;
+        #if( NRD_MODE == SH )
+            gOut_DiffSh[ outPixelPos ] = diffSh;
+            gOut_SpecSh[ outPixelPos ] = specSh;
+        #endif
+    }
+}
+
 [numthreads( 16, 16, 1 )]
 void main( uint2 pixelPos : SV_DispatchThreadId )
 {
-    // Do not generate NANs for unused threads
-    if( pixelPos.x >= gRectSize.x || pixelPos.y >= gRectSize.y )
-        return;
+    const float NaN = sqrt( -1 );
 
+    // Checkerboard
     uint2 outPixelPos = pixelPos;
     if( gTracingMode == RESOLUTION_HALF )
         outPixelPos.x >>= 1;
+
+    uint checkerboard = STL::Sequence::CheckerBoard( pixelPos, gFrameIndex ) != 0;
+
+    // Do not generate NANs for unused threads
+    if( pixelPos.x >= gRectSize.x || pixelPos.y >= gRectSize.y )
+    {
+        #if( USE_DRS_STRESS_TEST == 1 )
+            WriteResult( checkerboard, outPixelPos, NaN, NaN, NaN, NaN );
+        #endif
+
+        return;
+    }
 
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
     float2 sampleUv = pixelUv + gJitter;
@@ -641,45 +675,17 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     float viewZ = gInOut_ViewZ[ pixelPos ];
     float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
 
-    uint checkerboard = STL::Sequence::CheckerBoard( pixelPos, gFrameIndex ) != 0;
     if( abs( viewZ ) == INF )
     {
-        if( gTracingMode == RESOLUTION_HALF )
-        {
-            if( checkerboard )
-            {
-                gOut_Diff[ outPixelPos ] = 0;
-                #if( NRD_MODE == SH )
-                    gOut_DiffSh[ outPixelPos ] = 0;
-                #endif
-            }
-            else
-            {
-                gOut_Spec[ outPixelPos ] = 0;
-                #if( NRD_MODE == SH )
-                    gOut_SpecSh[ outPixelPos ] = 0;
-                #endif
-            }
-        }
-        else
-        {
-            gOut_Diff[ outPixelPos ] = 0;
-            gOut_Spec[ outPixelPos ] = 0;
-            #if( NRD_MODE == SH )
-                gOut_DiffSh[ outPixelPos ] = 0;
-                gOut_SpecSh[ outPixelPos ] = 0;
-            #endif
-        }
+        #if( USE_INF_STRESS_TEST == 1 )
+            WriteResult( checkerboard, outPixelPos, NaN, NaN, NaN, NaN );
+        #endif
 
         return;
     }
 
     // Initialize RNG
     STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
-
-    // Ambient level
-    float3 Lamb = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
-    Lamb *= gAmbient;
 
     // G-buffer
     float4 normalAndRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( gInOut_Normal_Roughness[ pixelPos ] );
@@ -717,7 +723,6 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     TraceOpaqueDesc desc = ( TraceOpaqueDesc )0;
     desc.geometryProps = geometryProps0;
     desc.materialProps = materialProps0;
-    desc.Lamb = Lamb;
     desc.pixelPos = pixelPos;
     desc.checkerboard = checkerboard;
     desc.pathNum = gSampleNum;
@@ -771,30 +776,5 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     }
 
     // Output
-    if( gTracingMode == RESOLUTION_HALF )
-    {
-        if( checkerboard )
-        {
-            gOut_Diff[ outPixelPos ] = outDiff;
-            #if( NRD_MODE == SH )
-                gOut_DiffSh[ outPixelPos ] = outDiffSh;
-            #endif
-        }
-        else
-        {
-            gOut_Spec[ outPixelPos ] = outSpec;
-            #if( NRD_MODE == SH )
-                gOut_SpecSh[ outPixelPos ] = outSpecSh;
-            #endif
-        }
-    }
-    else
-    {
-        gOut_Diff[ outPixelPos ] = outDiff;
-        gOut_Spec[ outPixelPos ] = outSpec;
-        #if( NRD_MODE == SH )
-            gOut_DiffSh[ outPixelPos ] = outDiffSh;
-            gOut_SpecSh[ outPixelPos ] = outSpecSh;
-        #endif
-    }
+    WriteResult( checkerboard, outPixelPos, outDiff, outSpec, outDiffSh, outSpecSh );
 }

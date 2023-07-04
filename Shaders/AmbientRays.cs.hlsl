@@ -50,20 +50,57 @@ void main( uint2 tilePos : SV_GroupId, uint2 pixelPos : SV_DispatchThreadId, uin
     [loop]
     for( uint i = 0; i < 9 && STL::Color::Luminance( BRDF ) > 0.001; i++ )
     {
-        // Choose ray
-        float2 rnd = STL::Rng::Hash::GetFloat2( );
-        float3 rayLocal = STL::ImportanceSampling::Cosine::GetRay( rnd );
+        // Choose a ray
         float3x3 mLocalBasis = STL::Geometry::GetBasis( materialProps.N );
-        float3 ray = STL::Geometry::RotateVectorInverse( mLocalBasis, rayLocal );
+        float3 ray = 0;
+        uint samplesNum = 0;
+        uint maxSamplesNum = gDisableShadowsAndEnableImportanceSampling ? IMPORTANCE_SAMPLE_NUM : 1;
+
+        for( uint sampleIndex = 0; sampleIndex < maxSamplesNum; sampleIndex++ )
+        {
+            float2 rnd = STL::Rng::Hash::GetFloat2( );
+
+            // Generate a ray
+            float3 r = STL::ImportanceSampling::Cosine::GetRay( rnd );
+            r = STL::Geometry::RotateVectorInverse( mLocalBasis, r );
+
+            // Importance sampling for direct lighting
+            //   1. If IS enabled, check the ray in LightBVH
+            bool isMiss = false;
+            if( maxSamplesNum != 1 )
+                isMiss = CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), r, 0.0, INF, mipAndCone, gLightTlas, GEOMETRY_ALL, 0 );
+
+            //   2. Count rays hitting emissive surfaces
+            if( !isMiss )
+                samplesNum++;
+
+            //   3. Save either the first ray or the current ray hitting an emissive
+            if( !isMiss || sampleIndex == 0 )
+                ray = r;
+        }
 
         // Cast ray
         geometryProps = CastRay( geometryProps.GetXoffset( ), ray, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
         materialProps = GetMaterialProps( geometryProps );
         mipAndCone = GetConeAngleFromAngularRadius( geometryProps.mip, 1.0 );
 
-        // Accumulate emissives
+        // Accumulate lighting
         if( i >= gBounceNum )
-            Lsum += materialProps.Lemi * BRDF;
+        {
+            // Compute lighting at hit point
+            float3 L = materialProps.Ldirect;
+            if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
+                L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), gSunDirection, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness ), gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
+
+            L += materialProps.Lemi;
+
+            // Correct ray contribution
+            if( samplesNum )
+                L *= float( samplesNum ) / float( maxSamplesNum );
+
+            // Accumulate
+            Lsum += L * BRDF;
+        }
 
         // Update BRDF
         BRDF *= GetAmbientBRDF( geometryProps, materialProps, true );
@@ -89,7 +126,7 @@ void main( uint2 tilePos : SV_GroupId, uint2 pixelPos : SV_DispatchThreadId, uin
 
         // Temporal stabilization
         float3 prevAmbient = gOut_Ambient[ tilePos ];
-        currAmbient = lerp( prevAmbient, currAmbient, gAmbientAccumSpeed );
+        currAmbient = lerp( prevAmbient, currAmbient, 1.0 / ( 1.0 + gAmbientMaxAccumulatedFramesNum ) );
 
         // Store
         gOut_Ambient[ tilePos ] = currAmbient;

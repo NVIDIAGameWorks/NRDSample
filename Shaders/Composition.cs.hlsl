@@ -16,9 +16,9 @@ NRI_RESOURCE( Texture2D<float4>, gIn_Normal_Roughness, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_BaseColor_Metalness, t, 2, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_DirectLighting, t, 3, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_PsrThroughput, t, 4, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 5, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 6, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 7, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 5, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 6, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 7, 1 );
 #if( NRD_MODE == SH )
     NRI_RESOURCE( Texture2D<float4>, gIn_DiffSh, t, 8, 1 );
     NRI_RESOURCE( Texture2D<float4>, gIn_SpecSh, t, 9, 1 );
@@ -44,14 +44,16 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     // Direct lighting with emission
     float3 Ldirect = gIn_DirectLighting[ pixelPos ];
 
-    // Early out - sky
+    // Normal and roughness
     float4 normalAndRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos ] );
     float3 N = normalAndRoughness.xyz;
     float roughness = normalAndRoughness.w;
 
+    // ( Trick ) Needed only to avoid back facing in "ReprojectRadiance"
     float z = abs( viewZ ) * NRD_FP16_VIEWZ_SCALE;
     z *= STL::Math::Sign( dot( N, gSunDirection ) );
 
+    // Early out - sky
     if( abs( viewZ ) == INF )
     {
         gOut_ComposedDiff[ pixelPos ] = Ldirect * float( gOnScreen == SHOW_FINAL );
@@ -70,14 +72,12 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 V = gOrthoMode == 0 ? normalize( gCameraOrigin - X ) : gViewDirection;
 
     // Sample NRD outputs
-    float2 upsampleUv = pixelUv * gRectSize / gRenderSize;
-
-    float4 diff = gIn_Diff.SampleLevel( gLinearSampler, upsampleUv, 0 );
-    float4 spec = gIn_Spec.SampleLevel( gLinearSampler, upsampleUv, 0 );
+    float4 diff = gIn_Diff[ pixelPos ];
+    float4 spec = gIn_Spec[ pixelPos ];
 
     #if( NRD_MODE == SH )
-        float4 diff1 = gIn_DiffSh.SampleLevel( gLinearSampler, upsampleUv, 0 );
-        float4 spec1 = gIn_SpecSh.SampleLevel( gLinearSampler, upsampleUv, 0 );
+        float4 diff1 = gIn_DiffSh[ pixelPos ];
+        float4 spec1 = gIn_SpecSh[ pixelPos ];
     #endif
 
     // Decode SH mode outputs

@@ -43,6 +43,8 @@ Modifiers:
 #define USE_SIMULATED_MATERIAL_ID_TEST      0 // for "material ID" support debugging
 #define USE_SIMULATED_FIREFLY_TEST          0 // "anti-firefly" debugging
 #define USE_RUSSIAN_ROULETTE                0 // bad practice for real-time denoising
+#define USE_DRS_STRESS_TEST                 0 // test for verifying that NRD doesn't touch data outside of DRS rectangle
+#define USE_INF_STRESS_TEST                 0 // test for verifying that NRD doesn't touch data outside of denoising range
 
 #define THROUGHPUT_THRESHOLD                0.001
 #define PSR_THROUGHPUT_THRESHOLD            0.0 // TODO: even small throughput can produce a bright spot if incoming radiance is huge
@@ -52,6 +54,7 @@ Modifiers:
 #define TAA_MAX_HISTORY_WEIGHT              0.95
 #define TAA_MIN_HISTORY_WEIGHT              0.1
 #define TAA_MOTION_MAX_REUSE                0.1
+#define SPEC_LOBE_ENERGY                    0.95 // trimmed to 95%
 #define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
 
 //=============================================================================================
@@ -134,12 +137,12 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float gExposure;
     float3 gCameraOrigin;
     float gMipBias;
-    float3 gTrimmingParams;
-    float gEmissionIntensity;
     float3 gViewDirection;
     float gOrthoMode;
     float3 gCameraDelta;
     float gNearZ;
+    float3 gCameraGlobalPosition;
+    float gEmissionIntensity;
     float2 gWindowSize;
     float2 gInvWindowSize;
     float2 gOutputSize;
@@ -150,8 +153,6 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     float2 gInvRectSize;
     float2 gRectSizePrev;
     float2 gJitter;
-    float gAmbientAccumSpeed;
-    float gAmbient;
     float gSeparator;
     float gRoughnessOverride;
     float gMetalnessOverride;
@@ -179,6 +180,10 @@ NRI_RESOURCE( cbuffer, globalConstants, b, 0, 0 )
     uint gResolve;
     uint gPSR;
     uint gValidation;
+
+    // Ambient
+    float gAmbientMaxAccumulatedFramesNum;
+    float gAmbient;
 
     // NIS
     float gNisDetectRatio;

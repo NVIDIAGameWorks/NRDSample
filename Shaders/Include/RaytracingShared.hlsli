@@ -209,9 +209,17 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
     float3 Lemi = gIn_Textures[ NonUniformResourceIndex( baseTexture + 3 ) ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.x ).xyz;
     Lemi *= instanceData.emissionAndRoughnessScale.xyz;
     Lemi *= ( baseColor + 0.01 ) / ( max( baseColor, max( baseColor, baseColor ) ) + 0.01 );
+
+    [flatten]
+    if( geometryProps.IsForcedEmission( ) )
+    {
+        Lemi = geometryProps.GetForcedEmissionColor( );
+        baseColor = 0.0;
+    }
+
     Lemi *= gEmissionIntensity;
 
-    // Override material
+    // Material overrides
     [flatten]
     if( gForcedMaterial == MAT_GYPSUM )
     {
@@ -229,14 +237,12 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
     metalness = gMetalnessOverride == 0.0 ? metalness : gMetalnessOverride;
     roughness = gRoughnessOverride == 0.0 ? roughness : gRoughnessOverride;
 
-    // Force emission
-    if( geometryProps.IsForcedEmission( ) )
-    {
-        Lemi = geometryProps.GetForcedEmissionColor( );
-        baseColor = 0.0;
-        roughness = 1.0;
-        metalness = 0.0;
-    }
+    // Transform to diffuse material if emission is here
+    float emissionLevel = STL::Color::Luminance( Lemi );
+    emissionLevel = saturate( emissionLevel * 50.0 );
+
+    metalness = lerp( metalness, 0.0, emissionLevel );
+    roughness = lerp( roughness, 1.0, emissionLevel );
 
     // Direct lighting ( no shadow )
     float3 Ldirect = 0;
@@ -298,7 +304,7 @@ float3 GetAmbientBRDF( GeometryProps geometryProps, MaterialProps materialProps,
     if( !approximate )
     {
         float NoV = abs( dot( materialProps.N, geometryProps.V ) );
-        Fenv = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, materialProps.roughness );
+        Fenv = STL::BRDF::EnvironmentTerm_Rtg( Rf0, NoV, materialProps.roughness );
     }
 
     float3 ambBRDF = albedo * ( 1.0 - Fenv ) + Fenv;
@@ -313,7 +319,7 @@ float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps mat
     STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
 
     float NoV = abs( dot( materialProps.N, geometryProps.V ) );
-    float3 Fenv = STL::BRDF::EnvironmentTerm_Ross( Rf0, NoV, materialProps.roughness );
+    float3 Fenv = STL::BRDF::EnvironmentTerm_Rtg( Rf0, NoV, materialProps.roughness );
 
     float lumSpec = STL::Color::Luminance( Fenv );
     float lumDiff = STL::Color::Luminance( albedo * ( 1.0 - Fenv ) );

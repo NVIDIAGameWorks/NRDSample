@@ -14,7 +14,6 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 // Inputs
 NRI_RESOURCE( Texture2D<uint3>, gIn_Scrambling_Ranking_1spp, t, 0, 1 );
 NRI_RESOURCE( Texture2D<uint4>, gIn_Sobol, t, 1, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 2, 1 );
 
 // Outputs
 NRI_RESOURCE( RWTexture2D<float3>, gOut_Mv, u, 0, 1 );
@@ -139,53 +138,40 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     gOut_DirectEmission[ pixelPos ] = materialProps0.Lemi;
 
     // Sun shadow // TODO: move to a separate pass to unblock checkerboard
-    float shadowHitDist = 0.0;
-    float3 shadowTranslucency = 0.0;
-
-    bool isShadowRayNeeded = STL::Color::Luminance( materialProps0.Ldirect ) != 0.0 && !gDisableShadowsAndEnableImportanceSampling;
-    if( isShadowRayNeeded )
+    float2 rnd = GetBlueNoise( gIn_Scrambling_Ranking_1spp, pixelPos, false, 0, 0 );
+    if( gDenoiserType == REFERENCE )
     {
-        float2 rnd;
-        if( gDenoiserType == REFERENCE )
+        STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
+        rnd = STL::Rng::Hash::GetFloat2( );
+    }
+    rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;
+    rnd *= gTanSunAngularRadius;
+
+    float3x3 mSunBasis = STL::Geometry::GetBasis( gSunDirection ); // TODO: move to CB
+    float3 sunDirection = normalize( mSunBasis[ 0 ] * rnd.x + mSunBasis[ 1 ] * rnd.y + mSunBasis[ 2 ] );
+    float3 Xoffset = geometryProps0.GetXoffset( );
+    float2 mipAndCone = GetConeAngleFromAngularRadius( geometryProps0.mip, gTanSunAngularRadius );
+
+    float shadowTranslucency = ( STL::Color::Luminance( materialProps0.Ldirect ) != 0.0 && !gDisableShadowsAndEnableImportanceSampling ) ? 1.0 : 0.0;
+    float shadowHitDist = 0.0;
+
+    while( shadowTranslucency > 0.01 )
+    {
+        GeometryProps geometryPropsShadow = CastRay( Xoffset, sunDirection, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_ALL, 0 );
+
+        if( geometryPropsShadow.IsSky( ) )
         {
-            STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
-            rnd = STL::Rng::Hash::GetFloat2( );
+            shadowHitDist = shadowHitDist == 0.0 ? INF : shadowHitDist;
+            break;
         }
-        else
-            rnd = GetBlueNoise( gIn_Scrambling_Ranking_1spp, pixelPos, false, 0, 0 );
 
-        rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;
-        rnd *= gTanSunAngularRadius;
+        // ( Biased ) Cheap approximation of shadows through glass
+        float NoV = abs( dot( geometryPropsShadow.N, sunDirection ) );
+        shadowTranslucency *= lerp( geometryPropsShadow.IsTransparent( ) ? 0.9 : 0.0, 0.0, STL::Math::Pow01( 1.0 - NoV, 2.5 ) );
 
-        float3x3 mSunBasis = STL::Geometry::GetBasis( gSunDirection ); // TODO: move to CB
-        float3 sunDirection = normalize( mSunBasis[ 0 ] * rnd.x + mSunBasis[ 1 ] * rnd.y + mSunBasis[ 2 ] );
-        float3 Xoffset = geometryProps0.GetXoffset( );
-        float2 mipAndCone = GetConeAngleFromAngularRadius( geometryProps0.mip, gTanSunAngularRadius );
-
-        shadowTranslucency = 1.0;
-        while( STL::Color::Luminance( shadowTranslucency ) > 0.01 )
-        {
-            GeometryProps geometryPropsShadow = CastRay( Xoffset, sunDirection, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_ALL, 0 );
-
-            if( geometryPropsShadow.IsSky( ) )
-            {
-                // On immediate miss - return no shadow, otherwise - return accumulated data
-                shadowTranslucency = shadowHitDist == 0.0 ? 0.0 : shadowTranslucency;
-                shadowHitDist = shadowHitDist == 0.0 ? INF : shadowHitDist;
-
-                break;
-            }
-
-            // ( Biased ) Cheap approximation of shadows through glass
-            float NoV = abs( dot( geometryPropsShadow.N, sunDirection ) );
-            shadowTranslucency *= lerp( 0.9, 0.0, STL::Math::Pow01( 1.0 - NoV, 2.5 ) );
-            shadowTranslucency *= float( geometryPropsShadow.IsTransparent( ) );
-
-            float offset = geometryProps0.tmin * 0.0001 + 0.001;
-            Xoffset = geometryPropsShadow.GetXoffset( ) + sunDirection * offset;
-
-            shadowHitDist += geometryPropsShadow.tmin;
-        }
+        // Go to the next hit
+        Xoffset += sunDirection * ( geometryPropsShadow.tmin + 0.001 );
+        shadowHitDist += geometryPropsShadow.tmin;
     }
 
     float4 shadowData1;
