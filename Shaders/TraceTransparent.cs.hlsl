@@ -100,7 +100,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
 
             // L1 cache - reproject previous frame, carefully treating specular
             float3 prevLdiff, prevLspec;
-            float reprojectionWeight = ReprojectRadiance( false, !isReflection, gIn_ComposedDiff, gIn_ComposedSpec_ViewZ, geometryProps, desc.pixelPos, prevLdiff, prevLspec );
+            float reprojectionWeight = ReprojectIrradiance( false, !isReflection, gIn_ComposedDiff, gIn_ComposedSpec_ViewZ, geometryProps, desc.pixelPos, prevLdiff, prevLspec );
             float4 Lcached = float4( prevLdiff + prevLspec, reprojectionWeight );
 
             // Compute lighting at hit point
@@ -108,7 +108,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
             {
                 float3 L = materialProps.Ldirect;
                 if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
-                    L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), gSunDirection, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness ), gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
+                    L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), gSunDirection_gExposure.xyz, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness ), gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
 
                 L += materialProps.Lemi;
 
@@ -148,41 +148,35 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
     float2 sampleUv = pixelUv + gJitter;
 
+    // Initialize RNG
+    STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
+
     // Composed without glass
     float3 diff = gIn_ComposedDiff[ pixelPos ];
     float4 spec = gIn_ComposedSpec_ViewZ[ pixelPos ];
     float3 Lsum = diff + spec.xyz * float( gOnScreen == SHOW_FINAL );
 
     // Primary ray for transparent geometry only
-    float3 cameraRayOriginv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, gNearZ, gOrthoMode );
-    float3 cameraRayOrigin = STL::Geometry::AffineTransform( gViewToWorld, cameraRayOriginv );
-    float3 cameraRayDirection = gOrthoMode == 0 ? normalize( STL::Geometry::RotateVector( gViewToWorld, cameraRayOriginv ) ) : -gViewDirection;
+    float3 cameraRayOrigin = ( float3 )0;
+    float3 cameraRayDirection = ( float3 )0;
+    GetCameraRay( cameraRayOrigin, cameraRayDirection, sampleUv );
 
     float viewZ = gIn_ViewZ[ pixelPos ];
-    float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
-    float tmin0 = gOrthoMode == 0 ? length( Xv ) : abs( Xv.z );
+    float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gViewDirection_gOrthoMode.w );
+    float tmin0 = gViewDirection_gOrthoMode.w == 0 ? length( Xv ) : abs( Xv.z );
 
     GeometryProps geometryPropsT = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, tmin0, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, gTransparent == 0.0 ? 0 : GEOMETRY_ONLY_TRANSPARENT, 0 );
 
+    // Trace delta events
     if( !geometryPropsT.IsSky( ) && geometryPropsT.tmin < tmin0 )
     {
-        // Initialize RNG
-        STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
-
         // Patch motion vectors replacing MV for the background with MV for the closest glass layer.
         // IMPORTANT: surface-based motion can be used only if the object is curved.
         // TODO: let's use the simplest heuristic for now, but better switch to some "smart" interpolation between
         // MVs for the primary opaque surface hit and the primary glass surface hit.
         if( geometryPropsT.curvature != 0.0 )
         {
-            float3 Xprev = geometryPropsT.X;
-            if( !geometryPropsT.IsSky( ) && !geometryPropsT.IsStatic( ) )
-            {
-                InstanceData instanceData = gIn_InstanceData[ geometryPropsT.instanceIndex ];
-                Xprev = STL::Geometry::AffineTransform( instanceData.mWorldToWorldPrev, geometryPropsT.X );
-            }
-
-            float3 motion = GetMotion( geometryPropsT.X, Xprev );
+            float3 motion = GetMotion( geometryPropsT.X, geometryPropsT.Xprev );
             gInOut_Mv[ pixelPos ] = motion;
         }
 

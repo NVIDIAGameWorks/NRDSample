@@ -108,7 +108,7 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     // Previous pixel position
     offseti -= BORDER;
     float2 offset = float2( offseti ) * gInvRectSize;
-    float3 Xvnearest = STL::Geometry::ReconstructViewPosition( pixelUv + offset, gCameraFrustum, viewZnearest, gOrthoMode );
+    float3 Xvnearest = STL::Geometry::ReconstructViewPosition( pixelUv + offset, gCameraFrustum, viewZnearest, gViewDirection_gOrthoMode.w );
     float3 Xnearest = STL::Geometry::AffineTransform( gViewToWorld, Xvnearest );
     float3 mvNearest = gIn_Mv[ pixelPos + offseti ] * ( gIsWorldSpaceMotionEnabled ? 1.0 : gInvRectSize.xyy );
     float2 pixelUvPrev = STL::Geometry::GetPrevUvFromMotion( pixelUv + offset, Xnearest, gWorldToClipPrev, mvNearest, gIsWorldSpaceMotionEnabled );

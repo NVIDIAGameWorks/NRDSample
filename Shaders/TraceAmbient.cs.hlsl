@@ -38,7 +38,7 @@ void main( uint2 tilePos : SV_GroupId, uint2 pixelPos : SV_DispatchThreadId, uin
     float3 ray = STL::ImportanceSampling::Uniform::GetRay( float2( rnd.x, rnd.y * 2.0 - 1.0 ) );
     float2 mipAndCone = GetConeAngleFromRoughness( 0.0, tan( 1.0 / DISPATCH_W ) );
 
-    GeometryProps geometryProps = CastRay( gCameraOrigin, ray, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
+    GeometryProps geometryProps = CastRay( gCameraOrigin_gMipBias.xyz, ray, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
     MaterialProps materialProps = GetMaterialProps( geometryProps );
     mipAndCone = GetConeAngleFromRoughness( geometryProps.mip, 1.0 );
 
@@ -54,7 +54,7 @@ void main( uint2 tilePos : SV_GroupId, uint2 pixelPos : SV_DispatchThreadId, uin
         float3x3 mLocalBasis = STL::Geometry::GetBasis( materialProps.N );
         float3 ray = 0;
         uint samplesNum = 0;
-        uint maxSamplesNum = gDisableShadowsAndEnableImportanceSampling ? IMPORTANCE_SAMPLE_NUM : 1;
+        uint maxSamplesNum = gDisableShadowsAndEnableImportanceSampling ? IMPORTANCE_SAMPLES_NUM : 1;
 
         for( uint sampleIndex = 0; sampleIndex < maxSamplesNum; sampleIndex++ )
         {
@@ -90,7 +90,7 @@ void main( uint2 tilePos : SV_GroupId, uint2 pixelPos : SV_DispatchThreadId, uin
             // Compute lighting at hit point
             float3 L = materialProps.Ldirect;
             if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
-                L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), gSunDirection, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness ), gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
+                L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), gSunDirection_gExposure.xyz, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness ), gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
 
             L += materialProps.Lemi;
 

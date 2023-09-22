@@ -15,13 +15,15 @@ NRI_RESOURCE( Texture2D<float>, gIn_ViewZ, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_Normal_Roughness, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_BaseColor_Metalness, t, 2, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_DirectLighting, t, 3, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_PsrThroughput, t, 4, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 5, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 6, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 7, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_DirectEmission, t, 4, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_PsrThroughput, t, 5, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 6, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Shadow, t, 7, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 8, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 9, 1 );
 #if( NRD_MODE == SH )
-    NRI_RESOURCE( Texture2D<float4>, gIn_DiffSh, t, 8, 1 );
-    NRI_RESOURCE( Texture2D<float4>, gIn_SpecSh, t, 9, 1 );
+    NRI_RESOURCE( Texture2D<float4>, gIn_DiffSh, t, 10, 1 );
+    NRI_RESOURCE( Texture2D<float4>, gIn_SpecSh, t, 11, 1 );
 #endif
 
 // Outputs
@@ -40,36 +42,44 @@ void main( int2 pixelPos : SV_DispatchThreadId )
 
     // ViewZ
     float viewZ = gIn_ViewZ[ pixelPos ];
+    float3 Lemi = gIn_DirectEmission[ pixelPos ];
 
-    // Direct lighting with emission
-    float3 Ldirect = gIn_DirectLighting[ pixelPos ];
-
-    // Normal and roughness
-    float4 normalAndRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos ] );
+    // Normal, roughness and material ID
+    float normMaterialID;
+    float4 normalAndRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos ], normMaterialID );
     float3 N = normalAndRoughness.xyz;
     float roughness = normalAndRoughness.w;
 
-    // ( Trick ) Needed only to avoid back facing in "ReprojectRadiance"
+    // ( Trick ) Needed only to avoid back facing in "ReprojectIrradiance"
     float z = abs( viewZ ) * NRD_FP16_VIEWZ_SCALE;
-    z *= STL::Math::Sign( dot( N, gSunDirection ) );
+    z *= STL::Math::Sign( dot( N, gSunDirection_gExposure.xyz ) );
 
     // Early out - sky
     if( abs( viewZ ) == INF )
     {
-        gOut_ComposedDiff[ pixelPos ] = Ldirect * float( gOnScreen == SHOW_FINAL );
+        gOut_ComposedDiff[ pixelPos ] = Lemi * float( gOnScreen == SHOW_FINAL );
         gOut_ComposedSpec_ViewZ[ pixelPos ] = float4( 0, 0, 0, z );
 
         return;
     }
+
+    // Direct sun lighting * shadow + emission
+    float4 shadowData = gIn_Shadow[ pixelPos ];
+    shadowData = SIGMA_BackEnd_UnpackShadow( shadowData );
+    float3 shadow = lerp( shadowData.yzw, 1.0, shadowData.x );
+
+    float3 Ldirect = gIn_DirectLighting[ pixelPos ];
+    if( gOnScreen < SHOW_INSTANCE_INDEX )
+        Ldirect = Ldirect * shadow + Lemi;
 
     // G-buffer
     float3 albedo, Rf0;
     float4 baseColorMetalness = gIn_BaseColor_Metalness[ pixelPos ];
     STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( baseColorMetalness.xyz, baseColorMetalness.w, albedo, Rf0 );
 
-    float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
+    float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gViewDirection_gOrthoMode.w );
     float3 X = STL::Geometry::AffineTransform( gViewToWorld, Xv );
-    float3 V = gOrthoMode == 0 ? normalize( gCameraOrigin - X ) : gViewDirection;
+    float3 V = gViewDirection_gOrthoMode.w == 0 ? normalize( gCameraOrigin_gMipBias.xyz - X ) : gViewDirection_gOrthoMode.xyz;
 
     // Sample NRD outputs
     float4 diff = gIn_Diff[ pixelPos ];
@@ -85,7 +95,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         NRD_SG diffSg = REBLUR_BackEnd_UnpackSh( diff, diff1 );
         NRD_SG specSg = REBLUR_BackEnd_UnpackSh( spec, spec1 );
 
-        if( gDenoiserType == RELAX )
+        if( gDenoiserType == DENOISER_RELAX )
         {
             diffSg = RELAX_BackEnd_UnpackSh( diff, diff1 );
             specSg = RELAX_BackEnd_UnpackSh( spec, spec1 );
@@ -157,7 +167,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
             diff.w = NRD_SG_ExtractColor( sg ).x;
     // Decode NORMAL mode outputs
     #else
-        if( gDenoiserType == RELAX )
+        if( gDenoiserType == DENOISER_RELAX )
         {
             diff = RELAX_BackEnd_UnpackRadiance( diff );
             spec = RELAX_BackEnd_UnpackRadiance( spec );
@@ -170,7 +180,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     #endif
 
     // ( Optional ) RELAX doesn't support AO / SO
-    if( gDenoiserType == RELAX )
+    if( gDenoiserType == DENOISER_RELAX )
     {
         diff.w = 1.0 / STL::Math::Pi( 1.0 );
         spec.w = 1.0 / STL::Math::Pi( 1.0 );
@@ -195,7 +205,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     ambient *= exp2( AMBIENT_FADE * STL::Math::LengthSquared( Xv ) );
     ambient *= gAmbient;
 
-    float specAmbientAmount = gDenoiserType == RELAX ? roughness : GetSpecMagicCurve( roughness );
+    float specAmbientAmount = gDenoiserType == DENOISER_RELAX ? roughness : GetSpecMagicCurve( roughness );
 
     Ldiff += ambient * diff.w * ( 1.0 - Fenv ) * albedo;
     Lspec += ambient * spec.w * Fenv * specAmbientAmount;
@@ -222,6 +232,8 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         Ldiff = diff.w;
     else if( gOnScreen == SHOW_SPECULAR_OCCLUSION )
         Ldiff = spec.w;
+    else if( gOnScreen == SHOW_SHADOW )
+        Ldiff = shadow;
     else if( gOnScreen == SHOW_BASE_COLOR )
         Ldiff = baseColorMetalness.xyz;
     else if( gOnScreen == SHOW_NORMAL )
@@ -230,10 +242,12 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         Ldiff = roughness;
     else if( gOnScreen == SHOW_METALNESS )
         Ldiff = baseColorMetalness.w;
-    else if( gOnScreen == SHOW_WORLD_UNITS )
-        Ldiff = frac( X * gUnitToMetersMultiplier );
+    else if( gOnScreen == SHOW_MATERIAL_ID )
+        Ldiff = normMaterialID;
     else if( gOnScreen == SHOW_PSR_THROUGHPUT )
         Ldiff = psrThroughput;
+    else if( gOnScreen == SHOW_WORLD_UNITS )
+        Ldiff = frac( X * gUnitToMetersMultiplier );
     else if( gOnScreen != SHOW_FINAL )
         Ldiff = gOnScreen == SHOW_MIP_SPECULAR ? spec.xyz : Ldirect.xyz;
 

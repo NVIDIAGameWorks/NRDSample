@@ -26,20 +26,12 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 // Settings
 //=================================================================================
 
-// Fused or separate denoising selection
-//      0 - DIFFUSE and SPECULAR
-//      1 - DIFFUSE_SPECULAR
-#define NRD_COMBINED                                1
-
-// IMPORTANT: adjust same macro in "Shared.hlsli"
-//      NORMAL                - common (non specialized) denoisers
-//      OCCLUSION             - OCCLUSION (ambient or specular occlusion only) denoisers
-//      SH                    - SH (spherical harmonics or spherical gaussian) denoisers
-//      DIRECTIONAL_OCCLUSION - DIRECTIONAL_OCCLUSION (ambient occlusion in SH mode) denoisers
-#define NRD_MODE                                    NORMAL
+// NRD mode and other shared settings are here
+#include "../Shaders/Include/Shared.hlsli"
 
 constexpr uint32_t MAX_ANIMATED_INSTANCE_NUM        = 512;
-constexpr auto BLAS_BUILD_BITS                      = nri::AccelerationStructureBuildBits::PREFER_FAST_TRACE;
+constexpr auto BLAS_RIGID_MESH_BUILD_BITS           = nri::AccelerationStructureBuildBits::PREFER_FAST_TRACE;
+constexpr auto BLAS_DEFORMABLE_MESH_BUILD_BITS      = nri::AccelerationStructureBuildBits::PREFER_FAST_BUILD | nri::AccelerationStructureBuildBits::ALLOW_UPDATE;
 constexpr auto TLAS_BUILD_BITS                      = nri::AccelerationStructureBuildBits::PREFER_FAST_TRACE;
 constexpr float ACCUMULATION_TIME                   = 0.5f; // seconds
 constexpr float NEAR_Z                              = 0.001f; // m
@@ -47,6 +39,11 @@ constexpr float GLASS_THICKNESS                     = 0.002f; // m
 constexpr bool CAMERA_RELATIVE                      = true;
 constexpr bool ALLOW_BLAS_MERGING                   = true;
 constexpr bool NRD_ALLOW_DESCRIPTOR_CACHING         = true;
+constexpr int32_t MAX_HISTORY_FRAME_NUM             = (int32_t)std::min(60u, std::min(nrd::REBLUR_MAX_HISTORY_FRAME_NUM, nrd::RELAX_MAX_HISTORY_FRAME_NUM));
+constexpr uint32_t TEXTURES_PER_MATERIAL            = 4;
+constexpr uint32_t MAX_TEXTURE_TRANSITIONS_NUM      = 32;
+constexpr uint32_t DYNAMIC_CONSTANT_BUFFER_SIZE     = 1024 * 1024; // 1MB
+constexpr uint32_t MAX_ANIMATION_HISTORY_FRAME_NUM  = 2;
 
 //=================================================================================
 // Important tests, sensitive to regressions or just testing base functionality
@@ -66,19 +63,15 @@ const std::vector<uint32_t> interior_checkMeTests =
 
 const std::vector<uint32_t> REBLUR_interior_improveMeTests =
 {{
-    108, 153, 158
+    108, 153, 174, 191, 192
 }};
 
 const std::vector<uint32_t> RELAX_interior_improveMeTests =
 {{
-    114, 144, 148, 156, 159
+    96, 114, 144, 148, 156, 159
 }};
 
 //=================================================================================
-
-constexpr int32_t MAX_HISTORY_FRAME_NUM             = (int32_t)std::min(60u, std::min(nrd::REBLUR_MAX_HISTORY_FRAME_NUM, nrd::RELAX_MAX_HISTORY_FRAME_NUM));
-constexpr uint32_t TEXTURES_PER_MATERIAL            = 4;
-constexpr uint32_t MAX_TEXTURE_TRANSITION_NUM       = 32;
 
 // UI
 #define UI_YELLOW                                   ImVec4(1.0f, 0.9f, 0.0f, 1.0f)
@@ -87,35 +80,6 @@ constexpr uint32_t MAX_TEXTURE_TRANSITION_NUM       = 32;
 #define UI_HEADER                                   ImVec4(0.7f, 1.0f, 0.7f, 1.0f)
 #define UI_HEADER_BACKGROUND                        ImVec4(0.7f * 0.3f, 1.0f * 0.3f, 0.7f * 0.3f, 1.0f)
 #define UI_DEFAULT                                  ImGui::GetStyleColorVec4(ImGuiCol_Text)
-
-// NRD variant
-#define NORMAL                                      0
-#define OCCLUSION                                   1
-#define SH                                          2
-#define DIRECTIONAL_OCCLUSION                       3
-
-// See HLSL
-#define FLAG_FIRST_BIT                              20
-#define INSTANCE_ID_MASK                            ( ( 1 << FLAG_FIRST_BIT ) - 1 )
-#define FLAG_DEFAULT                                0x01 // set only if nothing is set
-#define FLAG_TRANSPARENT                            0x02 // transparent
-#define FLAG_FORCED_EMISSION                        0x04 // animated emissive cube
-
-enum Denoiser : int32_t
-{
-    REBLUR,
-    RELAX,
-    REFERENCE,
-
-    DENOISER_MAX_NUM
-};
-
-enum Resolution : int32_t
-{
-    RESOLUTION_FULL,
-    RESOLUTION_FULL_PROBABILISTIC,
-    RESOLUTION_HALF
-};
 
 enum MvType : int32_t
 {
@@ -138,17 +102,26 @@ enum class AccelerationStructure : uint32_t
 
 enum class Buffer : uint32_t
 {
+    // HOST_UPLOAD
     GlobalConstants,
+    DynamicConstants,
     InstanceDataStaging,
     WorldTlasDataStaging,
     LightTlasDataStaging,
 
-    PrimitiveData,
+    // DEVICE. read only
     InstanceData,
+    MorphMeshIndices,
+    MorphMeshVertices,
+
+    // DEVICE
+    MorphedPositions,
+    MorphedAttributes,
+    MorphedPrimitivePrevData,
+    PrimitiveData,
     WorldScratch,
     LightScratch,
-
-    UploadHeapBufferNum = 4
+    MorphMeshScratch,
 };
 
 enum class Texture : uint32_t
@@ -157,7 +130,6 @@ enum class Texture : uint32_t
     ViewZ,
     Mv,
     Normal_Roughness,
-    PrimaryMip_Curvature,
     PsrThroughput,
     BaseColor_Metalness,
     DirectLighting,
@@ -201,12 +173,12 @@ enum class Texture : uint32_t
 
 enum class Pipeline : uint32_t
 {
-    PrimaryRays,
-    DirectLighting,
-    AmbientRays,
-    IndirectRays,
+    MorphMeshUpdateVertices,
+    MorphMeshUpdatePrimitives,
+    TraceAmbient,
+    TraceOpaque,
     Composition,
-    DeltaRays,
+    TraceTransparent,
     Temporal,
     Upsample,
     UpsampleNis,
@@ -226,8 +198,18 @@ enum class Descriptor : uint32_t
     Linear_Sampler,
     Nearest_Sampler,
 
-    PrimitiveData_Buffer,
     InstanceData_Buffer,
+    MorphMeshIndices_Buffer,
+    MorphMeshVertices_Buffer,
+
+    MorphedPositions_Buffer,
+    MorphedPositions_StorageBuffer,
+    MorphedAttributes_Buffer,
+    MorphedAttributes_StorageBuffer,
+    MorphedPrimitivePrevData_Buffer,
+    MorphedPrimitivePrevData_StorageBuffer,
+    PrimitiveData_Buffer,
+    PrimitiveData_StorageBuffer,
 
     Ambient_Texture,
     Ambient_StorageTexture,
@@ -237,8 +219,6 @@ enum class Descriptor : uint32_t
     Mv_StorageTexture,
     Normal_Roughness_Texture,
     Normal_Roughness_StorageTexture,
-    PrimaryMip_Curvature_Texture,
-    PrimaryMip_Curvature_StorageTexture,
     PsrThroughput_Texture,
     PsrThroughput_StorageTexture,
     BaseColor_Metalness_Texture,
@@ -306,12 +286,10 @@ enum class Descriptor : uint32_t
 
 enum class DescriptorSet : uint32_t
 {
-    PrimaryRays1,
-    DirectLighting1,
-    AmbientRays1,
-    IndirectRays1,
+    TraceAmbient1,
+    TraceOpaque1,
     Composition1,
-    DeltaRays1,
+    TraceTransparent1,
     Temporal1a,
     Temporal1b,
     Upsample1a,
@@ -321,6 +299,8 @@ enum class DescriptorSet : uint32_t
     PreDlss1,
     AfterDlss1,
     RayTracing2,
+    MorphTargetPose3,
+    MorphTargetUpdatePrimitives3,
 
     MAX_NUM
 };
@@ -343,92 +323,6 @@ struct Frame
     nri::Descriptor* globalConstantBufferDescriptor;
     nri::DescriptorSet* globalConstantBufferDescriptorSet;
     uint64_t globalConstantBufferOffset;
-};
-
-struct GlobalConstantBufferData
-{
-    float4x4 gViewToWorld;
-    float4x4 gViewToClip;
-    float4x4 gWorldToView;
-    float4x4 gWorldToViewPrev;
-    float4x4 gWorldToClip;
-    float4x4 gWorldToClipPrev;
-    float4 gHitDistParams;
-    float4 gCameraFrustum;
-    float4 gSunDirection_gExposure;
-    float4 gCameraOrigin_gMipBias;
-    float4 gViewDirection_gIsOrtho;
-    float4 gCameraDelta_gNearZ;
-    float4 gCameraGlobalPosition_gEmissionIntensity;
-    float2 gWindowSize;
-    float2 gInvWindowSize;
-    float2 gOutputSize;
-    float2 gInvOutputSize;
-    float2 gRenderSize;
-    float2 gInvRenderSize;
-    float2 gRectSize;
-    float2 gInvRectSize;
-    float2 gRectSizePrev;
-    float2 gJitter;
-    float gSeparator;
-    float gRoughnessOverride;
-    float gMetalnessOverride;
-    float gUnitToMetersMultiplier;
-    float gIndirectDiffuse;
-    float gIndirectSpecular;
-    float gTanSunAngularRadius;
-    float gTanPixelAngularRadius;
-    float gDebug;
-    float gTransparent;
-    float gPrevFrameConfidence;
-    float gMinProbability;
-    float gUnproject;
-    uint32_t gDenoiserType;
-    uint32_t gDisableShadowsAndEnableImportanceSampling;
-    uint32_t gOnScreen;
-    uint32_t gFrameIndex;
-    uint32_t gForcedMaterial;
-    uint32_t gUseNormalMap;
-    uint32_t gIsWorldSpaceMotionEnabled;
-    uint32_t gTracingMode;
-    uint32_t gSampleNum;
-    uint32_t gBounceNum;
-    uint32_t gTAA;
-    uint32_t gResolve;
-    uint32_t gPSR;
-    uint32_t gValidation;
-
-    // Ambient
-    float gAmbientMaxAccumulatedFramesNum;
-    float gAmbient;
-
-    // NIS
-    float gNisDetectRatio;
-    float gNisDetectThres;
-    float gNisMinContrastRatio;
-    float gNisRatioNorm;
-    float gNisContrastBoost;
-    float gNisEps;
-    float gNisSharpStartY;
-    float gNisSharpScaleY;
-    float gNisSharpStrengthMin;
-    float gNisSharpStrengthScale;
-    float gNisSharpLimitMin;
-    float gNisSharpLimitScale;
-    float gNisScaleX;
-    float gNisScaleY;
-    float gNisDstNormX;
-    float gNisDstNormY;
-    float gNisSrcNormX;
-    float gNisSrcNormY;
-    uint32_t gNisInputViewportOriginX;
-    uint32_t gNisInputViewportOriginY;
-    uint32_t gNisInputViewportWidth;
-    uint32_t gNisInputViewportHeight;
-    uint32_t gNisOutputViewportOriginX;
-    uint32_t gNisOutputViewportOriginY;
-    uint32_t gNisOutputViewportWidth;
-    uint32_t gNisOutputViewportHeight;
 };
 
 struct Settings
@@ -463,7 +357,7 @@ struct Settings
     int32_t     animatedObjectNum                  = 5;
     int32_t     activeAnimation                    = 0;
     int32_t     motionMode                         = 0;
-    int32_t     denoiser                           = REBLUR;
+    int32_t     denoiser                           = DENOISER_REBLUR;
     int32_t     rpp                                = 1;
     int32_t     bounceNum                          = 1;
     int32_t     tracingMode                        = RESOLUTION_HALF;
@@ -478,7 +372,7 @@ struct Settings
     bool        normalMap                          = true;
     bool        TAA                                = true;
     bool        animatedObjects                    = false;
-    bool        animateCamera                      = false;
+    bool        animateScene                       = false;
     bool        animateSun                         = false;
     bool        nineBrothers                       = false;
     bool        blink                              = false;
@@ -548,37 +442,53 @@ struct AnimatedInstance
     }
 };
 
-struct PrimitiveData
+class DynamicConstantBufferAllocator
 {
-    uint32_t uv0;
-    uint32_t uv1;
-    uint32_t uv2;
-    uint32_t n0oct;
+public:
+    void Initialize(NRIInterface* NRI, nri::Device* device, nri::Buffer *constantBuffer, uint32_t size)
+    {
+        m_NRI = NRI;
+        m_Device = device;
+        m_ConstantBuffer = constantBuffer;
+        m_Size = size;
 
-    uint32_t n1oct;
-    uint32_t n2oct;
-    uint32_t t0oct;
-    uint32_t t1oct;
+        const nri::DeviceDesc& deviceDesc = m_NRI->GetDeviceDesc(*m_Device);
+        m_Alignment = deviceDesc.constantBufferOffsetAlignment;
+    }
 
-    uint32_t t2oct;
-    uint32_t curvature0_curvature1;
-    uint32_t curvature2_bitangentSign;
-    float worldToUvUnits;
-};
+    template<typename T> constexpr T GetAlignedSize(const T& size)
+    {
+        return T(((size + m_Alignment - 1) / m_Alignment) * m_Alignment);
+    }
 
-struct InstanceData
-{
-    float4 mWorldToWorldPrev0;
-    float4 mWorldToWorldPrev1;
-    float4 mWorldToWorldPrev2;
+    template<typename T> uint32_t Allocate(const T& constantBufferData)
+    {
+        uint32_t constantBufferViewSize = GetAlignedSize(static_cast<uint32_t>(sizeof(T)));
 
-    float4 baseColorAndMetalnessScale;
-    float4 emissionAndRoughnessScale;
+        // assumes we have enough buffer to not overwrite the heap over multiple frames
+        if (m_DynamicConstantBufferOffset + constantBufferViewSize > m_Size)
+            m_DynamicConstantBufferOffset = 0;
 
-    uint32_t baseTextureIndex;
-    uint32_t basePrimitiveIndex;
-    uint32_t isStatic;
-    float invScale;
+        T* pMappedData = static_cast<T*>(m_NRI->MapBuffer(*m_ConstantBuffer, m_DynamicConstantBufferOffset, constantBufferViewSize));
+        std::memcpy(pMappedData, &constantBufferData, sizeof(T));
+
+        uint32_t dynamicConstantBufferOffset = m_DynamicConstantBufferOffset;
+        m_DynamicConstantBufferOffset += constantBufferViewSize;
+
+        m_NRI->UnmapBuffer(*m_ConstantBuffer);
+
+        return dynamicConstantBufferOffset;
+    }
+
+    nri::Buffer* GetBuffer() const { return m_ConstantBuffer; }
+
+private:
+    nri::Device* m_Device = nullptr;
+    NRIInterface* m_NRI = nullptr;
+    nri::Buffer* m_ConstantBuffer = nullptr;
+    uint32_t m_Size = 0;
+    uint32_t m_DynamicConstantBufferOffset = 0;
+    uint32_t m_Alignment = 0;
 };
 
 class Sample : public SampleBase
@@ -650,7 +560,7 @@ public:
     void UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFrameNum);
     void RestoreBindings(nri::CommandBuffer& commandBuffer, const Frame& frame);
     void BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffer, uint32_t bufferedFrameIndex);
-    uint32_t BuildOptimizedTransitions(const TextureState* states, uint32_t stateNum, std::array<nri::TextureTransitionBarrierDesc, MAX_TEXTURE_TRANSITION_NUM>& transitions);
+    uint32_t BuildOptimizedTransitions(const TextureState* states, uint32_t stateNum, std::array<nri::TextureTransitionBarrierDesc, MAX_TEXTURE_TRANSITIONS_NUM>& transitions);
 
     inline float3 GetSunDirection() const
     {
@@ -665,6 +575,17 @@ public:
     inline float GetDenoisingRange() const
     { return 4.0f * m_Scene.aabb.GetRadius(); }
 
+    inline nrd::ReblurSettings GetDefaultReblurSettings() const
+    {
+        nrd::ReblurSettings defaults = {};
+        defaults.antilagSettings.luminanceAntilagPower = 1.0f;
+
+        return defaults;
+    }
+
+    inline nrd::RelaxDiffuseSpecularSettings GetDefaultRelaxSettings() const
+    { return {}; }
+
 private:
     NrdIntegration m_NRD;
     DlssIntegration m_DLSS;
@@ -677,6 +598,11 @@ private:
     nri::DescriptorPool* m_DescriptorPool = nullptr;
     nri::PipelineLayout* m_PipelineLayout = nullptr;
     std::array<Frame, BUFFERED_FRAME_MAX_NUM> m_Frames = {};
+
+    DynamicConstantBufferAllocator m_DynamicConstantBufferAllocator = {};
+    nri::Descriptor* m_MorphTargetPoseConstantBufferView = nullptr;
+    nri::Descriptor* m_MorphTargetUpdatePrimitivesConstantBufferView = nullptr;
+
     std::vector<nri::Texture*> m_Textures;
     std::vector<nri::TextureTransitionBarrierDesc> m_TextureStates;
     std::vector<nri::Format> m_TextureFormats;
@@ -697,9 +623,12 @@ private:
     Settings m_SettingsDefault = {};
     const std::vector<uint32_t>* m_checkMeTests = nullptr;
     const std::vector<uint32_t>* m_improveMeTests = nullptr;
+    float4 m_HairBaseColorOverride = float4(0.227f, 0.130f, 0.035f, 1.0f);
     float3 m_PrevLocalPos = {};
+    float2 m_HairBetasOverride = float2(0.25f, 0.6f);
     uint2 m_RenderResolution = {};
     uint64_t m_ConstantBufferSize = 0;
+    uint64_t m_MorphMeshScratchSize = 0;
     uint32_t m_OpaqueObjectsNum = 0;
     uint32_t m_TransparentObjectsNum = 0;
     uint32_t m_EmissiveObjectsNum = 0;
@@ -709,6 +638,8 @@ private:
     int32_t m_DlssQuality = int32_t(-1);
     float m_UiWidth = 0.0f;
     float m_MinResolutionScale = 0.5f;
+    float m_DofAperture = 0.0f;
+    float m_DofFocalDistance = 1.0f;
     bool m_HasTransparent = false;
     bool m_ShowUi = true;
     bool m_ForceHistoryReset = false;
@@ -736,6 +667,8 @@ Sample::~Sample()
         NRI.DestroyCommandAllocator(*frame.commandAllocator);
         NRI.DestroyDescriptor(*frame.globalConstantBufferDescriptor);
     }
+
+    NRI.DestroyDescriptor(*m_MorphTargetPoseConstantBufferView);
 
     for (BackBuffer& backBuffer : m_SwapChainBuffers)
     {
@@ -805,7 +738,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     NRI_ABORT_ON_FAILURE( NRI.CreateFence(*m_Device, 0, m_FrameFence) );
 
     const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
-    m_ConstantBufferSize = helper::Align(sizeof(GlobalConstantBufferData), deviceDesc.constantBufferOffsetAlignment);
+    m_ConstantBufferSize = helper::Align(sizeof(GlobalConstants), deviceDesc.constantBufferOffsetAlignment);
     m_RenderResolution = GetOutputResolution();
 
     if (m_DlssQuality != -1 && m_DLSS.InitializeLibrary(*m_Device, ""))
@@ -908,7 +841,6 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     UploadStaticData();
 
     m_Camera.Initialize(m_Scene.aabb.GetCenter(), m_Scene.aabb.vMin, CAMERA_RELATIVE);
-
     m_Scene.UnloadTextureData();
     m_Scene.UnloadGeometryData();
 
@@ -996,14 +928,14 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     if (IsKeyToggled(Key::PageDown) || IsKeyToggled(Key::Num3))
     {
         m_Settings.denoiser++;
-        if (m_Settings.denoiser > DENOISER_MAX_NUM - 1)
-            m_Settings.denoiser = 0;
+        if (m_Settings.denoiser > DENOISER_REFERENCE)
+            m_Settings.denoiser = DENOISER_REBLUR;
     }
     if (IsKeyToggled(Key::PageUp) || IsKeyToggled(Key::Num9))
     {
         m_Settings.denoiser--;
-        if (m_Settings.denoiser < 0)
-            m_Settings.denoiser = DENOISER_MAX_NUM - 1;
+        if (m_Settings.denoiser < DENOISER_REBLUR)
+            m_Settings.denoiser = DENOISER_REFERENCE;
     }
 
     if (!IsKeyPressed(Key::LAlt) && m_ShowUi)
@@ -1069,12 +1001,14 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         "Normal",
                         "Roughness",
                         "Metalness",
+                        "Material ID",
                         "PSR throughput",
                         "World units",
                         "Instance index",
+                        "UV",
+                        "Curvature",
                         "Mip level (primary)",
                         "Mip level (specular)",
-                        "Curvature",
                 #endif
                     };
 
@@ -1094,21 +1028,24 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         "3D",
                     };
 
-                    ImGui::SliderFloat("FOV (deg)", &m_Settings.camFov, 1.0f, 160.0f, "%.1f");
-                    ImGui::SliderFloat("Exposure", &m_Settings.exposure, 0.0f, 1000.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
-                    ImGui::SliderFloat("Resolution scale (%)", &m_Settings.resolutionScale, m_MinResolutionScale, 1.0f, "%.3f");
                     ImGui::Combo("On screen", &m_Settings.onScreen, onScreenModes, helper::GetCountOf(onScreenModes));
                     ImGui::Checkbox("Ortho", &m_Settings.ortho);
                     ImGui::SameLine();
+                    ImGui::Checkbox("+Z", &m_PositiveZ);
+                    ImGui::SameLine();
+                    ImGui::Checkbox("rZ", &m_ReversedZ);
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth( ImGui::CalcItemWidth() - ImGui::GetCursorPosX() + ImGui::GetStyle().ItemSpacing.x );
+                    ImGui::SliderFloat("FOV (deg)", &m_Settings.camFov, 1.0f, 160.0f, "%.1f");
+                    ImGui::SliderFloat("Exposure", &m_Settings.exposure, 0.0f, 1000.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                    ImGui::SliderFloat("Resolution scale (%)", &m_Settings.resolutionScale, m_MinResolutionScale, 1.0f, "%.3f");
+                    ImGui::SliderFloat("Aperture (mm)", &m_DofAperture, 0.0f, 100.0f, "%.2f");
+                    ImGui::SliderFloat("Focal distance (m)", &m_DofFocalDistance, NEAR_Z, 10.0f, "%.3f");
                     ImGui::Checkbox("FPS cap", &m_Settings.limitFps);
                     ImGui::SameLine();
                     ImGui::PushStyleColor(ImGuiCol_Text, (!m_Settings.cameraJitter && (m_Settings.TAA || m_Settings.DLSS)) ? UI_RED : UI_DEFAULT);
                         ImGui::Checkbox("Jitter", &m_Settings.cameraJitter);
                     ImGui::PopStyleColor();
-                    ImGui::SameLine();
-                    ImGui::Checkbox("+Z", &m_PositiveZ);
-                    ImGui::SameLine();
-                    ImGui::Checkbox("rZ", &m_ReversedZ);
                     ImGui::SameLine();
                     ImGui::SetNextItemWidth( ImGui::CalcItemWidth() - ImGui::GetCursorPosX() + ImGui::GetStyle().ItemSpacing.x );
                     ImGui::PushStyleColor(ImGuiCol_Text, (m_Settings.animatedObjects && !m_Settings.pauseAnimation && m_Settings.mvType == MV_2D) ? UI_RED : UI_DEFAULT);
@@ -1153,9 +1090,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     }
                     if (!m_Settings.DLSS)
                     {
-                        ImGui::PushStyleColor(ImGuiCol_Text, (m_ReblurSettings.enableReferenceAccumulation && m_Settings.TAA) ? UI_YELLOW : UI_DEFAULT);
-                            ImGui::Checkbox("TAA", &m_Settings.TAA);
-                        ImGui::PopStyleColor();
+                        ImGui::Checkbox("TAA", &m_Settings.TAA);
                         ImGui::SameLine();
                     }
                     bool isNis = m_Settings.NIS && m_Settings.separator == 0.0f;
@@ -1200,12 +1135,31 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                 }
                 ImGui::PopID();
 
+                // "Hair" section
+                if (m_SceneFile.find("Hair") != std::string::npos)
+                {
+                    ImGui::NewLine();
+                    ImGui::PushStyleColor(ImGuiCol_Text, UI_HEADER);
+                    ImGui::PushStyleColor(ImGuiCol_Header, UI_HEADER_BACKGROUND);
+                    isUnfolded = ImGui::CollapsingHeader("HAIR", ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen);
+                    ImGui::PopStyleColor();
+                    ImGui::PopStyleColor();
+
+                    ImGui::PushID("HAIR");
+                    if (isUnfolded)
+                    {
+                        ImGui::SliderFloat2("Roughness", m_HairBetasOverride.pv, 0.01f, 1.0f, "%.3f");
+                        ImGui::ColorEdit3("Color", m_HairBaseColorOverride.pv, ImGuiColorEditFlags_Float);
+                    }
+                    ImGui::PopID();
+                }
+
                 if (m_Settings.onScreen == 11)
                     ImGui::SliderFloat("Units in 1 meter", &m_Settings.meterToUnitsMultiplier, 0.001f, 100.0f, "%.4f", ImGuiSliderFlags_Logarithmic);
                 else
                 {
                     // "World" section
-                    snprintf(buf, sizeof(buf) - 1, "WORLD%s", (m_Settings.animateSun || m_Settings.animatedObjects || m_Settings.animateCamera) ? (m_Settings.pauseAnimation ? " (SPACE - unpause)" : " (SPACE - pause)") : "");
+                    snprintf(buf, sizeof(buf) - 1, "WORLD%s", (m_Settings.animateSun || m_Settings.animatedObjects || m_Settings.animateScene) ? (m_Settings.pauseAnimation ? " (SPACE - unpause)" : " (SPACE - pause)") : "");
 
                     ImGui::NewLine();
                     ImGui::PushStyleColor(ImGuiCol_Text, UI_HEADER);
@@ -1218,15 +1172,24 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     if (isUnfolded)
                     {
                         ImGui::Checkbox("Animate sun", &m_Settings.animateSun);
-                        if (m_Settings.animateSun || m_Settings.animatedObjects || m_Settings.animateCamera)
+                        if (m_Scene.animations.size() > 0)
+                        {
+                            ImGui::SameLine();
+                            ImGui::Checkbox("Animate scene", &m_Settings.animateScene);
+                        }
+
+                        if (m_Settings.animateSun || m_Settings.animatedObjects || m_Settings.animateScene)
                         {
                             ImGui::SameLine();
                             ImGui::Checkbox("Pause", &m_Settings.pauseAnimation);
                         }
 
-                        ImGui::SliderFloat2("Sun position (deg)", &m_Settings.sunAzimuth, -180.0f, 180.0f, "%.2f");
+                        ImGui::SameLine();
+                        ImGui::SetNextItemWidth( ImGui::CalcItemWidth() - ImGui::GetCursorPosX() + ImGui::GetStyle().ItemSpacing.x );
                         ImGui::SliderFloat("Sun size (deg)", &m_Settings.sunAngularDiameter, 0.0f, 3.0f, "%.1f");
-                        if (m_Settings.animateSun || m_Settings.animatedObjects || m_Settings.animateCamera)
+
+                        ImGui::SliderFloat2("Sun position (deg)", &m_Settings.sunAzimuth, -180.0f, 180.0f, "%.2f");
+                        if (m_Settings.animateSun || m_Settings.animatedObjects || m_Settings.animateScene)
                             ImGui::SliderFloat("Slower / Faster", &m_Settings.animationSpeed, -10.0f, 10.0f);
 
                         ImGui::Checkbox("Objects", &m_Settings.animatedObjects);
@@ -1243,7 +1206,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             ImGui::SliderFloat("Object scale", &m_Settings.animatedObjectScale, 0.1f, 2.0f);
                         }
 
-                        if (m_Settings.animateCamera && m_Scene.animations[m_Settings.activeAnimation].durationMs != 0.0f)
+                        if (m_Settings.animateScene && m_Scene.animations[m_Settings.activeAnimation].durationMs != 0.0f)
                         {
                             char animationLabel[128];
                             snprintf(animationLabel, sizeof(animationLabel), "Animation %.1f sec (%%)", 0.001f * m_Scene.animations[m_Settings.activeAnimation].durationMs / (m_Settings.animationSpeed < 0.0f ? 1.0f / (1.0f + Abs(m_Settings.animationSpeed)) : (1.0f + m_Settings.animationSpeed)));
@@ -1292,7 +1255,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         ImGui::SliderInt("Samples", &m_Settings.rpp, 1, 8);
                     #endif
                         ImGui::SliderFloat("AO / SO range (m)", &m_Settings.hitDistScale, 0.01f, sceneRadiusInMeters, "%.2f");
-                        ImGui::PushStyleColor(ImGuiCol_Text, (m_Settings.denoiser == REFERENCE && m_Settings.tracingMode > RESOLUTION_FULL_PROBABILISTIC) ? UI_YELLOW : UI_DEFAULT);
+                        ImGui::PushStyleColor(ImGuiCol_Text, (m_Settings.denoiser == DENOISER_REFERENCE && m_Settings.tracingMode > RESOLUTION_FULL_PROBABILISTIC) ? UI_YELLOW : UI_DEFAULT);
                             ImGui::Combo("Resolution", &m_Settings.tracingMode, resolution, helper::GetCountOf(resolution));
                         ImGui::PopStyleColor();
 
@@ -1376,25 +1339,24 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         if (ImGui::Button("<<"))
                         {
                             m_Settings.denoiser--;
-                            if (m_Settings.denoiser < 0)
-                                m_Settings.denoiser = DENOISER_MAX_NUM - 1;
+                            if (m_Settings.denoiser < DENOISER_REBLUR)
+                                m_Settings.denoiser = DENOISER_REFERENCE;
                         }
 
                         ImGui::SameLine();
                         if (ImGui::Button(">>"))
                         {
                             m_Settings.denoiser++;
-                            if (m_Settings.denoiser > DENOISER_MAX_NUM - 1)
-                                m_Settings.denoiser = 0;
+                            if (m_Settings.denoiser > DENOISER_REFERENCE)
+                                m_Settings.denoiser = DENOISER_REBLUR;
                         }
 
                         ImGui::SameLine();
                         m_ForceHistoryReset = ImGui::Button("Reset");
 
-                        if (m_Settings.denoiser == REBLUR)
+                        if (m_Settings.denoiser == DENOISER_REBLUR)
                         {
-                            nrd::ReblurSettings defaults = {};
-                            defaults.antilagIntensitySettings.enable = true;
+                            nrd::ReblurSettings defaults = GetDefaultReblurSettings();
 
                             if (m_Settings.tracingMode == RESOLUTION_FULL_PROBABILISTIC)
                             {
@@ -1408,7 +1370,15 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             #endif
 
                             bool isSame = true;
-                            if (m_ReblurSettings.historyFixFrameNum != defaults.historyFixFrameNum)
+                            if (m_ReblurSettings.antilagSettings.luminanceSigmaScale != defaults.antilagSettings.luminanceSigmaScale)
+                                isSame = false;
+                            else if (m_ReblurSettings.antilagSettings.hitDistanceSigmaScale != defaults.antilagSettings.hitDistanceSigmaScale)
+                                isSame = false;
+                            else if (m_ReblurSettings.antilagSettings.luminanceAntilagPower != defaults.antilagSettings.luminanceAntilagPower)
+                                isSame = false;
+                            else if (m_ReblurSettings.antilagSettings.hitDistanceAntilagPower != defaults.antilagSettings.hitDistanceAntilagPower)
+                                isSame = false;
+                            else if (m_ReblurSettings.historyFixFrameNum != defaults.historyFixFrameNum)
                                 isSame = false;
                             else if (m_ReblurSettings.diffusePrepassBlurRadius != defaults.diffusePrepassBlurRadius)
                                 isSame = false;
@@ -1426,17 +1396,15 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 isSame = false;
                             else if (m_ReblurSettings.stabilizationStrength != defaults.stabilizationStrength)
                                 isSame = false;
+                            else if (m_ReblurSettings.planeDistanceSensitivity != defaults.planeDistanceSensitivity)
+                                isSame = false;
                             else if (m_ReblurSettings.hitDistanceReconstructionMode != defaults.hitDistanceReconstructionMode)
                                 isSame = false;
                             else if (m_ReblurSettings.enableAntiFirefly != defaults.enableAntiFirefly)
                                 isSame = false;
-                            else if (m_ReblurSettings.enableReferenceAccumulation != defaults.enableReferenceAccumulation)
-                                isSame = false;
                             else if (m_ReblurSettings.enablePerformanceMode != defaults.enablePerformanceMode)
                                 isSame = false;
-                            else if (m_ReblurSettings.antilagHitDistanceSettings.enable != defaults.antilagHitDistanceSettings.enable)
-                                isSame = false;
-                            else if (m_ReblurSettings.antilagIntensitySettings.enable != defaults.antilagHitDistanceSettings.enable)
+                            else if (m_ReblurSettings.usePrepassOnlyForSpecularMotionEstimation != defaults.usePrepassOnlyForSpecularMotionEstimation)
                                 isSame = false;
 
                             ImGui::SameLine();
@@ -1445,8 +1413,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 m_ReblurSettings.blurRadius = 0.0f;
                                 m_ReblurSettings.diffusePrepassBlurRadius = 0.0f;
                                 m_ReblurSettings.specularPrepassBlurRadius = 0.0f;
-                                m_ReblurSettings.antilagHitDistanceSettings.enable = false;
-                                m_ReblurSettings.antilagIntensitySettings.enable = false;
                             }
 
                             ImGui::SameLine();
@@ -1468,11 +1434,9 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             ImGui::SameLine();
                             ImGui::Checkbox("Adaptive accumulation", &m_Settings.adaptiveAccumulation);
 
-                            ImGui::Checkbox("Ref accum", &m_ReblurSettings.enableReferenceAccumulation);
-                            ImGui::SameLine();
                             ImGui::Checkbox("Anti-firefly", &m_ReblurSettings.enableAntiFirefly);
                             ImGui::SameLine();
-                            ImGui::Checkbox("Perf mode", &m_ReblurSettings.enablePerformanceMode);
+                            ImGui::Checkbox("Performance mode", &m_ReblurSettings.enablePerformanceMode);
                         #if( NRD_MODE == SH || NRD_MODE == DIRECTIONAL_OCCLUSION )
                             ImGui::SameLine();
                             ImGui::PushStyleColor(ImGuiCol_Text, m_Resolve ? UI_GREEN : UI_RED);
@@ -1513,24 +1477,16 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             ImGui::SetNextItemWidth( ImGui::CalcItemWidth() * 0.5f );
                             ImGui::SliderFloat("Responsive accumulation roughness threshold", &m_ReblurSettings.responsiveAccumulationRoughnessThreshold, 0.0f, 1.0f, "%.2f");
 
-                        #if( NRD_MODE != OCCLUSION )
                             if (m_ReblurSettings.stabilizationStrength != 0.0f)
                             {
-                                ImGui::Text("ANTI-LAG:");
-                                ImGui::Checkbox("Intensity", &m_ReblurSettings.antilagIntensitySettings.enable);
-                                ImGui::SameLine();
-                                ImGui::Text("[%.1f%%; %.1f%%; %.1f]", m_ReblurSettings.antilagIntensitySettings.thresholdMin * 100.0, m_ReblurSettings.antilagIntensitySettings.thresholdMax * 100.0, m_ReblurSettings.antilagIntensitySettings.sigmaScale);
-
-                                ImGui::SameLine();
-                                ImGui::Checkbox("Hit dist", &m_ReblurSettings.antilagHitDistanceSettings.enable);
-                                ImGui::SameLine();
-                                ImGui::Text("[%.1f%%; %.1f%%; %.1f]", m_ReblurSettings.antilagHitDistanceSettings.thresholdMin * 100.0, m_ReblurSettings.antilagHitDistanceSettings.thresholdMax * 100.0, m_ReblurSettings.antilagHitDistanceSettings.sigmaScale);
+                                ImGui::Text("ANTI-LAG (luminance & hit distance):");
+                                ImGui::SliderFloat2("Sigma scale", &m_ReblurSettings.antilagSettings.luminanceSigmaScale, 1.0f, 3.0f, "%.1f");
+                                ImGui::SliderFloat2("Power", &m_ReblurSettings.antilagSettings.luminanceAntilagPower, 0.01f, 1.0f, "%.2f");
                             }
-                        #endif
                         }
-                        else if (m_Settings.denoiser == RELAX)
+                        else if (m_Settings.denoiser == DENOISER_RELAX)
                         {
-                            nrd::RelaxDiffuseSpecularSettings defaults = {};
+                            nrd::RelaxDiffuseSpecularSettings defaults = GetDefaultRelaxSettings();
 
                             if (m_Settings.tracingMode == RESOLUTION_FULL_PROBABILISTIC)
                             {
@@ -1544,11 +1500,19 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             #endif
 
                             bool isSame = true;
-                            if (m_RelaxSettings.historyFixFrameNum != defaults.historyFixFrameNum)
+                            if (m_RelaxSettings.antilagSettings.accelerationAmount != defaults.antilagSettings.accelerationAmount)
+                                isSame = false;
+                            else if (m_RelaxSettings.antilagSettings.spatialSigmaScale != defaults.antilagSettings.spatialSigmaScale)
+                                isSame = false;
+                            else if (m_RelaxSettings.antilagSettings.temporalSigmaScale != defaults.antilagSettings.temporalSigmaScale)
+                                isSame = false;
+                            else if (m_RelaxSettings.antilagSettings.resetAmount != defaults.antilagSettings.resetAmount)
                                 isSame = false;
                             else if (m_RelaxSettings.diffusePrepassBlurRadius != defaults.diffusePrepassBlurRadius)
                                 isSame = false;
                             else if (m_RelaxSettings.specularPrepassBlurRadius != defaults.specularPrepassBlurRadius)
+                                isSame = false;
+                            else if (m_RelaxSettings.historyFixFrameNum != defaults.historyFixFrameNum)
                                 isSame = false;
                             else if (m_RelaxSettings.diffusePhiLuminance != defaults.diffusePhiLuminance)
                                 isSame = false;
@@ -1558,13 +1522,15 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 isSame = false;
                             else if (m_RelaxSettings.specularLobeAngleFraction != defaults.specularLobeAngleFraction)
                                 isSame = false;
+                            else if (m_RelaxSettings.roughnessFraction != defaults.roughnessFraction)
+                                isSame = false;
                             else if (m_RelaxSettings.specularVarianceBoost != defaults.specularVarianceBoost)
                                 isSame = false;
                             else if (m_RelaxSettings.specularLobeAngleSlack != defaults.specularLobeAngleSlack)
                                 isSame = false;
-                            else if (m_RelaxSettings.historyFixEdgeStoppingNormalPower != defaults.historyFixEdgeStoppingNormalPower)
-                                isSame = false;
                             else if (m_RelaxSettings.historyFixStrideBetweenSamples != defaults.historyFixStrideBetweenSamples)
+                                isSame = false;
+                            else if (m_RelaxSettings.historyFixEdgeStoppingNormalPower != defaults.historyFixEdgeStoppingNormalPower)
                                 isSame = false;
                             else if (m_RelaxSettings.historyClampingColorBoxSigmaScale != defaults.historyClampingColorBoxSigmaScale)
                                 isSame = false;
@@ -1578,11 +1544,17 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 isSame = false;
                             else if (m_RelaxSettings.depthThreshold != defaults.depthThreshold)
                                 isSame = false;
-                            else if (m_RelaxSettings.roughnessFraction != defaults.roughnessFraction)
+                            else if (m_RelaxSettings.confidenceDrivenRelaxationMultiplier != defaults.confidenceDrivenRelaxationMultiplier)
                                 isSame = false;
-                            else if (m_RelaxSettings.roughnessEdgeStoppingRelaxation != defaults.roughnessEdgeStoppingRelaxation)
+                            else if (m_RelaxSettings.confidenceDrivenLuminanceEdgeStoppingRelaxation != defaults.confidenceDrivenLuminanceEdgeStoppingRelaxation)
+                                isSame = false;
+                            else if (m_RelaxSettings.confidenceDrivenNormalEdgeStoppingRelaxation != defaults.confidenceDrivenNormalEdgeStoppingRelaxation)
+                                isSame = false;
+                            else if (m_RelaxSettings.luminanceEdgeStoppingRelaxation != defaults.luminanceEdgeStoppingRelaxation)
                                 isSame = false;
                             else if (m_RelaxSettings.normalEdgeStoppingRelaxation != defaults.normalEdgeStoppingRelaxation)
+                                isSame = false;
+                            else if (m_RelaxSettings.roughnessEdgeStoppingRelaxation != defaults.roughnessEdgeStoppingRelaxation)
                                 isSame = false;
                             else if (m_RelaxSettings.hitDistanceReconstructionMode != defaults.hitDistanceReconstructionMode)
                                 isSame = false;
@@ -1669,8 +1641,14 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             ImGui::SliderFloat("Normal weight power", &m_RelaxSettings.historyFixEdgeStoppingNormalPower, 0.0f, 128.0f, "%.1f");
                             ImGui::SliderFloat("Stride", &m_RelaxSettings.historyFixStrideBetweenSamples, 0.0f, 20.0f, "%.1f");
                             ImGui::SliderInt("Frames", (int32_t*)&m_RelaxSettings.historyFixFrameNum, 0, 6);
+
+                            ImGui::Text("ANTI-LAG:");
+                            ImGui::SliderFloat("Acceleration amount", &m_RelaxSettings.antilagSettings.accelerationAmount, 0.0f, 1.0f, "%.2f");
+                            ImGui::SliderFloat("Spatial sigma scale", &m_RelaxSettings.antilagSettings.spatialSigmaScale, 0.0f, 10.0f, "%.1f");
+                            ImGui::SliderFloat("Temporal sigma scale", &m_RelaxSettings.antilagSettings.temporalSigmaScale, 0.0f, 10.0f, "%.1f");
+                            ImGui::SliderFloat("Reset amount", &m_RelaxSettings.antilagSettings.resetAmount, 0.0f, 1.0f, "%.2f");
                         }
-                        else if (m_Settings.denoiser == REFERENCE)
+                        else if (m_Settings.denoiser == DENOISER_REFERENCE)
                         {
                             float t = (float)m_ReferenceSettings.maxAccumulatedFrameNum;
                             ImGui::SliderFloat("History length (frames)", &t, 0.0f, 1024.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
@@ -1708,9 +1686,8 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         {
                             m_Camera.Initialize(m_Scene.aabb.GetCenter(), m_Scene.aabb.vMin, CAMERA_RELATIVE);
                             m_Settings = m_SettingsDefault;
-                            m_RelaxSettings = {};
-                            m_ReblurSettings = {};
-                            m_ReblurSettings.antilagIntensitySettings.enable = true;
+                            m_RelaxSettings = GetDefaultRelaxSettings();
+                            m_ReblurSettings = GetDefaultReblurSettings();
                             m_ForceHistoryReset = true;
                         }
                     }
@@ -1845,7 +1822,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
                                     // Reset some settings to defaults to avoid a potential confusion
                                     m_Settings.debug = 0.0f;
-                                    m_Settings.denoiser = REBLUR;
+                                    m_Settings.denoiser = DENOISER_REBLUR;
                                     m_Settings.DLSS = m_SettingsDefault.DLSS;
                                     m_ForceHistoryReset = true;
                                 }
@@ -1924,7 +1901,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     desc.horizontalFov = RadToDeg( Atan( Tan( DegToRad( m_Settings.camFov ) * 0.5f ) *  desc.aspectRatio * 9.0f / 16.0f ) * 2.0f ); // recalculate to ultra-wide if needed
     desc.nearZ = NEAR_Z * m_Settings.meterToUnitsMultiplier;
     desc.farZ = 10000.0f * m_Settings.meterToUnitsMultiplier;
-    desc.isCustomMatrixSet = m_Settings.animateCamera;
+    desc.isCustomMatrixSet = false; // No camera animation hooked up
     desc.isPositiveZ = m_PositiveZ;
     desc.isReversedZ = m_ReversedZ;
     desc.orthoRange = m_Settings.ortho ? Tan( DegToRad( m_Settings.camFov ) * 0.5f ) * 3.0f * m_Settings.meterToUnitsMultiplier : 0.0f;
@@ -2094,9 +2071,9 @@ void Sample::PrepareFrame(uint32_t frameIndex)
         if (m_SceneFile.find("BistroInterior") != std::string::npos)
         {
             m_checkMeTests = &interior_checkMeTests;
-            if (m_Settings.denoiser == REBLUR)
+            if (m_Settings.denoiser == DENOISER_REBLUR)
                 m_improveMeTests = &REBLUR_interior_improveMeTests;
-            else if (m_Settings.denoiser == RELAX)
+            else if (m_Settings.denoiser == DENOISER_RELAX)
                 m_improveMeTests = &RELAX_interior_improveMeTests;
         }
     }
@@ -2114,8 +2091,9 @@ void Sample::LoadScene()
     sceneFile = utils::GetFullPath(m_SceneFile, utils::DataFolder::SCENES);
     NRI_ABORT_ON_FALSE( utils::LoadScene(sceneFile, m_Scene, !ALLOW_BLAS_MERGING) );
 
-    // Some scene dependent settings // TODO: improve
-    m_ReblurSettings.antilagIntensitySettings.enable = true;
+    // Some scene dependent settings
+    m_ReblurSettings = GetDefaultReblurSettings();
+    m_RelaxSettings = GetDefaultRelaxSettings();
 
     if (m_SceneFile.find("BistroInterior") != std::string::npos)
     {
@@ -2129,6 +2107,11 @@ void Sample::LoadScene()
         m_Settings.exposure = 50.0f;
         m_Settings.emission = true;
     }
+    else if (m_SceneFile.find("Hair") != std::string::npos)
+    {
+        m_Settings.exposure = 2.0f;
+        m_Settings.bounceNum = 4;
+    }
     else if (m_SceneFile.find("ShaderBalls") != std::string::npos)
         m_Settings.exposure = 1.7f;
 }
@@ -2136,7 +2119,7 @@ void Sample::LoadScene()
 void Sample::AddInnerGlassSurfaces()
 {
     // IMPORTANT: this is only valid for non-merged instances, when each instance represents a single object
-    // TODO: try thickness emulation in DeltaRays shader
+    // TODO: try thickness emulation in TraceTransparent shader
 
     size_t instanceNum = m_Scene.instances.size();
     for (size_t i = 0; i < instanceNum; i++)
@@ -2148,7 +2131,8 @@ void Sample::AddInnerGlassSurfaces()
         if (!material.IsTransparent())
             continue;
 
-        const utils::Mesh& mesh = m_Scene.meshes[instance.meshIndex];
+        const utils::MeshInstance &meshInstance = m_Scene.meshInstances[instance.meshInstanceIndex];
+        const utils::Mesh& mesh = m_Scene.meshes[meshInstance.meshIndex];
         float3 size = mesh.aabb.vMax - mesh.aabb.vMin;
         size *= instance.rotation.GetScale();
 
@@ -2259,23 +2243,32 @@ void Sample::CreatePipelineLayoutAndDescriptorPool()
 
     const nri::DescriptorRangeDesc descriptorRanges1[] =
     {
-        { 0, 10, nri::DescriptorType::TEXTURE, nri::ShaderStage::COMPUTE },
-        { 0, 12, nri::DescriptorType::STORAGE_TEXTURE, nri::ShaderStage::COMPUTE },
+        { 0, 12, nri::DescriptorType::TEXTURE, nri::ShaderStage::COMPUTE },
+        { 0, 13, nri::DescriptorType::STORAGE_TEXTURE, nri::ShaderStage::COMPUTE },
     };
 
     const uint32_t textureNum = helper::GetCountOf(m_Scene.materials) * TEXTURES_PER_MATERIAL;
     nri::DescriptorRangeDesc descriptorRanges2[] =
     {
         { 0, 2, nri::DescriptorType::ACCELERATION_STRUCTURE, nri::ShaderStage::COMPUTE },
-        { 2, 2, nri::DescriptorType::STRUCTURED_BUFFER, nri::ShaderStage::COMPUTE },
-        { 4, textureNum, nri::DescriptorType::TEXTURE, nri::ShaderStage::COMPUTE, nri::VARIABLE_DESCRIPTOR_NUM, nri::DESCRIPTOR_ARRAY },
+        { 2, 3, nri::DescriptorType::STRUCTURED_BUFFER, nri::ShaderStage::COMPUTE },
+        { 5, textureNum, nri::DescriptorType::TEXTURE, nri::ShaderStage::COMPUTE, nri::VARIABLE_DESCRIPTOR_NUM, nri::DESCRIPTOR_ARRAY },
     };
+
+    const nri::DescriptorRangeDesc descriptorRanges3[] =
+    {
+        { 0, 3, nri::DescriptorType::STRUCTURED_BUFFER, nri::ShaderStage::COMPUTE },
+        { 0, 2, nri::DescriptorType::STORAGE_STRUCTURED_BUFFER, nri::ShaderStage::COMPUTE },
+    };
+
+   nri::DynamicConstantBufferDesc dynamicConstantBuffer = { 0, nri::ShaderStage::COMPUTE };
 
     const nri::DescriptorSetDesc descriptorSetDesc[] =
     {
         { 0, descriptorRanges0, helper::GetCountOf(descriptorRanges0) },
         { 1, descriptorRanges1, helper::GetCountOf(descriptorRanges1), nullptr, 0, nri::DescriptorSetBindingBits::PARTIALLY_BOUND },
         { 2, descriptorRanges2, helper::GetCountOf(descriptorRanges2) },
+        { 3, descriptorRanges3, helper::GetCountOf(descriptorRanges3), &dynamicConstantBuffer, 1, nri::DescriptorSetBindingBits::PARTIALLY_BOUND },
     };
 
     nri::PipelineLayoutDesc pipelineLayoutDesc = {};
@@ -2288,17 +2281,22 @@ void Sample::CreatePipelineLayoutAndDescriptorPool()
     nri::DescriptorPoolDesc descriptorPoolDesc = {};
 
     descriptorPoolDesc.descriptorSetMaxNum += BUFFERED_FRAME_MAX_NUM;
-    descriptorPoolDesc.constantBufferMaxNum += descriptorRanges0[0].descriptorNum * BUFFERED_FRAME_MAX_NUM;
-    descriptorPoolDesc.samplerMaxNum += descriptorRanges0[1].descriptorNum * BUFFERED_FRAME_MAX_NUM;
+    descriptorPoolDesc.constantBufferMaxNum += descriptorSetDesc[0].ranges[0].descriptorNum * BUFFERED_FRAME_MAX_NUM;
+    descriptorPoolDesc.samplerMaxNum += descriptorSetDesc[0].ranges[1].descriptorNum * BUFFERED_FRAME_MAX_NUM;
 
     descriptorPoolDesc.descriptorSetMaxNum += uint32_t(DescriptorSet::MAX_NUM);
-    descriptorPoolDesc.textureMaxNum += descriptorRanges1[0].descriptorNum * uint32_t(DescriptorSet::MAX_NUM);
-    descriptorPoolDesc.storageTextureMaxNum += descriptorRanges1[1].descriptorNum * uint32_t(DescriptorSet::MAX_NUM);
+    descriptorPoolDesc.textureMaxNum += descriptorSetDesc[1].ranges[0].descriptorNum * uint32_t(DescriptorSet::MAX_NUM);
+    descriptorPoolDesc.storageTextureMaxNum += descriptorSetDesc[1].ranges[1].descriptorNum * uint32_t(DescriptorSet::MAX_NUM);
 
     descriptorPoolDesc.descriptorSetMaxNum += 1;
-    descriptorPoolDesc.accelerationStructureMaxNum += descriptorRanges2[0].descriptorNum;
-    descriptorPoolDesc.structuredBufferMaxNum += descriptorRanges2[1].descriptorNum;
-    descriptorPoolDesc.textureMaxNum += descriptorRanges2[2].descriptorNum;
+    descriptorPoolDesc.accelerationStructureMaxNum += descriptorSetDesc[2].ranges[0].descriptorNum;
+    descriptorPoolDesc.structuredBufferMaxNum += descriptorSetDesc[2].ranges[1].descriptorNum;
+    descriptorPoolDesc.textureMaxNum += descriptorSetDesc[2].ranges[2].descriptorNum;
+
+    descriptorPoolDesc.descriptorSetMaxNum += 2;
+    descriptorPoolDesc.structuredBufferMaxNum += descriptorSetDesc[3].ranges[0].descriptorNum * 2;
+    descriptorPoolDesc.storageStructuredBufferMaxNum += descriptorSetDesc[3].ranges[1].descriptorNum * 2;
+    descriptorPoolDesc.dynamicConstantBufferMaxNum += descriptorSetDesc[3].dynamicConstantBufferNum * 2;
 
     NRI_ABORT_ON_FAILURE(NRI.CreateDescriptorPool(*m_Device, descriptorPoolDesc, m_DescriptorPool));
 }
@@ -2324,29 +2322,29 @@ void Sample::CreatePipelines()
     nri::Pipeline* pipeline = nullptr;
     const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
 
-    { // Pipeline::PrimaryRays
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "PrimaryRays.cs", shaderCodeStorage);
+    { // Pipeline::MorphMeshUpdateVertices
+        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "MorphMeshUpdateVertices.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
     }
 
-    { // Pipeline::DirectLighting
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "DirectLighting.cs", shaderCodeStorage);
+    { // Pipeline::MorphMeshUpdatePrimitives
+        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "MorphMeshUpdatePrimitives.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
     }
 
-    { // Pipeline::AmbientRays
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "AmbientRays.cs", shaderCodeStorage);
+    { // Pipeline::TraceAmbient
+        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "TraceAmbient.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
     }
 
-    { // Pipeline::IndirectRays
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "IndirectRays.cs", shaderCodeStorage);
+    { // Pipeline::TraceOpaque
+        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "TraceOpaque.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
@@ -2359,8 +2357,8 @@ void Sample::CreatePipelines()
         m_Pipelines.push_back(pipeline);
     }
 
-    { // Pipeline::DeltaRays
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "DeltaRays.cs", shaderCodeStorage);
+    { // Pipeline::TraceTransparent
+        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "TraceTransparent.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
@@ -2412,6 +2410,7 @@ void Sample::CreateAccelerationStructures()
         uint64_t scratchOffset;
         uint32_t geometryObjectBase;
         uint32_t geometryObjectsNum;
+        nri::AccelerationStructureBuildBits buildBits;
     };
 
     uint64_t primitivesNum = 0;
@@ -2421,7 +2420,7 @@ void Sample::CreateAccelerationStructures()
     geometryObjects.reserve(m_Scene.instances.size()); // reallocation is NOT allowed!
 
     // Calculate temp memory size
-    std::vector<uint32_t> dynamicMeshesIndices;
+    std::vector<uint32_t> dynamicMeshInstances;
     uint64_t uploadSize = 0;
     uint64_t geometryOffset = 0;
 
@@ -2435,13 +2434,15 @@ void Sample::CreateAccelerationStructures()
 
         if (instance.allowUpdate)
         {
-            if (std::find(dynamicMeshesIndices.begin(), dynamicMeshesIndices.end(), instance.meshIndex) != dynamicMeshesIndices.end())
+            if (std::find(dynamicMeshInstances.begin(), dynamicMeshInstances.end(), instance.meshInstanceIndex) != dynamicMeshInstances.end())
                 continue;
             else
-                dynamicMeshesIndices.push_back(instance.meshIndex);
+                dynamicMeshInstances.push_back(instance.meshInstanceIndex);
         }
 
-        const utils::Mesh& mesh = m_Scene.meshes[instance.meshIndex];
+        const utils::MeshInstance& meshInstance = m_Scene.meshInstances[instance.meshInstanceIndex];
+        const utils::Mesh& mesh = m_Scene.meshes[meshInstance.meshIndex];
+
         uint64_t vertexDataSize = mesh.vertexNum * sizeof(float[3]);
         uint64_t indexDataSize = helper::Align(mesh.indexNum * sizeof(utils::Index), 4);
         uint64_t transformDataSize = instance.allowUpdate ? 0 : sizeof(float[12]);
@@ -2568,7 +2569,8 @@ void Sample::CreateAccelerationStructures()
                 m_EmissiveObjectsNum++;
             }
 
-            const utils::Mesh& mesh = m_Scene.meshes[instance.meshIndex];
+            const utils::MeshInstance& meshInstance = m_Scene.meshInstances[instance.meshInstanceIndex];
+            const utils::Mesh& mesh = m_Scene.meshes[meshInstance.meshIndex];
 
             // Copy geometry to temp buffer
             uint64_t vertexDataSize = mesh.vertexNum * sizeof(float[3]);
@@ -2632,7 +2634,7 @@ void Sample::CreateAccelerationStructures()
             // Create BLAS
             nri::AccelerationStructureDesc accelerationStructureDesc = {};
             accelerationStructureDesc.type = nri::AccelerationStructureType::BOTTOM_LEVEL;
-            accelerationStructureDesc.flags = BLAS_BUILD_BITS;
+            accelerationStructureDesc.flags = BLAS_RIGID_MESH_BUILD_BITS;
             accelerationStructureDesc.instanceOrGeometryObjectNum = geometryObjectsNum;
             accelerationStructureDesc.geometryObjects = &geometryObjects[geometryObjectBase];
 
@@ -2651,7 +2653,7 @@ void Sample::CreateAccelerationStructures()
             NRI_ABORT_ON_FAILURE(NRI.BindAccelerationStructureMemory(*m_Device, &memoryBindingDesc, 1));
 
             // Update parameters
-            parameters.push_back( {accelerationStructure, scratchSize, (uint32_t)geometryObjectBase, geometryObjectsNum} );
+            parameters.push_back( {accelerationStructure, scratchSize, (uint32_t)geometryObjectBase, geometryObjectsNum, accelerationStructureDesc.flags} );
 
             uint64_t size = NRI.GetAccelerationStructureBuildScratchBufferSize(*accelerationStructure);
             scratchSize += helper::Align(size, 256);
@@ -2665,10 +2667,12 @@ void Sample::CreateAccelerationStructures()
     }
 
     // Create BOTTOM_LEVEL acceleration structures for dynamic geometry
-    for (uint32_t dynamicMeshIndex : dynamicMeshesIndices)
+    for (uint32_t dynamicMeshInstanceIndex : dynamicMeshInstances)
     {
-        utils::Mesh& mesh = m_Scene.meshes[dynamicMeshIndex];
-        mesh.blasIndex = (uint32_t)m_AccelerationStructures.size();
+        utils::MeshInstance& meshInstance = m_Scene.meshInstances[dynamicMeshInstanceIndex];
+        const utils::Mesh& mesh = m_Scene.meshes[meshInstance.meshIndex];
+
+        meshInstance.blasIndex = (uint32_t)m_AccelerationStructures.size();
 
         // Copy geometry to temp buffer
         uint64_t vertexDataSize = mesh.vertexNum * sizeof(float[3]);
@@ -2700,7 +2704,7 @@ void Sample::CreateAccelerationStructures()
         // Create BLAS
         nri::AccelerationStructureDesc accelerationStructureDesc = {};
         accelerationStructureDesc.type = nri::AccelerationStructureType::BOTTOM_LEVEL;
-        accelerationStructureDesc.flags = BLAS_BUILD_BITS;
+        accelerationStructureDesc.flags = mesh.HasMorphTargets() ? BLAS_DEFORMABLE_MESH_BUILD_BITS : BLAS_RIGID_MESH_BUILD_BITS;
         accelerationStructureDesc.instanceOrGeometryObjectNum = 1;
         accelerationStructureDesc.geometryObjects = &geometryObject;
 
@@ -2719,10 +2723,13 @@ void Sample::CreateAccelerationStructures()
         NRI_ABORT_ON_FAILURE(NRI.BindAccelerationStructureMemory(*m_Device, &memoryBindingDesc, 1));
 
         // Update parameters
-        parameters.push_back( {accelerationStructure, scratchSize, (uint32_t)(geometryObjects.size() - 1), 1} );
+        parameters.push_back( {accelerationStructure, scratchSize, (uint32_t)(geometryObjects.size() - 1), 1, accelerationStructureDesc.flags } );
 
         uint64_t size = NRI.GetAccelerationStructureBuildScratchBufferSize(*accelerationStructure);
         scratchSize += helper::Align(size, 256);
+
+        if (mesh.HasMorphTargets())
+            m_MorphMeshScratchSize += helper::Align(size, 256);
 
         // Update geometry offset
         geometryOffset += vertexDataSize + helper::Align(indexDataSize, 4);
@@ -2756,7 +2763,7 @@ void Sample::CreateAccelerationStructures()
     NRI.BeginCommandBuffer(*commandBuffer, nullptr, 0);
     {
         for (const Parameters& params : parameters)
-            NRI.CmdBuildBottomLevelAccelerationStructure(*commandBuffer, params.geometryObjectsNum, &geometryObjects[params.geometryObjectBase], BLAS_BUILD_BITS, *params.accelerationStructure, *scratchBuffer, params.scratchOffset);
+            NRI.CmdBuildBottomLevelAccelerationStructure(*commandBuffer, params.geometryObjectsNum, &geometryObjects[params.geometryObjectBase], params.buildBits, *params.accelerationStructure, *scratchBuffer, params.scratchOffset);
     }
     NRI.EndCommandBuffer(*commandBuffer);
 
@@ -2905,17 +2912,28 @@ void Sample::CreateResources(nri::Format swapChainFormat)
 
     std::vector<DescriptorDesc> descriptorDescs;
 
-    // Buffers (HOST_UPLOAD)
+    // Buffers (HOST_UPLOAD) See Descriptor::UploadHeapBufferNum
     CreateBuffer(descriptorDescs, "Buffer::GlobalConstants", m_ConstantBufferSize * BUFFERED_FRAME_MAX_NUM, 1, nri::BufferUsageBits::CONSTANT_BUFFER);
+    CreateBuffer(descriptorDescs, "Buffer::DynamicConstants", DYNAMIC_CONSTANT_BUFFER_SIZE, 1, nri::BufferUsageBits::CONSTANT_BUFFER);
     CreateBuffer(descriptorDescs, "Buffer::InstanceDataStaging", instanceDataSize * BUFFERED_FRAME_MAX_NUM, 1, nri::BufferUsageBits::NONE);
     CreateBuffer(descriptorDescs, "Buffer::WorldTlasDataStaging", m_Scene.instances.size() * sizeof(nri::GeometryObjectInstance) * BUFFERED_FRAME_MAX_NUM, 1, nri::BufferUsageBits::ACCELERATION_STRUCTURE_BUILD_READ);
     CreateBuffer(descriptorDescs, "Buffer::LightTlasDataStaging", m_Scene.instances.size() * sizeof(nri::GeometryObjectInstance) * BUFFERED_FRAME_MAX_NUM, 1, nri::BufferUsageBits::ACCELERATION_STRUCTURE_BUILD_READ);
 
-    // Buffers (DEVICE)
-    CreateBuffer(descriptorDescs, "Buffer::PrimitiveData", m_Scene.primitives.size(), sizeof(PrimitiveData), nri::BufferUsageBits::SHADER_RESOURCE, nri::Format::UNKNOWN);
+    constexpr uint32_t offset = uint32_t(Buffer::InstanceData);
+
+    // Buffers (DEVICE, read-only)
     CreateBuffer(descriptorDescs, "Buffer::InstanceData", instanceDataSize / sizeof(InstanceData), sizeof(InstanceData), nri::BufferUsageBits::SHADER_RESOURCE, nri::Format::UNKNOWN);
-    CreateBuffer(descriptorDescs, "Buffer::WorldScratch", worldScratchBufferSize, 1, nri::BufferUsageBits::RAY_TRACING_BUFFER | nri::BufferUsageBits::SHADER_RESOURCE_STORAGE);
-    CreateBuffer(descriptorDescs, "Buffer::LightScratch", lightScratchBufferSize, 1, nri::BufferUsageBits::RAY_TRACING_BUFFER | nri::BufferUsageBits::SHADER_RESOURCE_STORAGE);
+    CreateBuffer(descriptorDescs, "Buffer::MorphMeshIndices", m_Scene.morphMeshTotalIndicesNum, sizeof(utils::Index), nri::BufferUsageBits::SHADER_RESOURCE | nri::BufferUsageBits::ACCELERATION_STRUCTURE_BUILD_READ, nri::Format::UNKNOWN);
+    CreateBuffer(descriptorDescs, "Buffer::MorphMeshVertices", m_Scene.morphVertices.size(), sizeof(utils::MorphVertex), nri::BufferUsageBits::SHADER_RESOURCE, nri::Format::UNKNOWN);
+
+    // Buffers (DEVICE)
+    CreateBuffer(descriptorDescs, "Buffer::MorphedPositions", m_Scene.morphedVerticesNum * MAX_ANIMATION_HISTORY_FRAME_NUM, sizeof(float4), nri::BufferUsageBits::SHADER_RESOURCE | nri::BufferUsageBits::SHADER_RESOURCE_STORAGE | nri::BufferUsageBits::ACCELERATION_STRUCTURE_BUILD_READ, nri::Format::UNKNOWN);
+    CreateBuffer(descriptorDescs, "Buffer::MorphedAttributes", m_Scene.morphedVerticesNum, sizeof(MorphedAttributes), nri::BufferUsageBits::SHADER_RESOURCE | nri::BufferUsageBits::SHADER_RESOURCE_STORAGE, nri::Format::UNKNOWN);
+    CreateBuffer(descriptorDescs, "Buffer::MorphedPrimitivePrevData", m_Scene.morphedPrimitivesNum, sizeof(MorphedPrimitivePrevData), nri::BufferUsageBits::SHADER_RESOURCE | nri::BufferUsageBits::SHADER_RESOURCE_STORAGE, nri::Format::UNKNOWN);
+    CreateBuffer(descriptorDescs, "Buffer::PrimitiveData", m_Scene.totalInstancedPrimitivesNum, sizeof(PrimitiveData), nri::BufferUsageBits::SHADER_RESOURCE | nri::BufferUsageBits::SHADER_RESOURCE_STORAGE, nri::Format::UNKNOWN);
+    CreateBuffer(descriptorDescs, "Buffer::WorldScratch", worldScratchBufferSize, 1, nri::BufferUsageBits::RAY_TRACING_BUFFER);
+    CreateBuffer(descriptorDescs, "Buffer::LightScratch", lightScratchBufferSize, 1, nri::BufferUsageBits::RAY_TRACING_BUFFER);
+    CreateBuffer(descriptorDescs, "Buffer::MorphMeshScratch", m_MorphMeshScratchSize, 1, nri::BufferUsageBits::RAY_TRACING_BUFFER);
 
     // Textures (DEVICE)
     CreateTexture(descriptorDescs, "Texture::Ambient", nri::Format::RGBA16_SFLOAT, 2, 2, 1, 1,
@@ -2925,8 +2943,6 @@ void Sample::CreateResources(nri::Format swapChainFormat)
     CreateTexture(descriptorDescs, "Texture::Motion", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::Normal_Roughness", normalFormat, w, h, 1, 1,
-        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
-    CreateTexture(descriptorDescs, "Texture::PrimaryMip_Curvature", nri::Format::RG8_UNORM, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::PsrThroughput", nri::Format::R10_G10_B10_A2_UNORM, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
@@ -2987,8 +3003,6 @@ void Sample::CreateResources(nri::Format swapChainFormat)
     for (const utils::Texture* textureData : m_Scene.textures)
         CreateTexture(descriptorDescs, "", textureData->GetFormat(), textureData->GetWidth(), textureData->GetHeight(), textureData->GetMipNum(), textureData->GetArraySize(), nri::TextureUsageBits::SHADER_RESOURCE, nri::AccessBits::UNKNOWN);
 
-    constexpr uint32_t offset = uint32_t(Buffer::UploadHeapBufferNum);
-
     // Bind memory
     nri::ResourceGroupDesc resourceGroupDesc = {};
     resourceGroupDesc.memoryLocation = nri::MemoryLocation::HOST_UPLOAD;
@@ -3010,6 +3024,18 @@ void Sample::CreateResources(nri::Format swapChainFormat)
     NRI_ABORT_ON_FAILURE( NRI.AllocateAndBindMemory(*m_Device, resourceGroupDesc, m_MemoryAllocations.data() + baseAllocation));
 
     // Create descriptors
+    for (uint32_t i = 0; i < BUFFERED_FRAME_MAX_NUM; i++)
+    {
+        nri::BufferViewDesc bufferDesc = {};
+        bufferDesc.buffer = Get(Buffer::GlobalConstants);
+        bufferDesc.viewType = nri::BufferViewType::CONSTANT;
+        bufferDesc.offset = i * m_ConstantBufferSize;
+        bufferDesc.size = m_ConstantBufferSize;
+
+        NRI_ABORT_ON_FAILURE(NRI.CreateBufferView(bufferDesc, m_Frames[i].globalConstantBufferDescriptor));
+        m_Frames[i].globalConstantBufferOffset = bufferDesc.offset;
+    }
+
     nri::Descriptor* descriptor = nullptr;
     for (const DescriptorDesc& desc : descriptorDescs)
     {
@@ -3017,17 +3043,7 @@ void Sample::CreateResources(nri::Format swapChainFormat)
         {
             if (desc.bufferUsage == nri::BufferUsageBits::CONSTANT_BUFFER)
             {
-                for (uint32_t i = 0; i < BUFFERED_FRAME_MAX_NUM; i++)
-                {
-                    nri::BufferViewDesc bufferDesc = {};
-                    bufferDesc.buffer = Get(Buffer::GlobalConstants);
-                    bufferDesc.viewType = nri::BufferViewType::CONSTANT;
-                    bufferDesc.offset = i * m_ConstantBufferSize;
-                    bufferDesc.size = m_ConstantBufferSize;
-
-                    NRI_ABORT_ON_FAILURE( NRI.CreateBufferView(bufferDesc, m_Frames[i].globalConstantBufferDescriptor) );
-                    m_Frames[i].globalConstantBufferOffset = bufferDesc.offset;
-                }
+                // Constant buffer views are not stored in m_Descriptors
             }
             else
             {
@@ -3035,13 +3051,13 @@ void Sample::CreateResources(nri::Format swapChainFormat)
                 {
                     if (desc.bufferUsage & nri::BufferUsageBits::SHADER_RESOURCE)
                     {
-                        const nri::BufferViewDesc viewDesc = {(nri::Buffer*)desc.resource, nri::BufferViewType::SHADER_RESOURCE, desc.format};
+                        const nri::BufferViewDesc viewDesc = { (nri::Buffer*)desc.resource, nri::BufferViewType::SHADER_RESOURCE, desc.format };
                         NRI_ABORT_ON_FAILURE(NRI.CreateBufferView(viewDesc, descriptor));
                         m_Descriptors.push_back(descriptor);
                     }
                     if (desc.bufferUsage & nri::BufferUsageBits::SHADER_RESOURCE_STORAGE)
                     {
-                        const nri::BufferViewDesc viewDesc = {(nri::Buffer*)desc.resource, nri::BufferViewType::SHADER_RESOURCE_STORAGE, desc.format};
+                        const nri::BufferViewDesc viewDesc = { (nri::Buffer*)desc.resource, nri::BufferViewType::SHADER_RESOURCE_STORAGE, desc.format };
                         NRI_ABORT_ON_FAILURE(NRI.CreateBufferView(viewDesc, descriptor));
                         m_Descriptors.push_back(descriptor);
                     }
@@ -3067,6 +3083,9 @@ void Sample::CreateResources(nri::Format swapChainFormat)
             NRI.SetTextureDebugName(*(nri::Texture*)desc.resource, desc.debugName);
         }
     }
+
+    // Init dynamic allocator helper
+    m_DynamicConstantBufferAllocator.Initialize(&NRI, m_Device, Get(Buffer::DynamicConstants), DYNAMIC_CONSTANT_BUFFER_SIZE);
 }
 
 void Sample::CreateDescriptorSets()
@@ -3095,63 +3114,7 @@ void Sample::CreateDescriptorSets()
         NRI.UpdateDescriptorRanges(*frame.globalConstantBufferDescriptorSet, nri::WHOLE_DEVICE_GROUP, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
-    { // DescriptorSet::PrimaryRays1
-        const nri::Descriptor* resources[] =
-        {
-            Get(Descriptor((uint32_t)Descriptor::MaterialTextures + utils::StaticTexture::ScramblingRanking1spp)),
-            Get(Descriptor((uint32_t)Descriptor::MaterialTextures + utils::StaticTexture::SobolSequence)),
-        };
-
-        const nri::Descriptor* storageResources[] =
-        {
-            Get(Descriptor::Mv_StorageTexture),
-            Get(Descriptor::ViewZ_StorageTexture),
-            Get(Descriptor::Normal_Roughness_StorageTexture),
-            Get(Descriptor::BaseColor_Metalness_StorageTexture),
-            Get(Descriptor::PrimaryMip_Curvature_StorageTexture),
-            Get(Descriptor::DirectLighting_StorageTexture),
-            Get(Descriptor::DirectEmission_StorageTexture),
-            Get(Descriptor::Unfiltered_ShadowData_StorageTexture),
-            Get(Descriptor::Unfiltered_Shadow_Translucency_StorageTexture),
-        };
-
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::WHOLE_DEVICE_GROUP, 0));
-        m_DescriptorSets.push_back(descriptorSet);
-
-        const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
-        {
-            { resources, helper::GetCountOf(resources) },
-            { storageResources, helper::GetCountOf(storageResources) },
-        };
-
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
-    }
-
-    { // DescriptorSet::DirectLighting1
-        const nri::Descriptor* resources[] =
-        {
-            Get(Descriptor::DirectEmission_Texture),
-            Get(Descriptor::Shadow_Texture),
-        };
-
-        const nri::Descriptor* storageResources[] =
-        {
-            Get(Descriptor::DirectLighting_StorageTexture),
-        };
-
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::WHOLE_DEVICE_GROUP, 0));
-        m_DescriptorSets.push_back(descriptorSet);
-
-        const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
-        {
-            { resources, helper::GetCountOf(resources) },
-            { storageResources, helper::GetCountOf(storageResources) },
-        };
-
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
-    }
-
-    { // DescriptorSet::AmbientRays1
+    { // DescriptorSet::TraceAmbient1
         const nri::Descriptor* storageResources[] =
         {
             Get(Descriptor::Ambient_StorageTexture),
@@ -3168,23 +3131,27 @@ void Sample::CreateDescriptorSets()
         NRI.UpdateDescriptorRanges(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 1, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
-    { // DescriptorSet::IndirectRays1
+    { // DescriptorSet::TraceOpaque1
         const nri::Descriptor* resources[] =
         {
-            Get(Descriptor::PrimaryMip_Curvature_Texture),
             Get(Descriptor::ComposedDiff_Texture),
             Get(Descriptor::ComposedSpec_ViewZ_Texture),
             Get(Descriptor::Ambient_Texture),
+            Get(Descriptor((uint32_t)Descriptor::MaterialTextures + utils::StaticTexture::ScramblingRanking1spp)),
+            Get(Descriptor((uint32_t)Descriptor::MaterialTextures + utils::StaticTexture::SobolSequence)),
         };
 
         const nri::Descriptor* storageResources[] =
         {
-            Get(Descriptor::DirectLighting_StorageTexture),
-            Get(Descriptor::BaseColor_Metalness_StorageTexture),
-            Get(Descriptor::Normal_Roughness_StorageTexture),
-            Get(Descriptor::ViewZ_StorageTexture),
             Get(Descriptor::Mv_StorageTexture),
+            Get(Descriptor::ViewZ_StorageTexture),
+            Get(Descriptor::Normal_Roughness_StorageTexture),
+            Get(Descriptor::BaseColor_Metalness_StorageTexture),
+            Get(Descriptor::DirectLighting_StorageTexture),
+            Get(Descriptor::DirectEmission_StorageTexture),
             Get(Descriptor::PsrThroughput_StorageTexture),
+            Get(Descriptor::Unfiltered_ShadowData_StorageTexture),
+            Get(Descriptor::Unfiltered_Shadow_Translucency_StorageTexture),
             Get(Descriptor::Unfiltered_Diff_StorageTexture),
             Get(Descriptor::Unfiltered_Spec_StorageTexture),
 #if( NRD_MODE == SH )
@@ -3212,10 +3179,12 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Normal_Roughness_Texture),
             Get(Descriptor::BaseColor_Metalness_Texture),
             Get(Descriptor::DirectLighting_Texture),
+            Get(Descriptor::DirectEmission_Texture),
             Get(Descriptor::PsrThroughput_Texture),
+            Get(Descriptor::Ambient_Texture),
+            Get(Descriptor::Shadow_Texture),
             Get(Descriptor::Diff_Texture),
             Get(Descriptor::Spec_Texture),
-            Get(Descriptor::Ambient_Texture),
 #if( NRD_MODE == SH )
             Get(Descriptor::DiffSh_Texture),
             Get(Descriptor::SpecSh_Texture),
@@ -3240,7 +3209,7 @@ void Sample::CreateDescriptorSets()
         NRI.UpdateDescriptorRanges(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
-    { // DescriptorSet::DeltaRays1
+    { // DescriptorSet::TraceTransparent1
         const nri::Descriptor* resources[] =
         {
             Get(Descriptor::ViewZ_Texture),
@@ -3481,7 +3450,8 @@ void Sample::CreateDescriptorSets()
         const nri::Descriptor* structuredBuffers[] =
         {
             Get(Descriptor::InstanceData_Buffer),
-            Get(Descriptor::PrimitiveData_Buffer)
+            Get(Descriptor::PrimitiveData_Buffer),
+            Get(Descriptor::MorphedPrimitivePrevData_Buffer),
         };
 
         const nri::Descriptor* accelerationStructures[] =
@@ -3501,6 +3471,72 @@ void Sample::CreateDescriptorSets()
         };
 
         NRI.UpdateDescriptorRanges(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+    }
+
+    { // DescriptorSet::MorphTargetPose3
+        const nri::Descriptor* resources[] =
+        {
+            Get(Descriptor::MorphMeshVertices_Buffer)
+        };
+
+        const nri::Descriptor* storageResources[] =
+        {
+            Get(Descriptor::MorphedPositions_StorageBuffer),
+            Get(Descriptor::MorphedAttributes_StorageBuffer),
+        };
+
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 3, &descriptorSet, 1, nri::WHOLE_DEVICE_GROUP, 0));
+        m_DescriptorSets.push_back(descriptorSet);
+
+        const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
+        {
+            { resources, helper::GetCountOf(resources) },
+            { storageResources, helper::GetCountOf(storageResources) }
+        };
+
+        NRI.UpdateDescriptorRanges(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+
+        nri::BufferViewDesc constantBufferViewDesc = {};
+        constantBufferViewDesc.viewType = nri::BufferViewType::CONSTANT;
+        constantBufferViewDesc.buffer = m_DynamicConstantBufferAllocator.GetBuffer();
+        constantBufferViewDesc.size = m_DynamicConstantBufferAllocator.GetAlignedSize(sizeof(MorphMeshUpdateVerticesConstants));
+        NRI_ABORT_ON_FAILURE(NRI.CreateBufferView(constantBufferViewDesc, m_MorphTargetPoseConstantBufferView));
+
+        NRI.UpdateDynamicConstantBuffers(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 0, 1, &m_MorphTargetPoseConstantBufferView);
+    }
+
+    { // DescriptorSet::MorphTargetUpdatePrimitives3
+        const nri::Descriptor* resources[] =
+        {
+            Get(Descriptor::MorphMeshIndices_Buffer),
+            Get(Descriptor::MorphedPositions_Buffer),
+            Get(Descriptor::MorphedAttributes_Buffer)
+        };
+
+        const nri::Descriptor* storageResources[] =
+        {
+            Get(Descriptor::PrimitiveData_StorageBuffer),
+            Get(Descriptor::MorphedPrimitivePrevData_StorageBuffer)
+        };
+
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 3, &descriptorSet, 1, nri::WHOLE_DEVICE_GROUP, 0));
+        m_DescriptorSets.push_back(descriptorSet);
+
+        const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
+        {
+            { resources, helper::GetCountOf(resources) },
+            { storageResources, helper::GetCountOf(storageResources) }
+        };
+
+        NRI.UpdateDescriptorRanges(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+
+        nri::BufferViewDesc constantBufferViewDesc = {};
+        constantBufferViewDesc.viewType = nri::BufferViewType::CONSTANT;
+        constantBufferViewDesc.buffer = m_DynamicConstantBufferAllocator.GetBuffer();
+        constantBufferViewDesc.size = m_DynamicConstantBufferAllocator.GetAlignedSize(sizeof(MorphMeshUpdatePrimitivesConstants));
+        NRI_ABORT_ON_FAILURE(NRI.CreateBufferView(constantBufferViewDesc, m_MorphTargetUpdatePrimitivesConstantBufferView));
+
+        NRI.UpdateDynamicConstantBuffers(*descriptorSet, nri::WHOLE_DEVICE_GROUP, 0, 1, &m_MorphTargetUpdatePrimitivesConstantBufferView);
     }
 }
 
@@ -3524,6 +3560,9 @@ void Sample::CreateTexture(std::vector<DescriptorDesc>& descriptorDescs, const c
 
 void Sample::CreateBuffer(std::vector<DescriptorDesc>& descriptorDescs, const char* debugName, uint64_t elements, uint32_t stride, nri::BufferUsageBits usage, nri::Format format)
 {
+    if (!elements)
+        elements = 1;
+
     nri::BufferDesc bufferDesc = {};
     bufferDesc.size = elements * stride;
     bufferDesc.structureStride = (format == nri::Format::UNKNOWN && stride != 1) ? stride : 0;
@@ -3538,18 +3577,21 @@ void Sample::CreateBuffer(std::vector<DescriptorDesc>& descriptorDescs, const ch
 
 void Sample::UploadStaticData()
 {
-    std::vector<PrimitiveData> primitiveData( m_Scene.primitives.size() );
-    uint32_t n = 0;
-    for (const utils::Mesh& mesh : m_Scene.meshes)
+    std::vector<PrimitiveData> primitiveData( m_Scene.totalInstancedPrimitivesNum );
+
+    for (utils::MeshInstance& meshInstance : m_Scene.meshInstances)
     {
+        utils::Mesh& mesh = m_Scene.meshes[meshInstance.meshIndex];
         uint32_t triangleNum = mesh.indexNum / 3;
+        uint32_t staticPrimitiveOffset = mesh.indexOffset / 3;
+
         for (uint32_t j = 0; j < triangleNum; j++)
         {
-            uint32_t primitiveIndex = mesh.indexOffset / 3 + j;
+            uint32_t staticPrimitiveIndex = staticPrimitiveOffset + j;
 
-            const utils::UnpackedVertex& v0 = m_Scene.unpackedVertices[ mesh.vertexOffset + m_Scene.indices[primitiveIndex * 3] ];
-            const utils::UnpackedVertex& v1 = m_Scene.unpackedVertices[ mesh.vertexOffset + m_Scene.indices[primitiveIndex * 3 + 1] ];
-            const utils::UnpackedVertex& v2 = m_Scene.unpackedVertices[ mesh.vertexOffset + m_Scene.indices[primitiveIndex * 3 + 2] ];
+            const utils::UnpackedVertex& v0 = m_Scene.unpackedVertices[ mesh.vertexOffset + m_Scene.indices[staticPrimitiveIndex * 3] ];
+            const utils::UnpackedVertex& v1 = m_Scene.unpackedVertices[ mesh.vertexOffset + m_Scene.indices[staticPrimitiveIndex * 3 + 1] ];
+            const utils::UnpackedVertex& v2 = m_Scene.unpackedVertices[ mesh.vertexOffset + m_Scene.indices[staticPrimitiveIndex * 3 + 2] ];
 
             float2 n0 = Packed::EncodeUnitVector( float3(v0.normal), true );
             float2 n1 = Packed::EncodeUnitVector( float3(v1.normal), true );
@@ -3559,23 +3601,23 @@ void Sample::UploadStaticData()
             float2 t1 = Packed::EncodeUnitVector( float3(v1.tangent) + 1e-6f, true );
             float2 t2 = Packed::EncodeUnitVector( float3(v2.tangent) + 1e-6f, true );
 
-            PrimitiveData& data = primitiveData[n++];
+            PrimitiveData& data = primitiveData[meshInstance.primitiveOffset + j];
             data.uv0 = Packed::sf2_to_h2(v0.uv[0], v0.uv[1]);
             data.uv1 = Packed::sf2_to_h2(v1.uv[0], v1.uv[1]);
             data.uv2 = Packed::sf2_to_h2(v2.uv[0], v2.uv[1]);
 
-            data.n0oct = Packed::sf2_to_h2(n0.x, n0.y);
-            data.n1oct = Packed::sf2_to_h2(n1.x, n1.y);
-            data.n2oct = Packed::sf2_to_h2(n2.x, n2.y);
+            data.n0 = Packed::sf2_to_h2(n0.x, n0.y);
+            data.n1 = Packed::sf2_to_h2(n1.x, n1.y);
+            data.n2 = Packed::sf2_to_h2(n2.x, n2.y);
 
-            data.t0oct = Packed::sf2_to_h2(t0.x, t0.y);
-            data.t1oct = Packed::sf2_to_h2(t1.x, t1.y);
-            data.t2oct = Packed::sf2_to_h2(t2.x, t2.y);
+            data.t0 = Packed::sf2_to_h2(t0.x, t0.y);
+            data.t1 = Packed::sf2_to_h2(t1.x, t1.y);
+            data.t2 = Packed::sf2_to_h2(t2.x, t2.y);
 
             data.curvature0_curvature1 = Packed::sf2_to_h2(v0.curvature, v1.curvature);
             data.curvature2_bitangentSign = Packed::sf2_to_h2(v2.curvature, v0.tangent[3]);
 
-            const utils::Primitive& primitive = m_Scene.primitives[primitiveIndex];
+            const utils::Primitive& primitive = m_Scene.primitives[staticPrimitiveIndex];
             data.worldToUvUnits = primitive.worldToUvUnits;
         }
     }
@@ -3626,10 +3668,23 @@ void Sample::UploadStaticData()
         textureData.push_back(desc);
     }
 
+    std::vector<utils::Index> morphMeshIndices(m_Scene.morphMeshTotalIndicesNum);
+    uint32_t morphMeshIndexOffset = 0;
+
+    // Compact static base pose data
+    for (uint32_t morphMeshIndex : m_Scene.morphMeshes)
+    {
+        const utils::Mesh& mesh = m_Scene.meshes[morphMeshIndex];
+        memcpy(morphMeshIndices.data() + morphMeshIndexOffset, &m_Scene.indices[mesh.indexOffset], mesh.indexNum * sizeof(m_Scene.indices[mesh.indexOffset]));
+        morphMeshIndexOffset += mesh.indexNum;
+    }
+
     // Buffer data
     nri::BufferUploadDesc dataDescArray[] =
     {
         { primitiveData.data(), helper::GetByteSizeOf(primitiveData), Get(Buffer::PrimitiveData), 0, nri::AccessBits::SHADER_RESOURCE },
+        { morphMeshIndices.data(), helper::GetByteSizeOf(morphMeshIndices), Get(Buffer::MorphMeshIndices), 0, nri::AccessBits::SHADER_RESOURCE},
+        { m_Scene.morphVertices.data(), helper::GetByteSizeOf(m_Scene.morphVertices), Get(Buffer::MorphMeshVertices), 0, nri::AccessBits::SHADER_RESOURCE}
     };
 
     // Upload data and apply states
@@ -3668,14 +3723,10 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
     // Add static opaque (includes emissives)
     if (m_OpaqueObjectsNum)
     {
-        uint32_t flags = FLAG_DEFAULT;
-        uint32_t instanceIdAndFlags = instanceIndex | (flags << FLAG_FIRST_BIT);
-
         nri::GeometryObjectInstance geometryObjectInstance = {};
         memcpy(geometryObjectInstance.transform, mCameraTranslation.a16, sizeof(geometryObjectInstance.transform));
-        geometryObjectInstance.instanceId = instanceIdAndFlags;
-        geometryObjectInstance.mask = flags;
-        geometryObjectInstance.shaderBindingTableLocalOffset = 0;
+        geometryObjectInstance.instanceId = instanceIndex;
+        geometryObjectInstance.mask = FLAG_DEFAULT;
         geometryObjectInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE;
         geometryObjectInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticOpaque), 0);
 
@@ -3687,14 +3738,10 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
     // Add static transparent
     if (m_TransparentObjectsNum)
     {
-        uint32_t flags = FLAG_TRANSPARENT;
-        uint32_t instanceIdAndFlags = instanceIndex | (flags << FLAG_FIRST_BIT);
-
         nri::GeometryObjectInstance geometryObjectInstance = {};
         memcpy(geometryObjectInstance.transform, mCameraTranslation.a16, sizeof(geometryObjectInstance.transform));
-        geometryObjectInstance.instanceId = instanceIdAndFlags;
-        geometryObjectInstance.mask = flags;
-        geometryObjectInstance.shaderBindingTableLocalOffset = 0;
+        geometryObjectInstance.instanceId = instanceIndex;
+        geometryObjectInstance.mask = FLAG_TRANSPARENT;
         geometryObjectInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE;
         geometryObjectInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticTransparent), 0);
 
@@ -3708,14 +3755,10 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
     // Add static emissives (only emissives in a separate TLAS)
     if (m_EmissiveObjectsNum)
     {
-        uint32_t flags = FLAG_DEFAULT;
-        uint32_t instanceIdAndFlags = instanceIndex | (flags << FLAG_FIRST_BIT);
-
         nri::GeometryObjectInstance geometryObjectInstance = {};
         memcpy(geometryObjectInstance.transform, mCameraTranslation.a16, sizeof(geometryObjectInstance.transform));
-        geometryObjectInstance.instanceId = instanceIdAndFlags;
-        geometryObjectInstance.mask = flags;
-        geometryObjectInstance.shaderBindingTableLocalOffset = 0;
+        geometryObjectInstance.instanceId = instanceIndex;
+        geometryObjectInstance.mask = FLAG_DEFAULT;
         geometryObjectInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE;
         geometryObjectInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticEmissive), 0);
 
@@ -3757,22 +3800,21 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
                     continue;
             }
 
-            assert(instanceIndex <= INSTANCE_ID_MASK);
-
             float4x4 mObjectToWorld = float4x4::Identity();
-            float4x4 mWorldToWorldPrev = float4x4::Identity();
+            float4x4 mOverloadedMatrix = float4x4::Identity();
             bool isLeftHanded = false;
 
             if (instance.allowUpdate)
             {
+                const utils::MeshInstance& meshInstance = m_Scene.meshInstances[instance.meshInstanceIndex];
+                const utils::Mesh& mesh = m_Scene.meshes[meshInstance.meshIndex];
+
                 // Current & previous transform
                 mObjectToWorld = instance.rotation;
                 float4x4 mObjectToWorldPrev = instance.rotationPrev;
 
                 if (instance.scale != float3(1.0f))
                 {
-                    const utils::Mesh& mesh = m_Scene.meshes[instance.meshIndex];
-
                     float4x4 translation;
                     translation.SetupByTranslation( ToFloat(instance.position) - mesh.aabb.GetCenter() );
 
@@ -3791,13 +3833,18 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
                 mObjectToWorld.AddTranslation( m_Camera.GetRelative(instance.position) );
                 mObjectToWorldPrev.AddTranslation( m_Camera.GetRelative(instance.positionPrev) );
 
-                // World to world (previous state) transform
-                // FP64 used to avoid imprecision problems on close up views (InvertOrtho can't be used due to scaling factors)
-                double4x4 dmWorldToObject = ToDouble(mObjectToWorld);
-                dmWorldToObject.Invert();
+                if (mesh.HasMorphTargets())
+                    mOverloadedMatrix = mObjectToWorldPrev;
+                else
+                {
+                    // World to world (previous state) transform
+                    // FP64 used to avoid imprecision problems on close up views (InvertOrtho can't be used due to scaling factors)
+                    double4x4 dmWorldToObject = ToDouble(mObjectToWorld);
+                    dmWorldToObject.Invert();
 
-                double4x4 dmObjectToWorldPrev = ToDouble(mObjectToWorldPrev);
-                mWorldToWorldPrev = ToFloat(dmObjectToWorldPrev * dmWorldToObject);
+                    double4x4 dmObjectToWorldPrev = ToDouble(mObjectToWorldPrev);
+                    mOverloadedMatrix = ToFloat(dmObjectToWorldPrev * dmWorldToObject);
+                }
 
                 // Update previous state
                 instance.positionPrev = instance.position;
@@ -3808,52 +3855,60 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
                 mObjectToWorld = mCameraTranslation;
 
                 // Static geometry doesn't have "prev" transformation, reuse this matrix to pass object rotation needed for normals
-                mWorldToWorldPrev = instance.rotation;
+                mOverloadedMatrix = instance.rotation;
 
                 // Transform can be left-handed (mirroring), in this case normals need flipping
                 isLeftHanded = instance.rotation.IsLeftHanded();
             }
 
             mObjectToWorld.Transpose3x4();
-            mWorldToWorldPrev.Transpose3x4();
+            mOverloadedMatrix.Transpose3x4();
 
             // Add instance data
-            const utils::Mesh& mesh = m_Scene.meshes[instance.meshIndex];
+            const utils::MeshInstance& meshInstance = m_Scene.meshInstances[instance.meshInstanceIndex];
+            uint32_t baseTextureIndex = instance.materialIndex * TEXTURES_PER_MATERIAL;
             float3 scale = instance.rotation.GetScale();
 
-            instanceData->mWorldToWorldPrev0 = mWorldToWorldPrev.col0;
-            instanceData->mWorldToWorldPrev1 = mWorldToWorldPrev.col1;
-            instanceData->mWorldToWorldPrev2 = mWorldToWorldPrev.col2;
+            uint32_t flags = FLAG_DEFAULT;
+
+            if (!instance.allowUpdate)
+                flags |= FLAG_STATIC;
+
+            if (material.IsTransparent())
+            {
+                flags |= FLAG_TRANSPARENT;
+                m_HasTransparent = true;
+            }
+            else if (m_Settings.emission && m_Settings.emissiveObjects && i > staticInstanceCount && (i % 3 == 0))
+                flags |= FLAG_FORCED_EMISSION;
+
+            if (meshInstance.morphedVertexOffset != utils::InvalidIndex)
+                flags |= FLAG_DEFORMABLE;
+
+            if (material.IsHair())
+                flags |= FLAG_HAIR;
+
+            instanceData->mOverloadedMatrix0 = mOverloadedMatrix.col0;
+            instanceData->mOverloadedMatrix1 = mOverloadedMatrix.col1;
+            instanceData->mOverloadedMatrix2 = mOverloadedMatrix.col2;
             instanceData->baseColorAndMetalnessScale = material.baseColorAndMetalnessScale;
             instanceData->emissionAndRoughnessScale = material.emissiveAndRoughnessScale;
-            instanceData->baseTextureIndex = instance.materialIndex * TEXTURES_PER_MATERIAL;
-            instanceData->basePrimitiveIndex = mesh.indexOffset / 3;
-            instanceData->isStatic = instance.allowUpdate ? 0 : 1;
+            instanceData->textureOffsetAndFlags = baseTextureIndex | ( flags << FLAG_FIRST_BIT );
+            instanceData->primitiveOffset = meshInstance.primitiveOffset;
+            instanceData->morphedPrimitiveOffset = meshInstance.morphedPrimitiveOffset;
             instanceData->invScale = (isLeftHanded ? -1.0f : 1.0f) / Max(scale.x, Max(scale.y, scale.z));
             instanceData++;
 
             // Add dynamic geometry
             if (instance.allowUpdate)
             {
-                uint32_t flags = FLAG_DEFAULT;
-                if (material.IsTransparent())
-                {
-                    flags = FLAG_TRANSPARENT;
-                    m_HasTransparent = true;
-                }
-                else if (m_Settings.emission && m_Settings.emissiveObjects && i > staticInstanceCount && (i % 3 == 0))
-                    flags = FLAG_FORCED_EMISSION;
-
-                uint32_t instanceIdAndFlags = instanceIndex | (flags << FLAG_FIRST_BIT);
-                instanceIndex++;
-
                 nri::GeometryObjectInstance geometryObjectInstance = {};
                 memcpy(geometryObjectInstance.transform, mObjectToWorld.a16, sizeof(geometryObjectInstance.transform));
-                geometryObjectInstance.instanceId = instanceIdAndFlags;
+                geometryObjectInstance.instanceId = instanceIndex++;
                 geometryObjectInstance.mask = flags;
                 geometryObjectInstance.shaderBindingTableLocalOffset = 0;
                 geometryObjectInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE | (material.IsAlphaOpaque() ? nri::TopLevelInstanceBits::NONE : nri::TopLevelInstanceBits::FORCE_OPAQUE);
-                geometryObjectInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*m_AccelerationStructures[mesh.blasIndex], 0);
+                geometryObjectInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*m_AccelerationStructures[meshInstance.blasIndex], 0);
 
                 *worldTlasData++ = geometryObjectInstance;
                 worldGeometryObjectsNum++;
@@ -3922,9 +3977,9 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
     if (m_Settings.tracingMode == RESOLUTION_FULL_PROBABILISTIC)
     {
         nrd::HitDistanceReconstructionMode mode = nrd::HitDistanceReconstructionMode::OFF;
-        if (m_Settings.denoiser == REBLUR)
+        if (m_Settings.denoiser == DENOISER_REBLUR)
             mode = m_ReblurSettings.hitDistanceReconstructionMode;
-        else if (m_Settings.denoiser == RELAX)
+        else if (m_Settings.denoiser == DENOISER_RELAX)
             mode = m_RelaxSettings.hitDistanceReconstructionMode;
 
         // Min / max allowed probability to guarantee a sample in 3x3 or 5x5 area - https://godbolt.org/z/YGYo1rjnM
@@ -3943,7 +3998,7 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
     const uint32_t bufferedFrameIndex = frameIndex % BUFFERED_FRAME_MAX_NUM;
     const uint64_t rangeOffset = m_Frames[bufferedFrameIndex].globalConstantBufferOffset;
     nri::Buffer* globalConstants = Get(Buffer::GlobalConstants);
-    auto data = (GlobalConstantBufferData*)NRI.MapBuffer(*globalConstants, rangeOffset, sizeof(GlobalConstantBufferData));
+    auto data = (GlobalConstants*)NRI.MapBuffer(*globalConstants, rangeOffset, sizeof(GlobalConstants));
     {
         data->gViewToWorld                                  = m_Camera.state.mViewToWorld;
         data->gViewToClip                                   = m_Camera.state.mViewToClip;
@@ -3957,10 +4012,9 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
         data->gSunDirection_gExposure.w                     = m_Settings.exposure;
         data->gCameraOrigin_gMipBias                        = m_Camera.state.position;
         data->gCameraOrigin_gMipBias.w                      = baseMipBias + log2f(renderSize.x / outputSize.x);
-        data->gViewDirection_gIsOrtho                       = float4(viewDir.x, viewDir.y, viewDir.z, orthoMode);
-        data->gCameraDelta_gNearZ                           = float4(cameraDelta.x, cameraDelta.y, cameraDelta.z, nearZ);
-        data->gCameraGlobalPosition_gEmissionIntensity      = CAMERA_RELATIVE ? ToFloat(m_Camera.state.globalPosition) : float3::Zero();
-        data->gCameraGlobalPosition_gEmissionIntensity.w    = emissionIntensity;
+        data->gViewDirection_gOrthoMode                     = float4(viewDir.x, viewDir.y, viewDir.z, orthoMode);
+        data->gHairBaseColorOverride                        = m_HairBaseColorOverride;
+        data->gHairBetasOverride                            = m_HairBetasOverride;
         data->gWindowSize                                   = windowSize;
         data->gInvWindowSize                                = float2(1.0f, 1.0f) / windowSize;
         data->gOutputSize                                   = outputSize;
@@ -3970,6 +4024,8 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
         data->gRectSize                                     = rectSize;
         data->gInvRectSize                                  = float2(1.0f, 1.0f) / rectSize;
         data->gRectSizePrev                                 = rectSizePrev;
+        data->gNearZ                                        = nearZ;
+        data->gEmissionIntensity                            = emissionIntensity;
         data->gJitter                                       = jitter;
         data->gSeparator                                    = m_Settings.separator;
         data->gRoughnessOverride                            = m_Settings.roughnessOverride;
@@ -3984,6 +4040,9 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
         data->gPrevFrameConfidence                          = m_Settings.usePrevFrame ? 1.0f : 0.0f; // TODO: improve?
         data->gMinProbability                               = minProbability;
         data->gUnproject                                    = 1.0f / (0.5f * rectH * project[1]);
+        data->gAperture                                     = m_DofAperture * 0.01f;
+        data->gFocalDistance                                = m_DofFocalDistance;
+        data->gFocalLength                                  = ( 0.5f * ( 35.0f * 0.001f ) ) / Tan( DegToRad( m_Settings.camFov * 0.5f ) ); // for 35 mm sensor size (aka old-school 35 mm film)
         data->gDenoiserType                                 = (uint32_t)m_Settings.denoiser;
         data->gDisableShadowsAndEnableImportanceSampling    = (sunDirection.z < 0.0f && m_Settings.importanceSampling) ? 1 : 0;
         data->gOnScreen                                     = m_Settings.onScreen + ((NRD_MODE == OCCLUSION || NRD_MODE == DIRECTIONAL_OCCLUSION) ? 3 : 0); // preserve original mapping
@@ -3994,10 +4053,11 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
         data->gTracingMode                                  = m_Settings.tracingMode;
         data->gSampleNum                                    = m_Settings.rpp;
         data->gBounceNum                                    = m_Settings.bounceNum;
-        data->gTAA                                          = (m_Settings.denoiser != REFERENCE && m_Settings.TAA) ? 1 : 0;
-        data->gResolve                                      = m_Settings.denoiser == REFERENCE ? false : m_Resolve;
+        data->gTAA                                          = (m_Settings.denoiser != DENOISER_REFERENCE && m_Settings.TAA) ? 1 : 0;
+        data->gResolve                                      = m_Settings.denoiser == DENOISER_REFERENCE ? false : m_Resolve;
         data->gPSR                                          = m_Settings.PSR && m_Settings.tracingMode != RESOLUTION_HALF;
-        data->gValidation                                   = m_DebugNRD && m_ShowValidationOverlay && m_Settings.denoiser != REFERENCE && m_Settings.separator != 1.0f;
+        data->gValidation                                   = m_DebugNRD && m_ShowValidationOverlay && m_Settings.denoiser != DENOISER_REFERENCE && m_Settings.separator != 1.0f;
+        data->gTrimLobe                                     = m_Settings.specularLobeTrimming ? 1 : 0;
 
         // Ambient
         data->gAmbientMaxAccumulatedFramesNum               = m_ForceHistoryReset ? 0 : float(maxAccumulatedFrameNum);
@@ -4043,7 +4103,7 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
     NRI.UnmapBuffer(*globalConstants);
 }
 
-uint32_t Sample::BuildOptimizedTransitions(const TextureState* states, uint32_t stateNum, std::array<nri::TextureTransitionBarrierDesc, MAX_TEXTURE_TRANSITION_NUM>& transitions)
+uint32_t Sample::BuildOptimizedTransitions(const TextureState* states, uint32_t stateNum, std::array<nri::TextureTransitionBarrierDesc, MAX_TEXTURE_TRANSITIONS_NUM>& transitions)
 {
     uint32_t n = 0;
 
@@ -4071,7 +4131,7 @@ void Sample::RestoreBindings(nri::CommandBuffer& commandBuffer, const Frame& fra
 
 void Sample::RenderFrame(uint32_t frameIndex)
 {
-    std::array<nri::TextureTransitionBarrierDesc, MAX_TEXTURE_TRANSITION_NUM> optimizedTransitions = {};
+    std::array<nri::TextureTransitionBarrierDesc, MAX_TEXTURE_TRANSITIONS_NUM> optimizedTransitions = {};
 
     const uint32_t bufferedFrameIndex = frameIndex % BUFFERED_FRAME_MAX_NUM;
     const Frame& frame = m_Frames[bufferedFrameIndex];
@@ -4091,7 +4151,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
     if (m_SettingsPrev.denoiser != m_Settings.denoiser)
         m_ForceHistoryReset = true;
-    if (m_SettingsPrev.denoiser == REFERENCE && m_SettingsPrev.tracingMode != m_Settings.tracingMode)
+    if (m_SettingsPrev.denoiser == DENOISER_REFERENCE && m_SettingsPrev.tracingMode != m_Settings.tracingMode)
         m_ForceHistoryReset = true;
     if (m_SettingsPrev.ortho != m_Settings.ortho)
         m_ForceHistoryReset = true;
@@ -4142,7 +4202,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
     commonSettings.resolutionScalePrev[1] = m_SettingsPrev.resolutionScale;
     commonSettings.denoisingRange = GetDenoisingRange();
     commonSettings.disocclusionThreshold = m_Settings.disocclusionThreshold * 0.01f;
-    commonSettings.splitScreen = m_Settings.denoiser == REFERENCE ? 1.0f : m_Settings.separator;
+    commonSettings.splitScreen = m_Settings.denoiser == DENOISER_REFERENCE ? 1.0f : m_Settings.separator;
     commonSettings.debug = m_Settings.debug;
     commonSettings.frameIndex = frameIndex;
     commonSettings.accumulationMode = m_ForceHistoryReset ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
@@ -4221,43 +4281,225 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
     UpdateConstantBuffer(frameIndex, maxAccumulatedFrameNum);
 
+    uint32_t kDummyDynamicConstantOffset = 0;
+
     NRI.BeginCommandBuffer(commandBuffer, m_DescriptorPool, 0);
     {
+        // All-in-one pipeline layout
+        NRI.CmdSetPipelineLayout(commandBuffer, *m_PipelineLayout);
+
+        NRI.CmdSetDescriptorSet(commandBuffer, 0, *frame.globalConstantBufferDescriptorSet, nullptr);
+
+        // Update morph animation
+        if (m_Settings.activeAnimation < m_Scene.animations.size() && m_Scene.animations[m_Settings.activeAnimation].morphMeshInstances.size() && (!m_Settings.pauseAnimation || !m_SettingsPrev.pauseAnimation || frameIndex == 0))
+        {
+            const utils::Animation& animation = m_Scene.animations[m_Settings.activeAnimation];
+            uint32_t animCurrBufferIndex = frameIndex & 0x1;
+            uint32_t animPrevBufferIndex = frameIndex == 0 ? animCurrBufferIndex : 1 - animCurrBufferIndex;
+
+            { // Update vertices
+                helper::Annotation annotation(NRI, commandBuffer, "Morph mesh: update vertices");
+
+                {
+                    const nri::BufferTransitionBarrierDesc bufferTransitions[] =
+                    {
+                        // Output
+                        {Get(Buffer::MorphedPositions), nri::AccessBits::SHADER_RESOURCE,  nri::AccessBits::SHADER_RESOURCE_STORAGE},
+                        {Get(Buffer::MorphedAttributes), nri::AccessBits::SHADER_RESOURCE,  nri::AccessBits::SHADER_RESOURCE_STORAGE},
+                    };
+
+                    nri::TransitionBarrierDesc transitionBarriers = { bufferTransitions, nullptr, helper::GetCountOf(bufferTransitions), 0};
+                    NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+                }
+
+                NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::MorphMeshUpdateVertices));
+
+                for (const utils::WeightTrackMorphMeshIndex& weightTrackMeshInstance : animation.morphMeshInstances)
+                {
+                    const utils::WeightsAnimationTrack& weightsTrack = animation.weightTracks[weightTrackMeshInstance.weightTrackIndex];
+                    const utils::MeshInstance& meshInstance = m_Scene.meshInstances[weightTrackMeshInstance.meshInstanceIndex];
+                    const utils::Mesh& mesh = m_Scene.meshes[meshInstance.meshIndex];
+
+                    uint32_t numShaderMorphTargets = Min((uint32_t)(weightsTrack.activeValues.size()), MORPH_MAX_ACTIVE_TARGETS_NUM);
+                    float totalWeight = 0.f;
+                    for (uint32_t i = 0; i < numShaderMorphTargets; i++)
+                        totalWeight += weightsTrack.activeValues[i].second;
+                    float renormalizeScale = 1.0f / totalWeight;
+
+                    MorphMeshUpdateVerticesConstants constants = {};
+                    for (uint32_t i = 0; i < numShaderMorphTargets; i++)
+                    {
+                        uint32_t morphTargetIndex = weightsTrack.activeValues[i].first;
+                        uint32_t morphTargetVertexOffset = mesh.morphTargetVertexOffset + morphTargetIndex * mesh.vertexNum;
+
+                        constants.gIndices[i / MORPH_ELEMENTS_PER_ROW_NUM].pv[i % MORPH_ELEMENTS_PER_ROW_NUM] = morphTargetVertexOffset;
+                        constants.gWeights[i / MORPH_ELEMENTS_PER_ROW_NUM].pv[i % MORPH_ELEMENTS_PER_ROW_NUM] = renormalizeScale * weightsTrack.activeValues[i].second;
+                    }
+                    constants.gNumWeights = numShaderMorphTargets;
+                    constants.gNumVertices = mesh.vertexNum;
+                    constants.gPositionCurrFrameOffset = m_Scene.morphedVerticesNum * animCurrBufferIndex + meshInstance.morphedVertexOffset;
+                    constants.gAttributesOutputOffset = meshInstance.morphedVertexOffset;
+
+                    uint32_t dynamicConstantBufferOffset = m_DynamicConstantBufferAllocator.Allocate(constants);
+                    NRI.CmdSetDescriptorSet(commandBuffer, 3, *Get(DescriptorSet::MorphTargetPose3), &dynamicConstantBufferOffset);
+
+                    constexpr uint32_t kNumThreads = 256;
+                    NRI.CmdDispatch(commandBuffer, (mesh.vertexNum + kNumThreads - 1) / kNumThreads, 1, 1);
+                }
+
+                {
+                    const nri::BufferTransitionBarrierDesc bufferTransitions[] =
+                    {
+                        // Input
+                        {Get(Buffer::MorphedPositions), nri::AccessBits::SHADER_RESOURCE_STORAGE,  nri::AccessBits::SHADER_RESOURCE},
+                        {Get(Buffer::MorphedAttributes), nri::AccessBits::SHADER_RESOURCE_STORAGE,  nri::AccessBits::SHADER_RESOURCE},
+
+                        // Output
+                        {Get(Buffer::PrimitiveData), nri::AccessBits::SHADER_RESOURCE, nri::AccessBits::SHADER_RESOURCE_STORAGE},
+                        {Get(Buffer::MorphedPrimitivePrevData), nri::AccessBits::SHADER_RESOURCE, nri::AccessBits::SHADER_RESOURCE_STORAGE},
+                    };
+
+                    nri::TransitionBarrierDesc transitionBarriers = { bufferTransitions, nullptr, helper::GetCountOf(bufferTransitions), 0 };
+                    NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+                }
+            }
+
+            { // Update primitives
+                helper::Annotation annotation(NRI, commandBuffer, "Morph mesh: update primitives");
+
+                NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::MorphMeshUpdatePrimitives));
+
+                for (const utils::WeightTrackMorphMeshIndex& weightTrackMeshInstance : animation.morphMeshInstances)
+                {
+                    const utils::MeshInstance& meshInstance = m_Scene.meshInstances[weightTrackMeshInstance.meshInstanceIndex];
+                    const utils::Mesh& mesh = m_Scene.meshes[meshInstance.meshIndex];
+                    uint32_t numPrimitives = mesh.indexNum / 3;
+
+                    MorphMeshUpdatePrimitivesConstants constants = {};
+                    constants.gPositionFrameOffsets.x = m_Scene.morphedVerticesNum * animCurrBufferIndex + meshInstance.morphedVertexOffset;
+                    constants.gPositionFrameOffsets.y = m_Scene.morphedVerticesNum * animPrevBufferIndex + meshInstance.morphedVertexOffset;
+                    constants.gNumPrimitives = numPrimitives;
+                    constants.gIndexOffset = mesh.morphMeshIndexOffset;
+                    constants.gAttributesOffset = meshInstance.morphedVertexOffset;
+                    constants.gPrimitiveOffset = meshInstance.primitiveOffset;
+                    constants.gMorphedPrimitiveOffset = meshInstance.morphedPrimitiveOffset;
+
+                    uint32_t dynamicConstantBufferOffset = m_DynamicConstantBufferAllocator.Allocate(constants);
+                    NRI.CmdSetDescriptorSet(commandBuffer, 3, *Get(DescriptorSet::MorphTargetUpdatePrimitives3), &dynamicConstantBufferOffset);
+
+                    constexpr uint32_t kNumThreads = 256;
+                    NRI.CmdDispatch(commandBuffer, (numPrimitives + kNumThreads - 1) / kNumThreads, 1, 1);
+                }
+            }
+
+            { // Update BLAS
+                helper::Annotation annotation(NRI, commandBuffer, "Morph mesh: BLAS");
+
+                size_t scratchOffset = 0;
+                for (const utils::WeightTrackMorphMeshIndex& weightTrackMeshInstance : animation.morphMeshInstances)
+                {
+                    const utils::MeshInstance& meshInstance = m_Scene.meshInstances[weightTrackMeshInstance.meshInstanceIndex];
+                    const utils::Mesh& mesh = m_Scene.meshes[meshInstance.meshIndex];
+
+                    nri::GeometryObject geometryObject = {};
+                    geometryObject.type = nri::GeometryType::TRIANGLES;
+                    geometryObject.flags = nri::BottomLevelGeometryBits::NONE; // will be set in TLAS instance
+                    geometryObject.triangles.vertexBuffer = Get(Buffer::MorphedPositions);
+                    geometryObject.triangles.vertexStride = sizeof(float[4]); // underlying storage is RGBA32_SFLOAT for UAV
+                    geometryObject.triangles.vertexOffset = geometryObject.triangles.vertexStride * (m_Scene.morphedVerticesNum * animCurrBufferIndex + meshInstance.morphedVertexOffset);
+                    geometryObject.triangles.vertexNum = mesh.vertexNum;
+                    geometryObject.triangles.vertexFormat = nri::Format::RGB32_SFLOAT;
+                    geometryObject.triangles.indexBuffer = Get(Buffer::MorphMeshIndices);
+                    geometryObject.triangles.indexOffset = mesh.morphMeshIndexOffset * sizeof(utils::Index);
+                    geometryObject.triangles.indexNum = mesh.indexNum;
+                    geometryObject.triangles.indexType = sizeof(utils::Index) == 2 ? nri::IndexType::UINT16 : nri::IndexType::UINT32;
+
+                    nri::AccelerationStructure& accelerationStructure = *m_AccelerationStructures[meshInstance.blasIndex];
+                    NRI.CmdBuildBottomLevelAccelerationStructure(commandBuffer, 1, &geometryObject, BLAS_DEFORMABLE_MESH_BUILD_BITS, accelerationStructure, *Get(Buffer::MorphMeshScratch), scratchOffset);
+
+                    uint64_t size = NRI.GetAccelerationStructureBuildScratchBufferSize(accelerationStructure);
+                    scratchOffset += helper::Align(size, 256);
+                }
+
+                {
+                    const nri::BufferTransitionBarrierDesc bufferTransitions[] =
+                    {
+                        {Get(Buffer::PrimitiveData), nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE},
+                        {Get(Buffer::MorphedPrimitivePrevData), nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE},
+                    };
+
+                    nri::TransitionBarrierDesc transitionBarriers = { bufferTransitions, nullptr, helper::GetCountOf(bufferTransitions), 0 };
+                    NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+                }
+            }
+        }
+
         { // TLAS
             helper::Annotation annotation(NRI, commandBuffer, "TLAS");
 
             BuildTopLevelAccelerationStructure(commandBuffer, bufferedFrameIndex);
         }
 
-        // All-in-one pipeline layout
-        NRI.CmdSetPipelineLayout(commandBuffer, *m_PipelineLayout);
-
-        NRI.CmdSetDescriptorSet(commandBuffer, 0, *frame.globalConstantBufferDescriptorSet, nullptr);
         NRI.CmdSetDescriptorSet(commandBuffer, 2, *Get(DescriptorSet::RayTracing2), nullptr);
 
-        { // Primary rays
-            helper::Annotation annotation(NRI, commandBuffer, "Primary rays");
+        // Trace ambient // TODO: replace with a hash-grid based radiance cache
+        if (m_Settings.ambient)
+        {
+            helper::Annotation annotation(NRI, commandBuffer, "Trace ambient");
 
             const TextureState transitions[] =
             {
+                // Output
+                {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+            };
+
+            nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
+            NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+
+            NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::TraceAmbient));
+            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::TraceAmbient1), &kDummyDynamicConstantOffset);
+
+            NRI.CmdDispatch(commandBuffer, 2, 2, 1);
+        }
+
+        { // Trace opaque
+            helper::Annotation annotation(NRI, commandBuffer, "Trace opaque");
+
+            const TextureState transitions[] =
+            {
+                // Input
+                {Texture::ComposedDiff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 // Output
                 {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::BaseColor_Metalness, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::PrimaryMip_Curvature, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::DirectLighting, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::DirectEmission, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::PsrThroughput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::Unfiltered_ShadowData, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::Unfiltered_Shadow_Translucency, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::Unfiltered_Diff, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::Unfiltered_Spec, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+#if( NRD_MODE == SH )
+                {Texture::Unfiltered_DiffSh, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::Unfiltered_SpecSh, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+#endif
             };
             nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
             NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
 
-            NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::PrimaryRays));
-            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::PrimaryRays1), nullptr);
+            NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::TraceOpaque));
+            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::TraceOpaque1), &kDummyDynamicConstantOffset);
 
-            NRI.CmdDispatch(commandBuffer, rectGridW, rectGridH, 1);
+            uint32_t rectWmod = uint32_t(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
+            uint32_t rectHmod = uint32_t(m_RenderResolution.y * m_Settings.resolutionScale + 0.5f);
+            uint32_t rectGridWmod = (rectWmod + 15) / 16;
+            uint32_t rectGridHmod = (rectHmod + 15) / 16;
+
+            NRI.CmdDispatch(commandBuffer, rectGridWmod, rectGridHmod, 1);
         }
 
     #if( NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION )
@@ -4269,116 +4511,23 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
             m_NRD.SetDenoiserSettings(denoiser, &shadowSettings);
             m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool, NRD_ALLOW_DESCRIPTOR_CACHING);
-
-            RestoreBindings(commandBuffer, frame);
+            
+            //RestoreBindings(commandBuffer, frame); // Bindings will be restored in the next section
         }
     #endif
 
-        { // Direct lighting
-            helper::Annotation annotation(NRI, commandBuffer, "Direct lighting");
-
-            const TextureState transitions[] =
-            {
-                // Input
-                {Texture::DirectEmission, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::Shadow, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                // Output
-                {Texture::DirectLighting, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-            };
-            nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
-            NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
-
-            NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::DirectLighting));
-            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::DirectLighting1), nullptr);
-
-            NRI.CmdDispatch(commandBuffer, rectGridW, rectGridH, 1);
-        }
-
-        if (m_Settings.ambient)
-        {
-            helper::Annotation annotation(NRI, commandBuffer, "Ambient rays");
-
-            const TextureState transitions[] =
-            {
-                // Output
-                {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-            };
-
-            nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
-            NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
-
-            NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::AmbientRays));
-            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::AmbientRays1), nullptr);
-
-            NRI.CmdDispatch(commandBuffer, 2, 2, 1);
-        }
-
-        { // Indirect rays
-            helper::Annotation annotation(NRI, commandBuffer, "Indirect rays");
-
-            const TextureState transitions[] =
-            {
-                // Input
-                {Texture::PrimaryMip_Curvature, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::ComposedDiff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                // Output
-                {Texture::DirectLighting, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::BaseColor_Metalness, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::PsrThroughput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::Unfiltered_Diff, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::Unfiltered_Spec, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-#if( NRD_MODE == SH )
-                {Texture::Unfiltered_DiffSh, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::Unfiltered_SpecSh, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-#endif
-            };
-            nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
-            NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
-
-            NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::IndirectRays));
-            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::IndirectRays1), nullptr);
-
-            uint32_t rectWmod = uint32_t(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
-            uint32_t rectHmod = uint32_t(m_RenderResolution.y * m_Settings.resolutionScale + 0.5f);
-            uint32_t rectGridWmod = (rectWmod + 15) / 16;
-            uint32_t rectGridHmod = (rectHmod + 15) / 16;
-
-            NRI.CmdDispatch(commandBuffer, rectGridWmod, rectGridHmod, 1);
-        }
-
-        { // Denoising
-            helper::Annotation annotation(NRI, commandBuffer, "Lighting denoising");
+        { // Opaque Denoising
+            helper::Annotation annotation(NRI, commandBuffer, "Opaque denoising");
 
             float radiusResolutionScale = 1.0f;
             if (m_Settings.adaptRadiusToResolution)
                 radiusResolutionScale = float( m_Settings.resolutionScale * m_RenderResolution.y ) / 1440.0f;
 
-            if (m_Settings.denoiser == REBLUR || m_Settings.denoiser == REFERENCE)
+            if (m_Settings.denoiser == DENOISER_REBLUR || m_Settings.denoiser == DENOISER_REFERENCE)
             {
                 nrd::HitDistanceParameters hitDistanceParameters = {};
                 hitDistanceParameters.A = m_Settings.hitDistScale * m_Settings.meterToUnitsMultiplier;
                 m_ReblurSettings.hitDistanceParameters = hitDistanceParameters;
-
-                float resolutionScale = float( m_RenderResolution.x * m_Settings.resolutionScale ) / float( GetOutputResolution().x );
-                float antilagMaxThresholdScale = 0.25f + 0.75f / (1.0f + (m_Settings.rpp - 1) * 0.25f);
-
-                nrd::AntilagHitDistanceSettings defaultAntilagHitDistanceSettings = {};
-                m_ReblurSettings.antilagHitDistanceSettings.thresholdMin = defaultAntilagHitDistanceSettings.thresholdMin / resolutionScale;
-                m_ReblurSettings.antilagHitDistanceSettings.thresholdMax = defaultAntilagHitDistanceSettings.thresholdMax * antilagMaxThresholdScale;
-                m_ReblurSettings.antilagHitDistanceSettings.sigmaScale = defaultAntilagHitDistanceSettings.sigmaScale / resolutionScale;
-
-                nrd::AntilagIntensitySettings defaultAntilagIntensitySettings = {};
-                m_ReblurSettings.antilagIntensitySettings.thresholdMin = defaultAntilagIntensitySettings.thresholdMin / resolutionScale;
-                m_ReblurSettings.antilagIntensitySettings.thresholdMax = defaultAntilagIntensitySettings.thresholdMax * antilagMaxThresholdScale;
-                m_ReblurSettings.antilagIntensitySettings.sigmaScale = defaultAntilagIntensitySettings.sigmaScale / resolutionScale;
-
-                // IMPORTANT: needs to be manually tuned based on the input range
-                m_ReblurSettings.antilagIntensitySettings.sensitivityToDarkness = 0.01f;
 
                 m_ReblurSettings.maxAccumulatedFrameNum = maxAccumulatedFrameNum;
                 m_ReblurSettings.maxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
@@ -4421,11 +4570,11 @@ void Sample::RenderFrame(uint32_t frameIndex)
         #endif
 
                 for (uint32_t i = 0; i < helper::GetCountOf(denoisers); i++)
-                    m_NRD.SetDenoiserSettings(denoisers[i], &m_ReblurSettings);
+                    m_NRD.SetDenoiserSettings(denoisers[i], &settings);
 
                 m_NRD.Denoise(denoisers, helper::GetCountOf(denoisers), commandBuffer, userPool, NRD_ALLOW_DESCRIPTOR_CACHING);
             }
-            else if (m_Settings.denoiser == RELAX)
+            else if (m_Settings.denoiser == DENOISER_RELAX)
             {
                 m_RelaxSettings.diffuseMaxAccumulatedFrameNum = maxAccumulatedFrameNum;
                 m_RelaxSettings.diffuseMaxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
@@ -4447,53 +4596,63 @@ void Sample::RenderFrame(uint32_t frameIndex)
                         const nrd::Identifier denoisers[] = {NRD_ID(RELAX_DIFFUSE_SPECULAR)};
                     #endif
 
-                    m_NRD.SetDenoiserSettings(denoisers[0], &m_RelaxSettings);
+                    m_NRD.SetDenoiserSettings(denoisers[0], &settings);
                 #else
                     nrd::RelaxDiffuseSettings diffuseSettings = {};
-                    diffuseSettings.prepassBlurRadius                            = settings.diffusePrepassBlurRadius;
-                    diffuseSettings.diffuseMaxAccumulatedFrameNum                = settings.diffuseMaxAccumulatedFrameNum;
-                    diffuseSettings.diffuseMaxFastAccumulatedFrameNum            = settings.diffuseMaxFastAccumulatedFrameNum;
-                    diffuseSettings.diffusePhiLuminance                          = settings.diffusePhiLuminance;
-                    diffuseSettings.diffuseLobeAngleFraction                     = settings.diffuseLobeAngleFraction;
-                    diffuseSettings.historyFixEdgeStoppingNormalPower            = settings.historyFixEdgeStoppingNormalPower;
-                    diffuseSettings.historyFixStrideBetweenSamples               = settings.historyFixStrideBetweenSamples;
-                    diffuseSettings.historyFixFrameNum                           = settings.historyFixFrameNum;
-                    diffuseSettings.historyClampingColorBoxSigmaScale            = settings.historyClampingColorBoxSigmaScale;
-                    diffuseSettings.spatialVarianceEstimationHistoryThreshold    = settings.spatialVarianceEstimationHistoryThreshold;
-                    diffuseSettings.atrousIterationNum                           = settings.atrousIterationNum;
-                    diffuseSettings.minLuminanceWeight                           = settings.diffuseMinLuminanceWeight;
-                    diffuseSettings.depthThreshold                               = settings.depthThreshold;
-                    diffuseSettings.checkerboardMode                             = settings.checkerboardMode;
-                    diffuseSettings.hitDistanceReconstructionMode                = settings.hitDistanceReconstructionMode;
-                    diffuseSettings.enableAntiFirefly                            = settings.enableAntiFirefly;
-                    diffuseSettings.enableMaterialTest                           = settings.enableMaterialTestForDiffuse;
+                    diffuseSettings.antilagSettings                                     = settings.antilagSettings;
+                    diffuseSettings.prepassBlurRadius                                   = settings.diffusePrepassBlurRadius;
+                    diffuseSettings.diffuseMaxAccumulatedFrameNum                       = settings.diffuseMaxAccumulatedFrameNum;
+                    diffuseSettings.diffuseMaxFastAccumulatedFrameNum                   = settings.diffuseMaxFastAccumulatedFrameNum;
+                    diffuseSettings.diffusePhiLuminance                                 = settings.diffusePhiLuminance;
+                    diffuseSettings.diffuseLobeAngleFraction                            = settings.diffuseLobeAngleFraction;
+                    diffuseSettings.historyFixEdgeStoppingNormalPower                   = settings.historyFixEdgeStoppingNormalPower;
+                    diffuseSettings.historyFixStrideBetweenSamples                      = settings.historyFixStrideBetweenSamples;
+                    diffuseSettings.historyFixFrameNum                                  = settings.historyFixFrameNum;
+                    diffuseSettings.historyClampingColorBoxSigmaScale                   = settings.historyClampingColorBoxSigmaScale;
+                    diffuseSettings.spatialVarianceEstimationHistoryThreshold           = settings.spatialVarianceEstimationHistoryThreshold;
+                    diffuseSettings.atrousIterationNum                                  = settings.atrousIterationNum;
+                    diffuseSettings.minLuminanceWeight                                  = settings.diffuseMinLuminanceWeight;
+                    diffuseSettings.depthThreshold                                      = settings.depthThreshold;
+                    diffuseSettings.confidenceDrivenRelaxationMultiplier                = settings.confidenceDrivenRelaxationMultiplier;
+                    diffuseSettings.confidenceDrivenLuminanceEdgeStoppingRelaxation     = settings.confidenceDrivenLuminanceEdgeStoppingRelaxation;
+                    diffuseSettings.confidenceDrivenNormalEdgeStoppingRelaxation        = settings.confidenceDrivenNormalEdgeStoppingRelaxation;
+                    diffuseSettings.checkerboardMode                                    = settings.checkerboardMode;
+                    diffuseSettings.hitDistanceReconstructionMode                       = settings.hitDistanceReconstructionMode;
+                    diffuseSettings.enableAntiFirefly                                   = settings.enableAntiFirefly;
+                    diffuseSettings.enableReprojectionTestSkippingWithoutMotion         = settings.enableReprojectionTestSkippingWithoutMotion;
+                    diffuseSettings.enableMaterialTest                                  = settings.enableMaterialTestForDiffuse;
 
                     nrd::RelaxSpecularSettings specularSettings = {};
-                    specularSettings.prepassBlurRadius                           = settings.specularPrepassBlurRadius;
-                    specularSettings.specularMaxAccumulatedFrameNum              = settings.specularMaxAccumulatedFrameNum;
-                    specularSettings.specularMaxFastAccumulatedFrameNum          = settings.specularMaxFastAccumulatedFrameNum;
-                    specularSettings.specularPhiLuminance                        = settings.specularPhiLuminance;
-                    specularSettings.diffuseLobeAngleFraction                    = settings.diffuseLobeAngleFraction;
-                    specularSettings.specularLobeAngleFraction                   = settings.specularLobeAngleFraction;
-                    specularSettings.roughnessFraction                           = settings.roughnessFraction;
-                    specularSettings.specularVarianceBoost                       = settings.specularVarianceBoost;
-                    specularSettings.specularLobeAngleSlack                      = settings.specularLobeAngleSlack;
-                    specularSettings.historyFixEdgeStoppingNormalPower           = settings.historyFixEdgeStoppingNormalPower;
-                    specularSettings.historyFixStrideBetweenSamples              = settings.historyFixStrideBetweenSamples;
-                    specularSettings.historyFixFrameNum                          = settings.historyFixFrameNum;
-                    specularSettings.historyClampingColorBoxSigmaScale           = settings.historyClampingColorBoxSigmaScale;
-                    specularSettings.spatialVarianceEstimationHistoryThreshold   = settings.spatialVarianceEstimationHistoryThreshold;
-                    specularSettings.atrousIterationNum                          = settings.atrousIterationNum;
-                    specularSettings.minLuminanceWeight                          = settings.specularMinLuminanceWeight;
-                    specularSettings.depthThreshold                              = settings.depthThreshold;
-                    specularSettings.luminanceEdgeStoppingRelaxation             = settings.luminanceEdgeStoppingRelaxation;
-                    specularSettings.normalEdgeStoppingRelaxation                = settings.normalEdgeStoppingRelaxation;
-                    specularSettings.roughnessEdgeStoppingRelaxation             = settings.roughnessEdgeStoppingRelaxation;
-                    specularSettings.checkerboardMode                            = m_Settings.tracingMode == RESOLUTION_HALF ? nrd::CheckerboardMode::BLACK : nrd::CheckerboardMode::OFF;
-                    specularSettings.hitDistanceReconstructionMode               = settings.hitDistanceReconstructionMode;
-                    specularSettings.enableAntiFirefly                           = settings.enableAntiFirefly;
-                    specularSettings.enableRoughnessEdgeStopping                 = settings.enableRoughnessEdgeStopping;
-                    specularSettings.enableMaterialTest                          = settings.enableMaterialTestForSpecular;
+                    specularSettings.antilagSettings                                    = specularSettings.antilagSettings;
+                    specularSettings.prepassBlurRadius                                  = settings.specularPrepassBlurRadius;
+                    specularSettings.specularMaxAccumulatedFrameNum                     = settings.specularMaxAccumulatedFrameNum;
+                    specularSettings.specularMaxFastAccumulatedFrameNum                 = settings.specularMaxFastAccumulatedFrameNum;
+                    specularSettings.specularPhiLuminance                               = settings.specularPhiLuminance;
+                    specularSettings.diffuseLobeAngleFraction                           = settings.diffuseLobeAngleFraction;
+                    specularSettings.specularLobeAngleFraction                          = settings.specularLobeAngleFraction;
+                    specularSettings.roughnessFraction                                  = settings.roughnessFraction;
+                    specularSettings.specularVarianceBoost                              = settings.specularVarianceBoost;
+                    specularSettings.specularLobeAngleSlack                             = settings.specularLobeAngleSlack;
+                    specularSettings.historyFixEdgeStoppingNormalPower                  = settings.historyFixEdgeStoppingNormalPower;
+                    specularSettings.historyFixStrideBetweenSamples                     = settings.historyFixStrideBetweenSamples;
+                    specularSettings.historyFixFrameNum                                 = settings.historyFixFrameNum;
+                    specularSettings.historyClampingColorBoxSigmaScale                  = settings.historyClampingColorBoxSigmaScale;
+                    specularSettings.spatialVarianceEstimationHistoryThreshold          = settings.spatialVarianceEstimationHistoryThreshold;
+                    specularSettings.atrousIterationNum                                 = settings.atrousIterationNum;
+                    specularSettings.minLuminanceWeight                                 = settings.specularMinLuminanceWeight;
+                    specularSettings.depthThreshold                                     = settings.depthThreshold;
+                    specularSettings.confidenceDrivenRelaxationMultiplier               = settings.confidenceDrivenRelaxationMultiplier;
+                    specularSettings.confidenceDrivenLuminanceEdgeStoppingRelaxation    = settings.confidenceDrivenLuminanceEdgeStoppingRelaxation;
+                    specularSettings.confidenceDrivenNormalEdgeStoppingRelaxation       = settings.confidenceDrivenNormalEdgeStoppingRelaxation;
+                    specularSettings.luminanceEdgeStoppingRelaxation                    = settings.luminanceEdgeStoppingRelaxation;
+                    specularSettings.normalEdgeStoppingRelaxation                       = settings.normalEdgeStoppingRelaxation;
+                    specularSettings.roughnessEdgeStoppingRelaxation                    = settings.roughnessEdgeStoppingRelaxation;
+                    specularSettings.checkerboardMode                                   = m_Settings.tracingMode == RESOLUTION_HALF ? nrd::CheckerboardMode::BLACK : nrd::CheckerboardMode::OFF;
+                    specularSettings.hitDistanceReconstructionMode                      = settings.hitDistanceReconstructionMode;
+                    specularSettings.enableAntiFirefly                                  = settings.enableAntiFirefly;
+                    specularSettings.enableReprojectionTestSkippingWithoutMotion        = settings.enableReprojectionTestSkippingWithoutMotion;
+                    specularSettings.enableRoughnessEdgeStopping                        = settings.enableRoughnessEdgeStopping;
+                    specularSettings.enableMaterialTest                                 = settings.enableMaterialTestForSpecular;
 
                     #if( NRD_MODE == SH )
                         const nrd::Identifier denoisers[] = {NRD_ID(RELAX_DIFFUSE_SH), NRD_ID(RELAX_SPECULAR_SH)};
@@ -4521,7 +4680,10 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::BaseColor_Metalness, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::DirectLighting, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::DirectEmission, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::PsrThroughput, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::Shadow, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::Diff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
                 {Texture::Spec, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
             #if( NRD_MODE == SH )
@@ -4529,7 +4691,6 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 {Texture::SpecSh, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
             #endif
                 // Output
-                {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::ComposedDiff, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
                 {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
             };
@@ -4537,13 +4698,13 @@ void Sample::RenderFrame(uint32_t frameIndex)
             NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
 
             NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::Composition));
-            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::Composition1), nullptr);
+            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::Composition1), &kDummyDynamicConstantOffset);
 
             NRI.CmdDispatch(commandBuffer, rectGridW, rectGridH, 1);
         }
 
-        { // Delta rays
-            helper::Annotation annotation(NRI, commandBuffer, "Delta rays");
+        { // Trace transparent
+            helper::Annotation annotation(NRI, commandBuffer, "Trace transparent");
 
             const TextureState transitions[] =
             {
@@ -4558,13 +4719,13 @@ void Sample::RenderFrame(uint32_t frameIndex)
             nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
             NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
 
-            NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::DeltaRays));
-            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::DeltaRays1), nullptr);
+            NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::TraceTransparent));
+            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::TraceTransparent1), &kDummyDynamicConstantOffset);
 
             NRI.CmdDispatch(commandBuffer, rectGridW, rectGridH, 1);
         }
 
-        if (m_Settings.denoiser == REFERENCE)
+        if (m_Settings.denoiser == DENOISER_REFERENCE)
         { // Reference
             helper::Annotation annotation(NRI, commandBuffer, "Reference denoising");
 
@@ -4600,7 +4761,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
 
                 NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::PreDlss));
-                NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::PreDlss1), nullptr);
+                NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::PreDlss1), &kDummyDynamicConstantOffset);
 
                 NRI.CmdDispatch(commandBuffer, rectGridW, rectGridH, 1);
             }
@@ -4653,7 +4814,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
 
                 NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::AfterDlss));
-                NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::AfterDlss1), nullptr);
+                NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::AfterDlss1), &kDummyDynamicConstantOffset);
 
                 NRI.CmdDispatch(commandBuffer, windowGridW, windowGridH, 1);
             }
@@ -4679,7 +4840,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
 
                 NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::Temporal));
-                NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(isEven ? DescriptorSet::Temporal1a : DescriptorSet::Temporal1b), nullptr);
+                NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(isEven ? DescriptorSet::Temporal1a : DescriptorSet::Temporal1b), &kDummyDynamicConstantOffset);
 
                 NRI.CmdDispatch(commandBuffer, rectGridW, rectGridH, 1);
             }
@@ -4703,7 +4864,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 if (isNis)
                 {
                     NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::UpsampleNis));
-                    NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(isEven ? DescriptorSet::UpsampleNis1a : DescriptorSet::UpsampleNis1b), nullptr);
+                    NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(isEven ? DescriptorSet::UpsampleNis1a : DescriptorSet::UpsampleNis1b), &kDummyDynamicConstantOffset);
 
                     // See NIS_Config.h
                     windowGridW = (GetWindowResolution().x + 31) / 32;
@@ -4712,7 +4873,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 else
                 {
                     NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::Upsample));
-                    NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(isEven ? DescriptorSet::Upsample1a : DescriptorSet::Upsample1b), nullptr);
+                    NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(isEven ? DescriptorSet::Upsample1a : DescriptorSet::Upsample1b), &kDummyDynamicConstantOffset);
                 }
 
                 NRI.CmdDispatch(commandBuffer, windowGridW, windowGridH, 1);

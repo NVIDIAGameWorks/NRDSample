@@ -1,79 +1,42 @@
-struct PrimitiveData
-{
-    float16_t2 uv0;
-    float16_t2 uv1;
-    float16_t2 uv2;
-    float16_t2 n0;
-
-    float16_t2 n1;
-    float16_t2 n2;
-    float16_t2 t0;
-    float16_t2 t1;
-
-    float16_t2 t2;
-    float16_t curvature0;
-    float16_t curvature1;
-    float16_t curvature2;
-    float16_t bitangentSign;
-    float worldToUvUnits;
-};
-
-struct InstanceData
-{
-    row_major float3x4 mWorldToWorldPrev;
-
-    float4 baseColorAndMetalnessScale;
-    float4 emissionAndRoughnessScale;
-
-    uint baseTextureIndex;
-    uint basePrimitiveIndex;
-
-    // TODO: static geometry transformation handling
-    uint isStatic;
-
-    // TODO: handling object scale embedded into the transformation matrix (assuming uniform scale)
-    // TODO: sign represents triangle winding
-    float invScale;
-};
 
 NRI_RESOURCE( RaytracingAccelerationStructure, gWorldTlas, t, 0, 2 );
 NRI_RESOURCE( RaytracingAccelerationStructure, gLightTlas, t, 1, 2 );
 NRI_RESOURCE( StructuredBuffer<InstanceData>, gIn_InstanceData, t, 2, 2 );
 NRI_RESOURCE( StructuredBuffer<PrimitiveData>, gIn_PrimitiveData, t, 3, 2 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Textures[], t, 4, 2 );
+NRI_RESOURCE( StructuredBuffer<MorphedPrimitivePrevData>, gIn_MorphedPrimitivePrevPositions, t, 4, 2 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Textures[], t, 5, 2 );
 
-#define TEX_SAMPLER                         gLinearMipmapLinearSampler
+#define TEX_SAMPLER gLinearMipmapLinearSampler
 
-#define FLAG_FIRST_BIT                      20 // this + number of CPU flags must be <= 24
-#define INSTANCE_ID_MASK                    ( ( 1 << FLAG_FIRST_BIT ) - 1 )
-
-// CPU flags
-#define FLAG_DEFAULT                        0x01
-#define FLAG_TRANSPARENT                    0x02
-#define FLAG_FORCED_EMISSION                0x04
-
-// Local flags
-#define FLAG_STATIC                         0x08
-
-#define GEOMETRY_ALL                        0xFF
-#define GEOMETRY_ONLY_TRANSPARENT           ( FLAG_TRANSPARENT )
-#define GEOMETRY_IGNORE_TRANSPARENT         ( ~FLAG_TRANSPARENT )
+#include "HairBRDF.hlsli"
 
 //====================================================================================================================================
 // GEOMETRY & MATERIAL PROPERTIES
 //====================================================================================================================================
 
-float3 _GetXoffset( float3 X, float3 offsetDirection )
+float3 _GetXoffset( float3 X, float3 N )
 {
-    #if 1
-        // Moves the ray origin further from surface to prevent self-intersections. Minimizes the distance for best results
-        // ( taken from RT Gems "A Fast and Robust Method for Avoiding Self-Intersection" )
-        int3 o = int3( offsetDirection * 256.0 );
-        float3 a = asfloat( asint( X ) + ( X < 0.0 ? -o : o ) );
-        float3 b = X + offsetDirection * ( 1.0 / 65536.0 );
+    // RT Gems "A Fast and Robust Method for Avoiding Self-Intersection" ( updated version taken from Falcor )
+    // Moves the ray origin further from surface to prevent self-intersections, minimizes the distance.
+    // TODO: try out: https://developer.nvidia.com/blog/solving-self-intersection-artifacts-in-directx-raytracing/
 
-        X = abs( X ) < ( 1.0 / 32.0 ) ? b : a;
-    #endif
+    const float origin = 1.0 / 16.0;
+    const float fScale = 3.0 / 65536.0;
+    const float iScale = 3.0 * 256.0;
+
+    // Per-component integer offset to bit representation of FP32 position
+    int3 iOff = int3( N * iScale );
+    iOff.x = X.x < 0.0 ? -iOff.x : iOff.x;
+    iOff.y = X.y < 0.0 ? -iOff.y : iOff.y;
+    iOff.z = X.z < 0.0 ? -iOff.z : iOff.z;
+
+    // Select per-component between small fixed offset or variable offset depending on distance to origin
+    float3 Xi = asfloat( asint( X ) + iOff );
+    float3 Xoff = X + N * fScale;
+
+    X.x = abs( X.x ) < origin ? Xoff.x : Xi.x;
+    X.y = abs( X.y ) < origin ? Xoff.y : Xi.y;
+    X.z = abs( X.z ) < origin ? Xoff.z : Xi.z;
 
     return X;
 }
@@ -81,6 +44,7 @@ float3 _GetXoffset( float3 X, float3 offsetDirection )
 struct GeometryProps
 {
     float3 X;
+    float3 Xprev;
     float3 V;
     float4 T;
     float3 N;
@@ -97,20 +61,23 @@ struct GeometryProps
     bool IsStatic( )
     { return ( textureOffsetAndFlags & ( FLAG_STATIC << FLAG_FIRST_BIT ) ) != 0; }
 
+    bool IsDeformable( )
+    { return ( textureOffsetAndFlags & ( FLAG_DEFORMABLE << FLAG_FIRST_BIT ) ) != 0; }
+
     bool IsTransparent( )
     { return ( textureOffsetAndFlags & ( FLAG_TRANSPARENT << FLAG_FIRST_BIT ) ) != 0; }
 
     bool IsForcedEmission( )
     { return ( textureOffsetAndFlags & ( FLAG_FORCED_EMISSION << FLAG_FIRST_BIT ) ) != 0; }
 
+    bool IsHair( )
+    { return ( textureOffsetAndFlags & ( FLAG_HAIR << FLAG_FIRST_BIT ) ) != 0; }
+
     uint GetBaseTexture( )
-    { return textureOffsetAndFlags & INSTANCE_ID_MASK; }
+    { return textureOffsetAndFlags & NON_FLAG_MASK; }
 
     float3 GetForcedEmissionColor( )
     { return ( ( textureOffsetAndFlags >> 2 ) & 0x1 ) ? float3( 1.0, 0.0, 0.0 ) : float3( 0.0, 1.0, 0.0 ); }
-
-    uint GetPackedMaterial( )
-    { return asuint( uv.x ); }
 
     bool IsSky( )
     { return tmin == INF; }
@@ -121,6 +88,7 @@ struct MaterialProps
     float3 Ldirect; // unshadowed
     float3 Lemi;
     float3 N;
+    float3 T;
     float3 baseColor;
     float roughness;
     float metalness;
@@ -162,8 +130,8 @@ float3 GetRealMip( uint textureIndex, float mip )
 
     float3 mips;
     mips.x = min( realMip, mipNum - 7.0 );
-    mips.y = realMip + gMipBias * 0.5;
-    mips.z = realMip + gMipBias;
+    mips.y = realMip + gCameraOrigin_gMipBias.w * 0.5;
+    mips.z = realMip + gCameraOrigin_gMipBias.w;
 
     return max( mips, 0.0 );
 }
@@ -172,7 +140,7 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
 {
     MaterialProps props = ( MaterialProps )0;
 
-    float3 Csky = GetSkyIntensity( -geometryProps.V, gSunDirection, gTanSunAngularRadius );
+    float3 Csky = GetSkyIntensity( -geometryProps.V, gSunDirection_gExposure.xyz, gTanSunAngularRadius );
 
     [branch]
     if( geometryProps.IsSky( ) )
@@ -201,6 +169,7 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
     // Normal
     float2 packedNormal = gIn_Textures[ NonUniformResourceIndex( baseTexture + 2 ) ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.y ).xy;
     float3 N = gUseNormalMap ? STL::Geometry::TransformLocalNormal( packedNormal, geometryProps.T, geometryProps.N ) : geometryProps.N;
+    float3 T = geometryProps.T.xyz;
 
     // Estimate curvature
     float curvature = length( STL::Geometry::UnpackLocalNormal( packedNormal ).xy ) * float( gUseNormalMap );
@@ -221,21 +190,38 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
 
     // Material overrides
     [flatten]
-    if( gForcedMaterial == MAT_GYPSUM )
+    if( gForcedMaterial == MATERIAL_GYPSUM )
     {
         roughness = 1.0;
         baseColor = 0.5;
         metalness = 0.0;
     }
-    else if( gForcedMaterial == MAT_COBALT )
+    else if( gForcedMaterial == MATERIAL_COBALT )
     {
         roughness = pow( saturate( baseColor.x * baseColor.y * baseColor.z ), 0.33333 );
         baseColor = float3( 0.672411, 0.637331, 0.585456 );
         metalness = 1.0;
+
+        #if( USE_ANOTHER_COBALT == 1 )
+            roughness = pow( saturate( roughness - 0.1 ), 0.25 ) * 0.3 + 0.07;
+        #endif
     }
 
-    metalness = gMetalnessOverride == 0.0 ? metalness : gMetalnessOverride;
-    roughness = gRoughnessOverride == 0.0 ? roughness : gRoughnessOverride;
+    if( geometryProps.IsHair( ) )
+    {
+        roughness = gHairBetasOverride.x;
+        metalness = gHairBetasOverride.y;
+        baseColor = gHairBaseColorOverride.xyz;
+    }
+    else
+    {
+        metalness = gMetalnessOverride == 0.0 ? metalness : gMetalnessOverride;
+        roughness = gRoughnessOverride == 0.0 ? roughness : gRoughnessOverride;
+    }
+
+    #if( USE_PUDDLES == 1 )
+        roughness *= STL::Math::SmoothStep( 0.6, 0.8, length( frac( geometryProps.uv ) * 2.0 - 1.0 ) );
+    #endif
 
     // Transform to diffuse material if emission is here
     float emissionLevel = STL::Color::Luminance( Lemi );
@@ -246,35 +232,66 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
 
     // Direct lighting ( no shadow )
     float3 Ldirect = 0;
-    float NoL = saturate( dot( geometryProps.N, gSunDirection ) );
+    float NoL = saturate( dot( geometryProps.N, gSunDirection_gExposure.xyz ) );
     float shadow = STL::Math::SmoothStep( 0.03, 0.1, NoL );
 
     [branch]
     if( shadow != 0.0 )
     {
-        float3 Csun = GetSunIntensity( gSunDirection, gSunDirection, gTanSunAngularRadius );
+        float3 Csun = GetSunIntensity( gSunDirection_gExposure.xyz, gSunDirection_gExposure.xyz, gTanSunAngularRadius );
 
         // Pseudo sky importance sampling
         float3 Cimp = lerp( Csky, Csun, STL::Math::SmoothStep( 0.0, 0.2, roughness ) );
-        Cimp *= STL::Math::SmoothStep( -0.01, 0.05, gSunDirection.z );
+        Cimp *= STL::Math::SmoothStep( -0.01, 0.05, gSunDirection_gExposure.z );
 
-        float3 albedo, Rf0;
-        STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( baseColor.xyz, metalness, albedo, Rf0 );
+        if( geometryProps.IsHair( ) )
+        {
+            float3x3 mLocalBasis = HairGetBasis( N, T );
+            float3 vLocal = STL::Geometry::RotateVector( mLocalBasis, geometryProps.V );
+
+            HairSurfaceData hairSd = (HairSurfaceData)0;
+            hairSd.N = float3( 0, 0, 1 );
+            hairSd.T = float3( 1, 0, 0 );
+            hairSd.V = vLocal;
+
+            HairData hairData;
+            hairData.baseColor = baseColor;
+            hairData.betaM = roughness;
+            hairData.betaN = metalness;
+
+            HairContext hairBrdf = HairContextInit( hairSd, hairData );
+
+            float3 sunLocal = STL::Geometry::RotateVector( mLocalBasis, gSunDirection_gExposure.xyz );
+
+            // There isn't an easy separation for hair model, we could factor out
+            // Ap[0] as specular, then Ap[1...k] as diffuse (TT, TRT paths)
+            // Try using the pseudo sky color bit here.
+
+            float3 throughput = HairEval( hairBrdf, vLocal, sunLocal );
+
+            // sun only
+            Ldirect = Cimp * throughput;
+        }
+        else
+        {
+            float3 albedo, Rf0;
+            STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( baseColor.xyz, metalness, albedo, Rf0 );
 
         #if( USE_SIMPLEX_LIGHTING_MODEL == 1 )
             // Very simple "diffuse-like" model
             float m = roughness * roughness;
             float3 C = albedo * Csun + Rf0 * m * Cimp;
-            float NoL = dot( geometryProps.N, gSunDirection );
+            float NoL = dot( geometryProps.N, gSunDirection_gExposure.xyz );
             float Kdiff = NoL / STL::Math::Pi( 1.0 );
 
             Ldirect = Kdiff * C;
         #else
             float3 Cdiff, Cspec;
-            STL::BRDF::DirectLighting( N, gSunDirection, geometryProps.V, Rf0, roughness, Cdiff, Cspec );
+            STL::BRDF::DirectLighting( N, gSunDirection_gExposure.xyz, geometryProps.V, Rf0, roughness, Cdiff, Cspec );
 
             Ldirect = Cdiff * albedo * Csun + Cspec * Cimp;
         #endif
+        }
 
         Ldirect *= shadow;
     }
@@ -283,6 +300,7 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
     props.Ldirect = Ldirect;
     props.Lemi = Lemi;
     props.N = N;
+    props.T = T;
     props.baseColor = baseColor;
     props.roughness = roughness;
     props.metalness = metalness;
@@ -308,13 +326,15 @@ float3 GetAmbientBRDF( GeometryProps geometryProps, MaterialProps materialProps,
     }
 
     float3 ambBRDF = albedo * ( 1.0 - Fenv ) + Fenv;
-    ambBRDF *= float( !geometryProps.IsSky() );
+    ambBRDF *= float( !geometryProps.IsSky( ) );
 
     return ambBRDF;
 }
 
 float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps materialProps, bool useMagicBoost = false )
 {
+    // IMPORTANT: can't be used for hair tracing, but applicable in other hair related calculations
+
     float3 albedo, Rf0;
     STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
 
@@ -333,7 +353,7 @@ float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps mat
     return diffProb < 0.005 ? 0.0 : diffProb;
 }
 
-float ReprojectRadiance(
+float ReprojectIrradiance(
     bool isPrevFrame, bool isRefraction,
     Texture2D<float3> texDiff, Texture2D<float4> texSpecViewZ,
     GeometryProps geometryProps, uint2 pixelPos,
@@ -386,7 +406,7 @@ float ReprojectRadiance(
 
         // Confidence - ignore back-facing
         // Instead of storing previous normal we can store previous NoL, if signs do not match we hit the surface from the opposite side
-        float NoL = dot( geometryProps.N, gSunDirection );
+        float NoL = dot( geometryProps.N, gSunDirection_gExposure.xyz );
         weight *= float( NoL * STL::Math::Sign( data.w ) > 0.0 );
 
         // Confidence - ignore too short rays
@@ -397,11 +417,11 @@ float ReprojectRadiance(
     }
 
     // Ignore sky
-    weight *= float( !geometryProps.IsSky() );
+    weight *= float( !geometryProps.IsSky( ) );
 
     // Clear out bad values
     [flatten]
-    if( any( isnan( prevLdiff ) || isinf( prevLdiff ) || isnan( prevLspec ) || isinf( prevLspec ) ) )
+    if( any( isnan( prevLdiff ) | isinf( prevLdiff ) | isnan( prevLspec ) | isinf( prevLspec ) ) )
     {
         prevLdiff = 0;
         prevLspec = 0;
@@ -421,18 +441,19 @@ float ReprojectRadiance(
 #define CheckNonOpaqueTriangle( rayQuery, mipAndCone ) \
     { \
         /* Instance */ \
-        uint instanceIndex = ( rayQuery.CandidateInstanceID( ) & INSTANCE_ID_MASK ) + rayQuery.CandidateGeometryIndex( ); \
+        uint instanceIndex = rayQuery.CandidateInstanceID( ) + rayQuery.CandidateGeometryIndex( ); \
         InstanceData instanceData = gIn_InstanceData[ instanceIndex ]; \
         \
         /* Transform */ \
-        float3x3 mObjectToWorld = (float3x3)rayQuery.CandidateObjectToWorld3x4( ); \
-        if( instanceData.isStatic ) \
-            mObjectToWorld = (float3x3)instanceData.mWorldToWorldPrev; \
+        float3x3 mObjectToWorld = ( float3x3 )rayQuery.CandidateObjectToWorld3x4( ); \
+        float3x4 mOverloaded = float3x4( instanceData.mOverloadedMatrix0, instanceData.mOverloadedMatrix1, instanceData.mOverloadedMatrix2 ); \
+        if( instanceData.textureOffsetAndFlags & ( FLAG_STATIC << FLAG_FIRST_BIT ) ) \
+            mObjectToWorld = ( float3x3 )mOverloaded; \
         \
         float flip = STL::Math::Sign( instanceData.invScale ) * ( rayQuery.CandidateTriangleFrontFace( ) ? -1.0 : 1.0 ); \
         \
         /* Primitive */ \
-        uint primitiveIndex = instanceData.basePrimitiveIndex + rayQuery.CandidatePrimitiveIndex( ); \
+        uint primitiveIndex = instanceData.primitiveOffset + rayQuery.CandidatePrimitiveIndex( ); \
         PrimitiveData primitiveData = gIn_PrimitiveData[ primitiveIndex ]; \
         \
         /* Barycentrics */ \
@@ -465,7 +486,7 @@ float ReprojectRadiance(
         mip += mipAndCone.x; \
         \
         /* Alpha test */ \
-        uint baseTexture = instanceData.baseTextureIndex + 0; \
+        uint baseTexture = ( instanceData.textureOffsetAndFlags & NON_FLAG_MASK ) + 0; \
         float3 mips = GetRealMip( baseTexture, mip ); \
         float alpha = gIn_Textures[ baseTexture ].SampleLevel( TEX_SAMPLER, uv, mips.x ).w; \
         \
@@ -526,34 +547,35 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
     props.mip = mipAndCone.x;
 
     if( rayQuery.CommittedStatus( ) == COMMITTED_NOTHING )
+    {
         props.tmin = INF;
+        props.X = origin + direction * props.tmin;
+        props.Xprev = props.X;
+    }
     else
     {
         props.tmin = rayQuery.CommittedRayT( );
 
         // Instance
-        uint instanceIndex = ( rayQuery.CommittedInstanceID( ) & INSTANCE_ID_MASK ) + rayQuery.CommittedGeometryIndex( );
+        uint instanceIndex = rayQuery.CommittedInstanceID( ) + rayQuery.CommittedGeometryIndex( );
         props.instanceIndex = instanceIndex;
 
         InstanceData instanceData = gIn_InstanceData[ instanceIndex ];
 
         // Texture offset and flags
-        uint flags = rayQuery.CommittedInstanceID( ) & ~INSTANCE_ID_MASK;
-        props.textureOffsetAndFlags = instanceData.baseTextureIndex | flags;
+        props.textureOffsetAndFlags = instanceData.textureOffsetAndFlags;
 
         // Transform
-        float3x3 mObjectToWorld = (float3x3)rayQuery.CommittedObjectToWorld3x4( );
+        float3x3 mObjectToWorld = ( float3x3 )rayQuery.CommittedObjectToWorld3x4( );
+        float3x4 mOverloaded = float3x4( instanceData.mOverloadedMatrix0, instanceData.mOverloadedMatrix1, instanceData.mOverloadedMatrix2 ); \
 
-        if( instanceData.isStatic )
-        {
-            mObjectToWorld = (float3x3)instanceData.mWorldToWorldPrev;
-            props.textureOffsetAndFlags |= FLAG_STATIC << FLAG_FIRST_BIT;
-        }
+        if( props.IsStatic( ) )
+            mObjectToWorld = ( float3x3 )mOverloaded;
 
         float flip = STL::Math::Sign( instanceData.invScale ) * ( rayQuery.CommittedTriangleFrontFace( ) ? -1.0 : 1.0 );
 
         // Primitive
-        uint primitiveIndex = instanceData.basePrimitiveIndex + rayQuery.CommittedPrimitiveIndex( );
+        uint primitiveIndex = instanceData.primitiveOffset + rayQuery.CommittedPrimitiveIndex( );
         PrimitiveData primitiveData = gIn_PrimitiveData[ primitiveIndex ];
 
         // Barycentrics
@@ -572,7 +594,7 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
         props.N = -N; // TODO: why negated?
 
         // Curvature
-        props.curvature = barycentrics.x * primitiveData.curvature0 + barycentrics.y * primitiveData.curvature1 + barycentrics.z * primitiveData.curvature2;
+        props.curvature = barycentrics.x * primitiveData.curvature0_curvature1.x + barycentrics.y * primitiveData.curvature0_curvature1.y + barycentrics.z * primitiveData.curvature2_bitangentSign.x;
         props.curvature /= abs( instanceData.invScale );
 
         // Mip level (TODO: doesn't take into account integrated AO / SO - i.e. diffuse = lowest mip, but what if we see the sky through a tiny hole?)
@@ -597,10 +619,22 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
         float3 T = barycentrics.x * t0 + barycentrics.y * t1 + barycentrics.z * t2;
         T = STL::Geometry::RotateVector( mObjectToWorld, T );
         T = normalize( T );
-        props.T = float4( T, primitiveData.bitangentSign );
+        props.T = float4( T, primitiveData.curvature2_bitangentSign.y );
+
+        props.X = origin + direction * props.tmin;
+        if( props.IsDeformable( ) )
+        {
+            MorphedPrimitivePrevData prevData = gIn_MorphedPrimitivePrevPositions[ instanceData.morphedPrimitiveOffset + rayQuery.CommittedPrimitiveIndex( ) ];
+
+            float3 XprevLocal = barycentrics.x * prevData.position0.xyz + barycentrics.y * prevData.position1.xyz + barycentrics.z * prevData.position2.xyz;
+            props.Xprev = STL::Geometry::AffineTransform( mOverloaded, XprevLocal );
+        }
+        else if( !props.IsStatic( ) )
+            props.Xprev = STL::Geometry::AffineTransform( mOverloaded, props.X );
+        else
+            props.Xprev = props.X;
     }
 
-    props.X = origin + direction * props.tmin;
     props.V = -direction;
 
     return props;
