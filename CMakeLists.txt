@@ -109,7 +109,7 @@ target_include_directories (${PROJECT_NAME} PRIVATE "External/NRIFramework/Inclu
 target_include_directories (${PROJECT_NAME} PRIVATE "External/NRIFramework/External/NRI/Include")
 target_include_directories (${PROJECT_NAME} PRIVATE "External/NRIFramework/External")
 target_include_directories (${PROJECT_NAME} PRIVATE "External/NRD/Include" "External/NRD/Integration")
-target_compile_definitions (${PROJECT_NAME} PRIVATE ${COMPILE_DEFINITIONS} PROJECT_NAME=${PROJECT_NAME} NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING} NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING})
+target_compile_definitions (${PROJECT_NAME} PRIVATE ${COMPILE_DEFINITIONS} PROJECT_NAME=${PROJECT_NAME} NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING} NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING} DXC_PATH=${DXC_PATH} DXC_SPIRV_PATH=${DXC_SPIRV_PATH})
 target_compile_options (${PROJECT_NAME} PRIVATE ${COMPILE_OPTIONS})
 
 target_link_libraries (${PROJECT_NAME} PRIVATE NRIFramework NRI NRD)
@@ -164,35 +164,24 @@ endif ()
 file (GLOB_RECURSE SHADERS "Shaders/*.hlsl" "Shaders/*.hlsli" "External/NRD/External/MathLib/*.hlsli")
 set_source_files_properties(${SHADERS} PROPERTIES VS_TOOL_OVERRIDE "None")
 
+set (SHADERMAKE_GENERAL_ARGS
+    --useAPI --binary --flatten --stripReflection --WX
+    --sourceDir "Shaders"
+    -c Shaders.cfg
+    -o "${SHADER_OUTPUT_PATH}"
+    -I "Shaders"
+    -I "External"
+    -I "External/NGX"
+    -I "External/NRD/External"
+    -D COMPILER_DXC
+    -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
+    -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}
+)
+
 if (WIN32)
     add_custom_target (${PROJECT_NAME}_Shaders ALL
-        COMMAND ShaderMake --useAPI
-            --binary --flatten --stripReflection --compiler "${DXC_PATH}"
-            --sourceDir "Shaders"
-            -p DXIL --WX
-            -c Shaders.cfg
-            -o "${SHADER_OUTPUT_PATH}"
-            -I "Shaders"
-            -I "External"
-            -I "External/NGX"
-            -I "External/NRD/External"
-            -D COMPILER_DXC
-            -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
-            -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}
-        COMMAND ShaderMake --useAPI
-            --useAPI --binary --flatten --stripReflection --compiler "${DXC_SPIRV_PATH}"
-            --sourceDir "Shaders"
-            -p SPIRV --WX
-            -c Shaders.cfg
-            -o "${SHADER_OUTPUT_PATH}"
-            -I "Shaders"
-            -I "External"
-            -I "External/NGX"
-            -I "External/NRD/External"
-            -D COMPILER_DXC
-            -D VULKAN
-            -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
-            -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}
+        COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p DXIL --compiler "${DXC_PATH}"
+        COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p SPIRV --compiler "${DXC_SPIRV_PATH}" -D VULKAN --hlsl2021 --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400
         DEPENDS ShaderMake
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         VERBATIM
@@ -200,20 +189,7 @@ if (WIN32)
     )
 else ()
     add_custom_target (${PROJECT_NAME}_Shaders ALL
-        COMMAND ShaderMake
-            --binary --flatten --stripReflection --compiler "${DXC_SPIRV_PATH}"
-            --sourceDir "Shaders"
-            -p SPIRV --WX
-            -c Shaders.cfg
-            -o "${SHADER_OUTPUT_PATH}"
-            -I "Shaders"
-            -I "External"
-            -I "External/NGX"
-            -I "External/NRD/External"
-            -D COMPILER_DXC
-            -D VULKAN
-            -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
-            -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}
+        COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p SPIRV --compiler "${DXC_SPIRV_PATH}" -D VULKAN --hlsl2021 --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400
         DEPENDS ShaderMake
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         VERBATIM

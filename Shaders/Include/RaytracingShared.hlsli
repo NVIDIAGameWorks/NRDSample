@@ -14,31 +14,49 @@ NRI_RESOURCE( Texture2D<float4>, gIn_Textures[], t, 5, 2 );
 // GEOMETRY & MATERIAL PROPERTIES
 //====================================================================================================================================
 
+#ifndef VULKAN
+    // TODO: This code is not needed if HLSL 2021 is enabled. But currently
+    // it works only for latest DXC from VK SDK. DXC from Win SDK crashes!
+    // Keep an eye on "--hlsl2021" used in Cmake and C++.
+    int3 select( bool3 cmp, int3 a, int3 b )
+    {
+        int3 r;
+        r.x = cmp.x ? a.x : b.x;
+        r.y = cmp.y ? a.y : b.y;
+        r.z = cmp.z ? a.z : b.z;
+
+        return r;
+    }
+
+    float3 select( bool3 cmp, float3 a, float3 b )
+    {
+        float3 r;
+        r.x = cmp.x ? a.x : b.x;
+        r.y = cmp.y ? a.y : b.y;
+        r.z = cmp.z ? a.z : b.z;
+
+        return r;
+    }
+#endif
+
 float3 _GetXoffset( float3 X, float3 N )
 {
-    // RT Gems "A Fast and Robust Method for Avoiding Self-Intersection" ( updated version taken from Falcor )
-    // Moves the ray origin further from surface to prevent self-intersections, minimizes the distance.
     // TODO: try out: https://developer.nvidia.com/blog/solving-self-intersection-artifacts-in-directx-raytracing/
 
+    // RT Gems "A Fast and Robust Method for Avoiding Self-Intersection" ( updated version taken from Falcor )
+    // Moves the ray origin further from surface to prevent self-intersections, minimizes the distance.
     const float origin = 1.0 / 16.0;
     const float fScale = 3.0 / 65536.0;
     const float iScale = 3.0 * 256.0;
 
     // Per-component integer offset to bit representation of FP32 position
     int3 iOff = int3( N * iScale );
-    iOff.x = X.x < 0.0 ? -iOff.x : iOff.x;
-    iOff.y = X.y < 0.0 ? -iOff.y : iOff.y;
-    iOff.z = X.z < 0.0 ? -iOff.z : iOff.z;
 
     // Select per-component between small fixed offset or variable offset depending on distance to origin
-    float3 Xi = asfloat( asint( X ) + iOff );
-    float3 Xoff = X + N * fScale;
+    float3 iPos = asfloat( asint( X ) + select( X < 0.0, -iOff, iOff ) );
+    float3 fOff = N * fScale;
 
-    X.x = abs( X.x ) < origin ? Xoff.x : Xi.x;
-    X.y = abs( X.y ) < origin ? Xoff.y : Xi.y;
-    X.z = abs( X.z ) < origin ? Xoff.z : Xi.z;
-
-    return X;
+    return select( abs( X ) < origin, X + fOff, iPos );
 }
 
 struct GeometryProps

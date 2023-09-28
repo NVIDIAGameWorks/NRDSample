@@ -22,6 +22,11 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 // NIS
 #include "NGX/NVIDIAImageScaling/NIS/NIS_Config.h"
 
+#ifdef _WIN32
+    #undef APIENTRY
+    #include <windows.h>
+#endif
+
 //=================================================================================
 // Settings
 //=================================================================================
@@ -72,6 +77,9 @@ const std::vector<uint32_t> RELAX_interior_improveMeTests =
 }};
 
 //=================================================================================
+
+#define _STRINGIFY(x) #x
+#define STRINGIFY(x) _STRINGIFY(x)
 
 // UI
 #define UI_YELLOW                                   ImVec4(1.0f, 0.9f, 0.0f, 1.0f)
@@ -1673,6 +1681,53 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
                         if (ImGui::Button(m_Settings.windowAlignment ? ">>" : "<<"))
                             m_Settings.windowAlignment = !m_Settings.windowAlignment;
+
+                        #ifdef _WIN32
+                            ImGui::SameLine();
+                            if (ImGui::Button("Compile shaders"))
+                            {
+                                std::string sampleShaders =
+                                    "_Build\\Release\\ShaderMake.exe --useAPI --binary --flatten --stripReflection --WX --colorize"
+                                    " -c Shaders.cfg -o _Shaders --sourceDir Shaders"
+                                    " -I Shaders -I External -I External/NGX -I External/NRD/External"
+                                    " -D COMPILER_DXC -D NRD_NORMAL_ENCODING=" STRINGIFY(NRD_NORMAL_ENCODING) " -D NRD_ROUGHNESS_ENCODING=" STRINGIFY(NRD_ROUGHNESS_ENCODING);
+
+                                std::string nrdShaders =
+                                    "_Build\\Release\\ShaderMake.exe --useAPI --header --binary --flatten --stripReflection --WX --allResourcesBound --colorize"
+                                    " -c External/NRD/Shaders.cfg -o _Shaders --sourceDir Shaders/Source"
+                                    " -I External/MathLib -I Shaders/Include -I Shaders/Resources"
+                                    " -D NRD_INTERNAL -D NRD_NORMAL_ENCODING=" STRINGIFY(NRD_NORMAL_ENCODING) " -D NRD_ROUGHNESS_ENCODING=" STRINGIFY(NRD_ROUGHNESS_ENCODING);
+
+                                if (NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::D3D12)
+                                {
+                                    std::string dxil = " -p DXIL --compiler \"" STRINGIFY(DXC_PATH) "\"";
+                                    sampleShaders += dxil;
+                                    nrdShaders += dxil;
+                                }
+                                else
+                                {
+                                    std::string spirv = " -p SPIRV --compiler \"" STRINGIFY(DXC_SPIRV_PATH) "\" -D VULKAN --hlsl2021 --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400";
+                                    sampleShaders += spirv;
+                                    nrdShaders += spirv;
+                                }
+
+                                printf("Compiling sample shaders...\n");
+                                int result = system(sampleShaders.c_str());
+                                if (!result)
+                                {
+                                    printf("Compiling NRD shaders...\n");
+                                    result = system(nrdShaders.c_str());
+                                }
+
+                                if (result)
+                                    SetForegroundWindow(GetConsoleWindow());
+
+                                #undef SAMPLE_SHADERS
+                                #undef NRD_SHADERS
+
+                                printf("Ready!\n");
+                            }
+                        #endif
 
                         ImGui::SameLine();
                         if (ImGui::Button("Reload shaders"))
@@ -4511,7 +4566,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
             m_NRD.SetDenoiserSettings(denoiser, &shadowSettings);
             m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool, NRD_ALLOW_DESCRIPTOR_CACHING);
-            
+
             //RestoreBindings(commandBuffer, frame); // Bindings will be restored in the next section
         }
     #endif

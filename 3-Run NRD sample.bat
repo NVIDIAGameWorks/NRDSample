@@ -11,9 +11,9 @@ if not exist "%DIR_BIN%" (
     exit /b
 )
 echo Running NRD sample from '%DIR_BIN%'...
-echo.
 
 set API=D3D12
+echo.
 echo 1 - D3D12
 echo 2 - VULKAN
 :CHOOSE_API
@@ -84,7 +84,7 @@ echo 2 - on
     goto CHOOSE_VSYNC
 
 :DLSS
-set DLSS=0
+set DLSS=-1
 echo.
 echo 1 - off
 echo 2 - ultra performance
