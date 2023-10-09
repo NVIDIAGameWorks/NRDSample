@@ -423,9 +423,9 @@ struct AnimatedInstance
     float3 elipseAxis;
     float durationSec = 5.0f;
     float progressedSec = 0.0f;
-    float inverseRotation = 1.0f;
-    float inverseDirection = 1.0f;
     uint32_t instanceID = 0;
+    bool reverseRotation = true;
+    bool reverseDirection = true;
 
     float4x4 Animate(float elapsedSeconds, float scale, float3& position)
     {
@@ -433,18 +433,17 @@ struct AnimatedInstance
         angle = Pi(angle * 2.0f - 1.0f);
 
         float3 localPosition;
-        localPosition.x = Cos(angle * inverseDirection);
-        localPosition.y = Sin(angle * inverseDirection);
+        localPosition.x = Cos(reverseDirection ? -angle : angle);
+        localPosition.y = Sin(reverseDirection ? -angle : angle);
         localPosition.z = localPosition.y;
 
         position = basePosition + localPosition * elipseAxis * scale;
 
         float4x4 transform;
-        transform.SetupByRotation(angle * inverseRotation, rotationAxis);
+        transform.SetupByRotation(reverseRotation ? -angle : angle, rotationAxis);
         transform.AddScale(scale);
 
-        progressedSec += elapsedSeconds;
-        progressedSec = (progressedSec >= durationSec) ? 0.0f : progressedSec;
+        progressedSec = Mod(progressedSec + elapsedSeconds, durationSec);
 
         return transform;
     }
@@ -1318,7 +1317,8 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         "REFERENCE",
                     };
                     const nrd::LibraryDesc& nrdLibraryDesc = nrd::GetLibraryDesc();
-                    snprintf(buf, sizeof(buf) - 1, "NRD v%u.%u.%u - %s [PgDown / PgUp]", nrdLibraryDesc.versionMajor, nrdLibraryDesc.versionMinor, nrdLibraryDesc.versionBuild, denoiser[m_Settings.denoiser]);
+                    snprintf(buf, sizeof(buf) - 1, "NRD v%u.%u.%u (%u.%u) - %s [PgDown / PgUp]", nrdLibraryDesc.versionMajor, nrdLibraryDesc.versionMinor, nrdLibraryDesc.versionBuild,
+                        nrdLibraryDesc.normalEncoding, nrdLibraryDesc.roughnessEncoding, denoiser[m_Settings.denoiser]);
 
                     ImGui::NewLine();
                     ImGui::PushStyleColor(ImGuiCol_Text, UI_HEADER);
@@ -1682,10 +1682,11 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         if (ImGui::Button(m_Settings.windowAlignment ? ">>" : "<<"))
                             m_Settings.windowAlignment = !m_Settings.windowAlignment;
 
-                        #ifdef _WIN32
-                            ImGui::SameLine();
-                            if (ImGui::Button("Compile shaders"))
-                            {
+                        ImGui::SameLine();
+                        if (ImGui::Button("Reload shaders"))
+                        {
+                            int result = 0;
+                            #ifdef _WIN32 // TODO: can be made Linux friendly too
                                 std::string sampleShaders =
                                     "_Build\\Release\\ShaderMake.exe --useAPI --binary --flatten --stripReflection --WX --colorize"
                                     " -c Shaders.cfg -o _Shaders --sourceDir Shaders"
@@ -1712,7 +1713,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 }
 
                                 printf("Compiling sample shaders...\n");
-                                int result = system(sampleShaders.c_str());
+                                result = system(sampleShaders.c_str());
                                 if (!result)
                                 {
                                     printf("Compiling NRD shaders...\n");
@@ -1724,15 +1725,11 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
                                 #undef SAMPLE_SHADERS
                                 #undef NRD_SHADERS
+                            #endif
 
-                                printf("Ready!\n");
-                            }
-                        #endif
+                            if (!result)
+                                CreatePipelines();
 
-                        ImGui::SameLine();
-                        if (ImGui::Button("Reload shaders"))
-                        {
-                            CreatePipelines();
                             printf("Ready!\n");
                         }
 
@@ -2223,8 +2220,8 @@ void Sample::GenerateAnimatedCubes()
         animatedInstance.progressedSec = animatedInstance.durationSec * Rand::uf1(&m_FastRandState);
         animatedInstance.rotationAxis = Normalize( Rand::sf3(&m_FastRandState) );
         animatedInstance.elipseAxis = Rand::sf3(&m_FastRandState) * 5.0f;
-        animatedInstance.inverseDirection = Sign( Rand::sf1(&m_FastRandState) );
-        animatedInstance.inverseRotation = Sign( Rand::sf1(&m_FastRandState) );
+        animatedInstance.reverseDirection = Rand::sf1(&m_FastRandState) < 0.0f;
+        animatedInstance.reverseRotation = Rand::sf1(&m_FastRandState) < 0.0f;
         m_AnimatedInstances.push_back(animatedInstance);
 
         utils::Instance instance = m_Scene.instances[i % m_ProxyInstancesNum];

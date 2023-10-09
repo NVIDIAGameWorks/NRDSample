@@ -394,23 +394,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                     float3 r;
                     float3 hairThroughput = 0;
 
-                    if( !geometryProps.IsHair( ) )
-                    {
-                        if( isDiffuse )
-                        {
-                            #if( NRD_MODE == DIRECTIONAL_OCCLUSION )
-                                r = STL::ImportanceSampling::Uniform::GetRay( rnd );
-                            #else
-                                r = STL::ImportanceSampling::Cosine::GetRay( rnd );
-                            #endif
-                        }
-                        else
-                        {
-                            float3 Hlocal = STL::ImportanceSampling::VNDF::GetRay( rnd, materialProps.roughness, Vlocal, gTrimLobe ? SPEC_LOBE_ENERGY : 1.0 );
-                            r = reflect( -Vlocal, Hlocal );
-                        }
-                    }
-                    else
+                    if( geometryProps.IsHair( ) )
                     {
                         if( isDiffuse )
                             break;
@@ -431,9 +415,25 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                         float2 rndHair[ 2 ] = { rnd, STL::Rng::Hash::GetFloat2( ) };
                         HairSampleRay( hairBrdf, Vlocal, r, pdf, hairThroughput, rndHair );
                     }
+                    else
+                    {
+                        if( isDiffuse )
+                        {
+                            #if( NRD_MODE == DIRECTIONAL_OCCLUSION )
+                                r = STL::ImportanceSampling::Uniform::GetRay( rnd );
+                            #else
+                                r = STL::ImportanceSampling::Cosine::GetRay( rnd );
+                            #endif
+                        }
+                        else
+                        {
+                            float3 Hlocal = STL::ImportanceSampling::VNDF::GetRay( rnd, materialProps.roughness, Vlocal, gTrimLobe ? SPEC_LOBE_ENERGY : 1.0 );
+                            r = reflect( -Vlocal, Hlocal );
+                        }
+                    }
 
                     // IMPORTANT: ignore rays pointing inside the surface!
-                    bool isMiss = r.z < 0.0;
+                    bool isMiss = !geometryProps.IsHair( ) && r.z < 0.0;
 
                     // Transform to world space
                     r = STL::Geometry::RotateVectorInverse( mLocalBasis, r );
@@ -466,7 +466,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                 // ( Optional ) Helpful insignificant fixes
                 float a = dot( geometryProps.N, ray );
-                if( a < 0.0 )
+                if( !geometryProps.IsHair( ) && a < 0.0 )
                 {
                     if( isDiffuse )
                     {

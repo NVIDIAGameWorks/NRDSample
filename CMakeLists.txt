@@ -165,7 +165,7 @@ file (GLOB_RECURSE SHADERS "Shaders/*.hlsl" "Shaders/*.hlsli" "External/NRD/Exte
 set_source_files_properties(${SHADERS} PROPERTIES VS_TOOL_OVERRIDE "None")
 
 set (SHADERMAKE_GENERAL_ARGS
-    --binary --flatten --stripReflection --WX
+    --useAPI --binary --flatten --stripReflection --WX
     --sourceDir "Shaders"
     -c Shaders.cfg
     -o "${SHADER_OUTPUT_PATH}"
@@ -177,10 +177,6 @@ set (SHADERMAKE_GENERAL_ARGS
     -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
     -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}
 )
-
-if (WIN32)
-    set (SHADERMAKE_GENERAL_ARGS --useAPI ${SHADERMAKE_GENERAL_ARGS})
-endif ()
 
 if (WIN32)
     add_custom_target (${PROJECT_NAME}_Shaders ALL

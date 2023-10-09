@@ -37,6 +37,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define USE_INF_STRESS_TEST                 0 // test for verifying that NRD doesn't touch data outside of denoising range
 #define USE_ANOTHER_COBALT                  0 // another cobalt variant
 #define USE_PUDDLES                         0 // add puddles
+#define USE_RANDOMIZED_ROUGHNESS            0 // randomize roughness ( a common case in games )
 
 #define THROUGHPUT_THRESHOLD                0.001
 #define PSR_THROUGHPUT_THRESHOLD            0.0 // TODO: even small throughput can produce a bright spot if incoming radiance is huge

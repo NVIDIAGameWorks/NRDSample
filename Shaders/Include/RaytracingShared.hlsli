@@ -241,6 +241,15 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
         roughness *= STL::Math::SmoothStep( 0.6, 0.8, length( frac( geometryProps.uv ) * 2.0 - 1.0 ) );
     #endif
 
+    #if( USE_RANDOMIZED_ROUGHNESS == 1 )
+        float2 noise = ( frac( sin( dot( geometryProps.uv, float2( 12.9898, 78.233 ) * 2.0 ) ) * 43758.5453 ) );
+        float noise01 = abs( noise.x + noise.y ) * 0.5;
+        roughness *= 1.0 + ( noise01 * 2.0 - 1.0 ) * 0.25;
+    #endif
+
+    roughness = saturate( roughness );
+    metalness = saturate( metalness );
+
     // Transform to diffuse material if emission is here
     float emissionLevel = STL::Color::Luminance( Lemi );
     emissionLevel = saturate( emissionLevel * 50.0 );
