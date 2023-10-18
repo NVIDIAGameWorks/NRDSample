@@ -42,7 +42,7 @@ void Preload( uint2 sharedPos, int2 globalPos )
     globalPos = clamp( globalPos, 0, gRectSize - 1.0 );
 
     float4 color_viewZ = gIn_ComposedLighting_ViewZ[ globalPos ];
-    color_viewZ.xyz = ApplyExposure( color_viewZ.xyz );
+    color_viewZ.xyz = ApplyExposure( color_viewZ.xyz, true );
     color_viewZ.w = abs( color_viewZ.w ) * STL::Math::Sign( gNearZ ) / NRD_FP16_VIEWZ_SCALE;
 
     s_Data[ sharedPos.y ][ sharedPos.x ] = color_viewZ;
@@ -117,7 +117,11 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     // History clamping
     float2 pixelPosPrev = saturate( pixelUvPrev ) * gRectSizePrev;
     float3 history = BicubicFilterNoCorners( gIn_History, gLinearSampler, pixelPosPrev, gInvRenderSize, TAA_HISTORY_SHARPNESS ).xyz;
-    float3 historyClamped = STL::Color::ClampAabb( m1, sigma, history );
+    bool isSrgb = gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR;
+    if( isSrgb )
+        history = STL::Color::SrgbToLinear( history );
+
+    float3 historyClamped = STL::Color::ClampAabb( m1, sigma, history ); // clamp only in linear space!
 
     // History weight
     bool isInScreen = float( all( saturate( pixelUvPrev ) == pixelUvPrev ) );
@@ -128,6 +132,8 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
 
     // Final mix
     float3 result = lerp( input, historyClamped, historyWeight );
+    if( isSrgb )
+        result = STL::Color::LinearToSrgb( result );
 
     // Split screen - noisy input / denoised output
     result = pixelUv.x < gSeparator ? input : result;

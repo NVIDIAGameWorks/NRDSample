@@ -360,7 +360,7 @@ float3 GetMotion( float3 X, float3 Xprev )
 }
 
 // IMPORTANT: requires STL::Rng::Hash::Initialize
-float3 ApplyExposure( float3 Lsum, bool convertToLDR = true )
+float3 ApplyExposure( float3 Lsum, bool applyToneMap )
 {
     // Exposure
     if( gOnScreen <= SHOW_DENOISED_SPECULAR )
@@ -376,12 +376,8 @@ float3 ApplyExposure( float3 Lsum, bool convertToLDR = true )
     }
 
     // Tonemap
-    if( convertToLDR && gOnScreen == SHOW_FINAL )
+    if( applyToneMap && gOnScreen == SHOW_FINAL )
         Lsum = STL::Color::HdrToLinear_Uncharted( Lsum );
-
-    // Conversion
-    if( convertToLDR && ( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR ) )
-        Lsum = STL::Color::LinearToSrgb( Lsum );
 
     return Lsum;
 }

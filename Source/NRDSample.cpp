@@ -714,32 +714,32 @@ Sample::~Sample()
 
     DestroyUserInterface();
 
-    nri::DestroyDevice(*m_Device);
+    nri::nriDestroyDevice(*m_Device);
 }
 
 bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
 {
     Rand::Seed(106937, &m_FastRandState);
 
-    nri::PhysicalDeviceGroup mostPerformantPhysicalDeviceGroup = {};
-    uint32_t deviceGroupNum = 1;
-    NRI_ABORT_ON_FAILURE(nri::GetPhysicalDevices(&mostPerformantPhysicalDeviceGroup, deviceGroupNum));
+    nri::AdapterDesc bestAdapterDesc = {};
+    uint32_t adapterDescsNum = 1;
+    NRI_ABORT_ON_FAILURE(nri::nriEnumerateAdapters(&bestAdapterDesc, adapterDescsNum));
 
     nri::DeviceCreationDesc deviceCreationDesc = {};
     deviceCreationDesc.graphicsAPI = graphicsAPI;
     deviceCreationDesc.enableAPIValidation = m_DebugAPI;
     deviceCreationDesc.enableNRIValidation = m_DebugNRI;
     deviceCreationDesc.spirvBindingOffsets = SPIRV_BINDING_OFFSETS;
-    deviceCreationDesc.physicalDeviceGroup = &mostPerformantPhysicalDeviceGroup;
-    if (mostPerformantPhysicalDeviceGroup.vendor == nri::Vendor::NVIDIA)
+    deviceCreationDesc.adapterDesc = &bestAdapterDesc;
+    if (bestAdapterDesc.vendor == nri::Vendor::NVIDIA)
         DlssIntegration::SetupDeviceExtensions(deviceCreationDesc);
 
-    NRI_ABORT_ON_FAILURE( nri::CreateDevice(deviceCreationDesc, m_Device) );
+    NRI_ABORT_ON_FAILURE( nri::nriCreateDevice(deviceCreationDesc, m_Device) );
 
-    NRI_ABORT_ON_FAILURE( nri::GetInterface(*m_Device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&NRI) );
-    NRI_ABORT_ON_FAILURE( nri::GetInterface(*m_Device, NRI_INTERFACE(nri::SwapChainInterface), (nri::SwapChainInterface*)&NRI) );
-    NRI_ABORT_ON_FAILURE( nri::GetInterface(*m_Device, NRI_INTERFACE(nri::RayTracingInterface), (nri::RayTracingInterface*)&NRI) );
-    NRI_ABORT_ON_FAILURE( nri::GetInterface(*m_Device, NRI_INTERFACE(nri::HelperInterface), (nri::HelperInterface*)&NRI) );
+    NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&NRI) );
+    NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::SwapChainInterface), (nri::SwapChainInterface*)&NRI) );
+    NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::RayTracingInterface), (nri::RayTracingInterface*)&NRI) );
+    NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::HelperInterface), (nri::HelperInterface*)&NRI) );
 
     NRI_ABORT_ON_FAILURE( NRI.GetCommandQueue(*m_Device, nri::CommandQueueType::GRAPHICS, m_CommandQueue) );
     NRI_ABORT_ON_FAILURE( NRI.CreateFence(*m_Device, 0, m_FrameFence) );
@@ -921,8 +921,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     m_ForceHistoryReset = false;
     m_SettingsPrev = m_Settings;
     m_Camera.SavePreviousState();
-
-    PrepareUserInterface();
 
     if (IsKeyToggled(Key::Tab))
         m_ShowUi = !m_ShowUi;
@@ -1687,14 +1685,22 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         {
                             int result = 0;
                             #ifdef _WIN32 // TODO: can be made Linux friendly too
-                                std::string sampleShaders =
-                                    "_Build\\Release\\ShaderMake.exe --useAPI --binary --flatten --stripReflection --WX --colorize"
+                                #ifdef _DEBUG
+                                    std::string sampleShaders = "_Build\\Debug\\ShaderMake.exe";
+                                    std::string nrdShaders = "_Build\\Debug\\ShaderMake.exe";
+                                #else
+                                    std::string sampleShaders = "_Build\\Release\\ShaderMake.exe";
+                                    std::string nrdShaders = "_Build\\Release\\ShaderMake.exe";
+                                #endif
+
+                                sampleShaders +=
+                                    " --useAPI --binary --flatten --stripReflection --WX --colorize"
                                     " -c Shaders.cfg -o _Shaders --sourceDir Shaders"
                                     " -I Shaders -I External -I External/NGX -I External/NRD/External"
                                     " -D COMPILER_DXC -D NRD_NORMAL_ENCODING=" STRINGIFY(NRD_NORMAL_ENCODING) " -D NRD_ROUGHNESS_ENCODING=" STRINGIFY(NRD_ROUGHNESS_ENCODING);
 
-                                std::string nrdShaders =
-                                    "_Build\\Release\\ShaderMake.exe --useAPI --header --binary --flatten --stripReflection --WX --allResourcesBound --colorize"
+                                nrdShaders +=
+                                    " --useAPI --header --binary --flatten --stripReflection --WX --allResourcesBound --colorize"
                                     " -c External/NRD/Shaders.cfg -o _Shaders --sourceDir Shaders/Source"
                                     " -I External/MathLib -I Shaders/Include -I Shaders/Resources"
                                     " -D NRD_INTERNAL -D NRD_NORMAL_ENCODING=" STRINGIFY(NRD_NORMAL_ENCODING) " -D NRD_ROUGHNESS_ENCODING=" STRINGIFY(NRD_ROUGHNESS_ENCODING);
@@ -4953,7 +4959,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
             NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
 
             NRI.CmdBeginRenderPass(commandBuffer, *backBuffer->frameBufferUI, nri::RenderPassBeginFlag::SKIP_FRAME_BUFFER_CLEAR);
-            RenderUserInterface(commandBuffer);
+            RenderUserInterface(*m_Device, commandBuffer);
             NRI.CmdEndRenderPass(commandBuffer);
 
             const nri::TextureTransitionBarrierDesc afterTransitions = nri::TextureTransition(backBuffer->texture, nri::AccessBits::COLOR_ATTACHMENT, nri::AccessBits::UNKNOWN, nri::TextureLayout::COLOR_ATTACHMENT, nri::TextureLayout::PRESENT);

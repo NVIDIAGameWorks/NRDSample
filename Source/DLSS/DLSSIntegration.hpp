@@ -100,7 +100,7 @@ inline NVSDK_NGX_Resource_VK DlssIntegration::SetupVulkanTexture(const DlssTextu
     VkImage image = (VkImage)NRI.GetTextureNativeObject(*texture.texture, 0);
     VkImageView view = (VkImageView)NRI.GetDescriptorNativeObject(*texture.descriptor, 0);
     VkImageSubresourceRange subresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    VkFormat format = (VkFormat)nri::ConvertNRIFormatToVK(texture.format);
+    VkFormat format = (VkFormat)nri::nriConvertNRIFormatToVK(texture.format);
     
     return NVSDK_NGX_Create_ImageView_Resource_VK(view, image, subresource, format, texture.dims.Width, texture.dims.Height, isStorage);
 }
@@ -110,9 +110,9 @@ bool DlssIntegration::InitializeLibrary(nri::Device& device, const char* appData
     m_ApplicationId = applicationId;
     m_Device = &device;
 
-    uint32_t nriResult = (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&NRI);
+    uint32_t nriResult = (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&NRI);
     if (NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::VULKAN)
-        nriResult |= (uint32_t)nri::GetInterface(*m_Device, NRI_INTERFACE(nri::WrapperVKInterface), (nri::WrapperVKInterface*)&NRI);
+        nriResult |= (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::WrapperVKInterface), (nri::WrapperVKInterface*)&NRI);
 
     if ((nri::Result)nriResult != nri::Result::SUCCESS)
         return false;
