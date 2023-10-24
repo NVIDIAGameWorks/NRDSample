@@ -203,8 +203,7 @@ enum class Descriptor : uint32_t
 
     LinearMipmapLinear_Sampler,
     LinearMipmapNearest_Sampler,
-    Linear_Sampler,
-    Nearest_Sampler,
+    NearestMipmapNearest_Sampler,
 
     InstanceData_Buffer,
     MorphMeshIndices_Buffer,
@@ -2296,7 +2295,7 @@ void Sample::CreatePipelineLayoutAndDescriptorPool()
     const nri::DescriptorRangeDesc descriptorRanges0[] =
     {
         { 0, 1, nri::DescriptorType::CONSTANT_BUFFER, nri::ShaderStage::COMPUTE },
-        { 0, 4, nri::DescriptorType::SAMPLER, nri::ShaderStage::COMPUTE },
+        { 0, 3, nri::DescriptorType::SAMPLER, nri::ShaderStage::COMPUTE },
     };
 
     const nri::DescriptorRangeDesc descriptorRanges1[] =
@@ -2901,21 +2900,13 @@ void Sample::CreateSamplers()
         m_Descriptors.push_back(descriptor);
     }
 
-    { // Descriptor::Linear_Sampler
+    { // Descriptor::NearestMipmapNearest_Sampler
         nri::SamplerDesc samplerDesc = {};
-        samplerDesc.addressModes = {nri::AddressMode::CLAMP_TO_EDGE, nri::AddressMode::CLAMP_TO_EDGE};
-        samplerDesc.minification = nri::Filter::LINEAR;
-        samplerDesc.magnification = nri::Filter::LINEAR;
-
-        NRI_ABORT_ON_FAILURE( NRI.CreateSampler(*m_Device, samplerDesc, descriptor) );
-        m_Descriptors.push_back(descriptor);
-    }
-
-    { // Descriptor::Nearest_Sampler
-        nri::SamplerDesc samplerDesc = {};
-        samplerDesc.addressModes = {nri::AddressMode::CLAMP_TO_EDGE, nri::AddressMode::CLAMP_TO_EDGE};
+        samplerDesc.addressModes = {nri::AddressMode::REPEAT, nri::AddressMode::REPEAT};
         samplerDesc.minification = nri::Filter::NEAREST;
         samplerDesc.magnification = nri::Filter::NEAREST;
+        samplerDesc.mip = nri::Filter::NEAREST;
+        samplerDesc.mipMax = 16.0f;
 
         NRI_ABORT_ON_FAILURE( NRI.CreateSampler(*m_Device, samplerDesc, descriptor) );
         m_Descriptors.push_back(descriptor);
@@ -3155,8 +3146,7 @@ void Sample::CreateDescriptorSets()
     {
         Get(Descriptor::LinearMipmapLinear_Sampler),
         Get(Descriptor::LinearMipmapNearest_Sampler),
-        Get(Descriptor::Linear_Sampler),
-        Get(Descriptor::Nearest_Sampler),
+        Get(Descriptor::NearestMipmapNearest_Sampler),
     };
 
     for (Frame& frame : m_Frames)

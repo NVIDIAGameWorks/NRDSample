@@ -13,14 +13,14 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 //=============================================================================================
 
 // Fused or separate denoising selection
-//      0 - DIFFUSE and SPECULAR
-//      1 - DIFFUSE_SPECULAR
+// 0 - DIFFUSE and SPECULAR
+// 1 - DIFFUSE_SPECULAR
 #define NRD_COMBINED                        1
 
-//      NORMAL                - common (non specialized) denoisers
-//      OCCLUSION             - OCCLUSION (ambient or specular occlusion only) denoisers
-//      SH                    - SH (spherical harmonics or spherical gaussian) denoisers
-//      DIRECTIONAL_OCCLUSION - DIRECTIONAL_OCCLUSION (ambient occlusion in SH mode) denoisers
+// NORMAL - common (non specialized) denoisers
+// OCCLUSION - OCCLUSION (ambient or specular occlusion only) denoisers
+// SH - SH (spherical harmonics or spherical gaussian) denoisers
+// DIRECTIONAL_OCCLUSION - DIRECTIONAL_OCCLUSION (ambient occlusion in SH mode) denoisers
 #define NRD_MODE                            NORMAL // NORMAL, OCCLUSION, SH, DIRECTIONAL_OCCLUSION
 
 // Default = 1
@@ -38,6 +38,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define USE_ANOTHER_COBALT                  0 // another cobalt variant
 #define USE_PUDDLES                         0 // add puddles
 #define USE_RANDOMIZED_ROUGHNESS            0 // randomize roughness ( a common case in games )
+#define USE_LOAD                            0 // Load vs SampleLevel
 
 #define THROUGHPUT_THRESHOLD                0.001
 #define PSR_THROUGHPUT_THRESHOLD            0.0 // TODO: even small throughput can produce a bright spot if incoming radiance is huge
@@ -99,6 +100,11 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define MATERIAL_ID_METAL                   1
 #define MATERIAL_ID_PSR                     2
 #define MATERIAL_ID_HAIR                    3
+
+// Mip mode
+#define MIP_VISIBILITY                      0 // for visibility: emission, shadow and alpha mask
+#define MIP_LESS_SHARP                      1 // for normal
+#define MIP_SHARP                           2 // for albedo and roughness
 
 // Other
 #define FP16_MAX                            65504.0
@@ -320,8 +326,10 @@ NRI_RESOURCE( cbuffer, MorphMeshUpdatePrimitivesConstants, b, 0, 3 )
 
 NRI_RESOURCE( SamplerState, gLinearMipmapLinearSampler, s, 0, 0 );
 NRI_RESOURCE( SamplerState, gLinearMipmapNearestSampler, s, 1, 0 );
-NRI_RESOURCE( SamplerState, gLinearSampler, s, 2, 0 );
-NRI_RESOURCE( SamplerState, gNearestSampler, s, 3, 0 );
+NRI_RESOURCE( SamplerState, gNearestMipmapNearestSampler, s, 2, 0 );
+
+#define gLinearSampler gLinearMipmapLinearSampler
+#define gNearestSampler gNearestMipmapNearestSampler
 
 //=============================================================================================
 // MISC
@@ -382,7 +390,7 @@ float3 ApplyExposure( float3 Lsum, bool applyToneMap )
     return Lsum;
 }
 
-float3 BicubicFilterNoCorners( Texture2D<float3> tex, SamplerState samp, float2 samplePos, float2 invTextureSize, compiletime const float sharpness )
+float3 BicubicFilterNoCorners( Texture2D<float3> tex, SamplerState samp, float2 samplePos, float2 invTextureSize, float sharpness )
 {
     float2 centerPos = floor( samplePos - 0.5 ) + 0.5;
     float2 f = samplePos - centerPos;

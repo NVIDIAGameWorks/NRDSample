@@ -8,6 +8,12 @@ NRI_RESOURCE( Texture2D<float4>, gIn_Textures[], t, 5, 2 );
 
 #define TEX_SAMPLER gLinearMipmapLinearSampler
 
+#if( USE_LOAD == 1 )
+    #define SAMPLE( coords ) Load( int3( coords ) )
+#else
+    #define SAMPLE( coords ) SampleLevel( TEX_SAMPLER, coords.xy, coords.z )
+#endif
+
 #include "HairBRDF.hlsli"
 
 //====================================================================================================================================
@@ -128,30 +134,35 @@ float2 GetConeAngleFromRoughness( float mip, float roughness )
     return GetConeAngleFromAngularRadius( mip, coneAngle );
 }
 
-/*
-Returns:
-    .x - for visibility (emission, shadow)
-        We must avoid using lower mips because it can lead to significant increase in AHS invocations. Mips lower than 128x128 are skipped!
-    .y - for sampling (normals...)
-        Negative MIP bias is applied
-    .z - for sharp sampling
-        Negative MIP bias is applied (can be more negative...)
-*/
-float3 GetRealMip( uint textureIndex, float mip )
+float3 GetSamplingCoords( uint textureIndex, float2 uv, float mip, int mode )
 {
-    float w, h;
-    gIn_Textures[ textureIndex ].GetDimensions( w, h ); // TODO: if I only had it as a constant...
+    float2 texSize;
+    gIn_Textures[ NonUniformResourceIndex( textureIndex ) ].GetDimensions( texSize.x, texSize.y ); // TODO: if I only had it as a constant...
 
-    // Taking into account real dimensions of the current texture
-    float mipNum = log2( w );
-    float realMip = mip + mipNum - MAX_MIP_LEVEL;
+    // Recalculate for the current texture
+    float mipNum = log2( max( texSize.x, texSize.y ) );
+    mip += mipNum - MAX_MIP_LEVEL;
+    if( mode == MIP_VISIBILITY )
+    {
+        // We must avoid using lower mips because it can lead to significant increase in AHS invocations. Mips lower than 128x128 are skipped!
+        mip = min( mip, mipNum - 7.0 );
+    }
+    else
+        mip += gCameraOrigin_gMipBias.w * ( mode == MIP_LESS_SHARP ? 0.5 : 1.0 );
+    mip = clamp( mip, 0.0, mipNum - 1.0 );
 
-    float3 mips;
-    mips.x = min( realMip, mipNum - 7.0 );
-    mips.y = realMip + gCameraOrigin_gMipBias.w * 0.5;
-    mips.z = realMip + gCameraOrigin_gMipBias.w;
+    #if( USE_LOAD == 1 )
+        mip = round( mip );
+    #endif
 
-    return max( mips, 0.0 );
+    texSize *= exp2( -mip );
+
+    // Uv coordinates
+    #if( USE_LOAD == 1 )
+        uv = frac( uv ) * texSize;
+    #endif
+
+    return float3( uv, mip );
 }
 
 MaterialProps GetMaterialProps( GeometryProps geometryProps )
@@ -169,23 +180,24 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
     }
 
     uint baseTexture = geometryProps.GetBaseTexture( );
-    float3 mips = GetRealMip( baseTexture, geometryProps.mip );
-
     InstanceData instanceData = gIn_InstanceData[ geometryProps.instanceIndex ];
 
     // Base color
-    float4 color = gIn_Textures[ NonUniformResourceIndex( baseTexture ) ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.z );
+    float3 coords = GetSamplingCoords( baseTexture, geometryProps.uv, geometryProps.mip, MIP_SHARP );
+    float4 color = gIn_Textures[ NonUniformResourceIndex( baseTexture ) ].SAMPLE( coords );
     color.xyz *= instanceData.baseColorAndMetalnessScale.xyz;
     color.xyz *= geometryProps.IsTransparent( ) ? 1.0 : STL::Math::PositiveRcp( color.w ); // Correct handling of BC1 with pre-multiplied alpha
     float3 baseColor = saturate( color.xyz );
 
     // Roughness and metalness
-    float3 materialProps = gIn_Textures[ NonUniformResourceIndex( baseTexture + 1 ) ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.z ).xyz;
+    coords = GetSamplingCoords( baseTexture + 1, geometryProps.uv, geometryProps.mip, MIP_SHARP );
+    float3 materialProps = gIn_Textures[ NonUniformResourceIndex( baseTexture + 1 ) ].SAMPLE( coords ).xyz;
     float roughness = saturate( materialProps.y * instanceData.emissionAndRoughnessScale.w );
     float metalness = saturate( materialProps.z * instanceData.baseColorAndMetalnessScale.w );
 
     // Normal
-    float2 packedNormal = gIn_Textures[ NonUniformResourceIndex( baseTexture + 2 ) ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.y ).xy;
+    coords = GetSamplingCoords( baseTexture + 2, geometryProps.uv, geometryProps.mip, MIP_LESS_SHARP );
+    float2 packedNormal = gIn_Textures[ NonUniformResourceIndex( baseTexture + 2 ) ].SAMPLE( coords ).xy;
     float3 N = gUseNormalMap ? STL::Geometry::TransformLocalNormal( packedNormal, geometryProps.T, geometryProps.N ) : geometryProps.N;
     float3 T = geometryProps.T.xyz;
 
@@ -193,7 +205,8 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
     float curvature = length( STL::Geometry::UnpackLocalNormal( packedNormal ).xy ) * float( gUseNormalMap );
 
     // Emission
-    float3 Lemi = gIn_Textures[ NonUniformResourceIndex( baseTexture + 3 ) ].SampleLevel( TEX_SAMPLER, geometryProps.uv, mips.x ).xyz;
+    coords = GetSamplingCoords( baseTexture + 3, geometryProps.uv, geometryProps.mip, MIP_VISIBILITY );
+    float3 Lemi = gIn_Textures[ NonUniformResourceIndex( baseTexture + 3 ) ].SAMPLE( coords ).xyz;
     Lemi *= instanceData.emissionAndRoughnessScale.xyz;
     Lemi *= ( baseColor + 0.01 ) / ( max( baseColor, max( baseColor, baseColor ) ) + 0.01 );
 
@@ -514,8 +527,8 @@ float ReprojectIrradiance(
         \
         /* Alpha test */ \
         uint baseTexture = ( instanceData.textureOffsetAndFlags & NON_FLAG_MASK ) + 0; \
-        float3 mips = GetRealMip( baseTexture, mip ); \
-        float alpha = gIn_Textures[ baseTexture ].SampleLevel( TEX_SAMPLER, uv, mips.x ).w; \
+        float3 coords = GetSamplingCoords( baseTexture, uv, mip, MIP_VISIBILITY ); \
+        float alpha = gIn_Textures[ baseTexture ].SAMPLE( coords ).w; \
         \
         if( alpha > 0.5 ) \
             rayQuery.CommitNonOpaqueTriangleHit( ); \
