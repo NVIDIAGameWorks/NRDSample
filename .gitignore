@@ -54,8 +54,8 @@ External/vulkansdk/
 External/DXC/
 
 # generated folders
+_Bin/
 _Build/
-_Compiler/
 _Data/
 _Shaders/
 _NRD_SDK/

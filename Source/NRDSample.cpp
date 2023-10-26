@@ -41,6 +41,7 @@ constexpr auto TLAS_BUILD_BITS                      = nri::AccelerationStructure
 constexpr float ACCUMULATION_TIME                   = 0.5f; // seconds
 constexpr float NEAR_Z                              = 0.001f; // m
 constexpr float GLASS_THICKNESS                     = 0.002f; // m
+constexpr float CAMERA_BACKWARD_OFFSET              = 0.0f; // m, 3rd person camera offset
 constexpr bool CAMERA_RELATIVE                      = true;
 constexpr bool ALLOW_BLAS_MERGING                   = true;
 constexpr bool NRD_ALLOW_DESCRIPTOR_CACHING         = true;
@@ -501,7 +502,7 @@ class Sample : public SampleBase
 {
 public:
     Sample() :
-        m_NRD(BUFFERED_FRAME_MAX_NUM, "NRD")
+        m_NRD(BUFFERED_FRAME_MAX_NUM, NRD_ALLOW_DESCRIPTOR_CACHING, "NRD")
     {}
 
     ~Sample();
@@ -1685,11 +1686,11 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             int result = 0;
                             #ifdef _WIN32 // TODO: can be made Linux friendly too
                                 #ifdef _DEBUG
-                                    std::string sampleShaders = "_Build\\Debug\\ShaderMake.exe";
-                                    std::string nrdShaders = "_Build\\Debug\\ShaderMake.exe";
+                                    std::string sampleShaders = "_Bin\\Debug\\ShaderMake.exe";
+                                    std::string nrdShaders = "_Bin\\Debug\\ShaderMake.exe";
                                 #else
-                                    std::string sampleShaders = "_Build\\Release\\ShaderMake.exe";
-                                    std::string nrdShaders = "_Build\\Release\\ShaderMake.exe";
+                                    std::string sampleShaders = "_Bin\\Release\\ShaderMake.exe";
+                                    std::string nrdShaders = "_Bin\\Release\\ShaderMake.exe";
                                 #endif
 
                                 sampleShaders +=
@@ -1962,6 +1963,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     desc.isPositiveZ = m_PositiveZ;
     desc.isReversedZ = m_ReversedZ;
     desc.orthoRange = m_Settings.ortho ? Tan( DegToRad( m_Settings.camFov ) * 0.5f ) * 3.0f * m_Settings.meterToUnitsMultiplier : 0.0f;
+    desc.backwardOffset = CAMERA_BACKWARD_OFFSET;
     GetCameraDescFromInputDevices(desc);
 
     const float animationSpeed = m_Settings.pauseAnimation ? 0.0f : (m_Settings.animationSpeed < 0.0f ? 1.0f / (1.0f + Abs(m_Settings.animationSpeed)) : (1.0f + m_Settings.animationSpeed));
@@ -4058,7 +4060,7 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
         data->gCameraFrustum                                = frustum;
         data->gSunDirection_gExposure                       = sunDirection;
         data->gSunDirection_gExposure.w                     = m_Settings.exposure;
-        data->gCameraOrigin_gMipBias                        = m_Camera.state.position;
+        data->gCameraOrigin_gMipBias                        = m_Camera.state.position + m_Camera.state.mViewToWorld.GetCol3().xmm;
         data->gCameraOrigin_gMipBias.w                      = baseMipBias + log2f(renderSize.x / outputSize.x);
         data->gViewDirection_gOrthoMode                     = float4(viewDir.x, viewDir.y, viewDir.z, orthoMode);
         data->gHairBaseColorOverride                        = m_HairBaseColorOverride;
@@ -4258,7 +4260,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
     commonSettings.isBaseColorMetalnessAvailable = true;
     commonSettings.enableValidation = m_DebugNRD && m_ShowValidationOverlay;
 
-    m_NRD.NewFrame(frameIndex);
+    m_NRD.NewFrame();
     m_NRD.SetCommonSettings(commonSettings);
 
     // NRD user pool
@@ -4558,7 +4560,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
             nrd::Identifier denoiser = NRD_ID(SIGMA_SHADOW_TRANSLUCENCY);
 
             m_NRD.SetDenoiserSettings(denoiser, &shadowSettings);
-            m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool, NRD_ALLOW_DESCRIPTOR_CACHING);
+            m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool);
 
             //RestoreBindings(commandBuffer, frame); // Bindings will be restored in the next section
         }
@@ -4620,7 +4622,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 for (uint32_t i = 0; i < helper::GetCountOf(denoisers); i++)
                     m_NRD.SetDenoiserSettings(denoisers[i], &settings);
 
-                m_NRD.Denoise(denoisers, helper::GetCountOf(denoisers), commandBuffer, userPool, NRD_ALLOW_DESCRIPTOR_CACHING);
+                m_NRD.Denoise(denoisers, helper::GetCountOf(denoisers), commandBuffer, userPool);
             }
             else if (m_Settings.denoiser == DENOISER_RELAX)
             {
@@ -4712,7 +4714,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                     m_NRD.SetDenoiserSettings(denoisers[1], &specularSettings);
                 #endif
 
-                m_NRD.Denoise(denoisers, helper::GetCountOf(denoisers), commandBuffer, userPool, NRD_ALLOW_DESCRIPTOR_CACHING);
+                m_NRD.Denoise(denoisers, helper::GetCountOf(denoisers), commandBuffer, userPool);
             }
 
             RestoreBindings(commandBuffer, frame);
@@ -4785,7 +4787,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
             m_NRD.SetCommonSettings(commonSettings);
             m_NRD.SetDenoiserSettings(denoiser, &m_ReferenceSettings);
-            m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool, NRD_ALLOW_DESCRIPTOR_CACHING);
+            m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool);
 
             RestoreBindings(commandBuffer, frame);
         }

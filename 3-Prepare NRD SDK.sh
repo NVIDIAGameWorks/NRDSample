@@ -14,8 +14,8 @@ mkdir -p "_NRD_SDK/Shaders/Include"
 cd "_NRD_SDK"
 
 cp -r ../$NRD_DIR/Include/ "Include"
-cp -H ../_Build/Debug/libNRD.so "Lib/Debug"
-cp -H ../_Build/Release/libNRD.so "Lib/Release"
+cp -H ../_Bin/Debug/libNRD.so "Lib/Debug"
+cp -H ../_Bin/Release/libNRD.so "Lib/Release"
 cp ../$NRD_DIR/Shaders/Include/NRD.hlsli "Shaders/Include"
 cp ../$NRD_DIR/Shaders/Include/NRDEncoding.hlsli "Shaders/Include"
 cp ../$NRD_DIR/LICENSE.txt "."
@@ -50,8 +50,8 @@ then
 
     cp -r ../$NRI_DIR/Include/ "Include"
     cp -r ../$NRI_DIR/Include/Extensions/ "Include/Extensions"
-    cp -H ../_Build/Debug/libNRI.so "Lib/Debug"
-    cp -H ../_Build/Release/libNRI.so "Lib/Release"
+    cp -H ../_Bin/Debug/libNRI.so "Lib/Debug"
+    cp -H ../_Bin/Release/libNRI.so "Lib/Release"
     cp ../$NRI_DIR/LICENSE.txt "."
 
     cd ..

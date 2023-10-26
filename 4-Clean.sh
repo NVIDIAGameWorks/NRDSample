@@ -2,8 +2,8 @@
 
 rm -rf "build"
 
+rm -rf "_Bin"
 rm -rf "_Build"
-rm -rf "_Compiler"
 rm -rf "_Data"
 rm -rf "_Shaders"
 rm -rf "_NRD_SDK"

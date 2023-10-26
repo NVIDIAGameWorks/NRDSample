@@ -1,9 +1,9 @@
 @echo off
 
-set DIR_BIN=%cd%\_Build\Release
+set DIR_BIN=%cd%\_Bin\Release
 
 if not exist "%DIR_BIN%" (
-    set DIR_BIN=%cd%\_Build\Debug
+    set DIR_BIN=%cd%\_Bin\Debug
 )
 
 if not exist "%DIR_BIN%" (
