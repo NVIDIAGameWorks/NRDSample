@@ -101,7 +101,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
             specSg = RELAX_BackEnd_UnpackSh( spec, spec1 );
         }
 
-        if( gResolve )
+        if( gResolve && pixelUv.x >= gSeparator )
         {
             // ( Optional ) replace "roughness" with "roughnessAA"
             roughness = NRD_SG_ExtractRoughnessAA( specSg );
