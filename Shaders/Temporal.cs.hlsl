@@ -14,7 +14,7 @@ NRI_RESOURCE( Texture2D<float3>, gIn_Mv, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_ComposedLighting_ViewZ, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_History, t, 2, 1 );
 
-NRI_RESOURCE( RWTexture2D<float3>, gOut_History, u, 0, 1 );
+NRI_RESOURCE( RWTexture2D<float3>, gOut_Result, u, 0, 1 );
 
 #define BORDER          1
 #define GROUP_X         16
@@ -42,25 +42,24 @@ void Preload( uint2 sharedPos, int2 globalPos )
     globalPos = clamp( globalPos, 0, gRectSize - 1.0 );
 
     float4 color_viewZ = gIn_ComposedLighting_ViewZ[ globalPos ];
-    color_viewZ.xyz = ApplyExposure( color_viewZ.xyz, true );
+    color_viewZ.xyz = ApplyExposure( color_viewZ.xyz );
+    color_viewZ.xyz = ApplyTonemap( color_viewZ.xyz );
     color_viewZ.w = abs( color_viewZ.w ) * STL::Math::Sign( gNearZ ) / NRD_FP16_VIEWZ_SCALE;
 
     s_Data[ sharedPos.y ][ sharedPos.x ] = color_viewZ;
 }
 
-#define MOTION_LENGTH_SCALE 16.0
+#define TAA_HISTORY_SHARPNESS 0.66
 
 [numthreads( GROUP_X, GROUP_Y, 1 )]
 void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadId, uint threadIndex : SV_GroupIndex )
 {
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
 
-    STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
-
     PRELOAD_INTO_SMEM;
 
     // Do not generate NANs for unused threads
-    if( pixelPos.x >= gRectSize.x || pixelPos.y >= gRectSize.y )
+    if( pixelUv.x > 1.0 || pixelUv.y > 1.0 )
         return;
 
     // Neighborhood
@@ -84,14 +83,10 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
 
             if( dx == BORDER && dy == BORDER )
                 input = data.xyz;
-            else
+            else if( abs( data.w ) < abs( viewZnearest ) )
             {
-                int2 t1 = t - BORDER;
-                if( ( abs( t1.x ) + abs( t1.y ) == 1 ) && abs( data.w ) < abs( viewZnearest ) )
-                {
-                    viewZnearest = data.w;
-                    offseti = t;
-                }
+                viewZnearest = data.w;
+                offseti = t;
             }
 
             m1 += data.xyz;
@@ -106,34 +101,34 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     float3 sigma = sqrt( abs( m2 - m1 * m1 ) );
 
     // Previous pixel position
-    offseti -= BORDER;
-    float2 offset = float2( offseti ) * gInvRectSize;
-    float3 Xvnearest = STL::Geometry::ReconstructViewPosition( pixelUv + offset, gCameraFrustum, viewZnearest, gViewDirection_gOrthoMode.w );
-    float3 Xnearest = STL::Geometry::AffineTransform( gViewToWorld, Xvnearest );
-    float3 mvNearest = gIn_Mv[ pixelPos + offseti ] * ( gIsWorldSpaceMotionEnabled ? 1.0 : gInvRectSize.xyy );
-    float2 pixelUvPrev = STL::Geometry::GetPrevUvFromMotion( pixelUv + offset, Xnearest, gWorldToClipPrev, mvNearest, gIsWorldSpaceMotionEnabled );
-    pixelUvPrev -= offset;
+    float3 Xv = STL::Geometry::ReconstructViewPosition( pixelUv, gCameraFrustum, viewZnearest, gViewDirection_gOrthoMode.w );
+    float3 X = STL::Geometry::AffineTransform( gViewToWorld, Xv );
+    float3 mv = gIn_Mv[ pixelPos + offseti - BORDER ] * ( gIsWorldSpaceMotionEnabled ? 1.0 : gInvRectSize.xyy );
+    float2 pixelUvPrev = pixelUv + mv.xy;
 
-    // History clamping
+    if( gIsWorldSpaceMotionEnabled )
+        pixelUvPrev = STL::Geometry::GetScreenUv( gWorldToClipPrev, X + mv );
+
+    // History
     float2 pixelPosPrev = saturate( pixelUvPrev ) * gRectSizePrev;
     float3 history = BicubicFilterNoCorners( gIn_History, gLinearSampler, pixelPosPrev, gInvRenderSize, TAA_HISTORY_SHARPNESS ).xyz;
+
     bool isSrgb = gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR;
     if( isSrgb )
         history = STL::Color::SrgbToLinear( history );
 
-    float3 historyClamped = STL::Color::ClampAabb( m1, sigma, history ); // clamp only in linear space!
+    // History clamping
+    // IMPORTANT: must be done in linear space
+    float3 historyClamped = STL::Color::ClampAabb( m1, sigma, history );
 
     // History weight
     bool isInScreen = float( all( saturate( pixelUvPrev ) == pixelUvPrev ) );
-    float2 pixelMotion = pixelUvPrev - pixelUv;
-    float motionAmount = saturate( length( pixelMotion ) / TAA_MOTION_MAX_REUSE );
-    float historyWeight = lerp( TAA_MAX_HISTORY_WEIGHT, TAA_MIN_HISTORY_WEIGHT, motionAmount );
-    historyWeight *= float( gTAA != 0 && isInScreen );
+    float historyWeight = gTAA;
+    historyWeight *= float( gTAA != 0 );
+    historyWeight *= float( isInScreen );
 
     // Final mix
     float3 result = lerp( input, historyClamped, historyWeight );
-    if( isSrgb )
-        result = STL::Color::LinearToSrgb( result );
 
     // Split screen - noisy input / denoised output
     result = pixelUv.x < gSeparator ? input : result;
@@ -147,6 +142,15 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     const float3 nvColor = float3( 118.0, 185.0, 0.0 ) / 255.0;
     result = lerp( result, nvColor * verticalLine, verticalLine );
 
+    // Dithering
+    STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
+
+    float rnd = STL::Rng::Hash::GetFloat( );
+    result += ( rnd * 2.0 - 1.0 ) / 1023.0;
+
     // Output
-    gOut_History[ pixelPos ] = result;
+    if( isSrgb )
+        result = STL::Color::LinearToSrgb( result );
+
+    gOut_Result[ pixelPos ] = result;
 }

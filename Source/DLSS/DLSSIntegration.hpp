@@ -1,56 +1,57 @@
 #include "DLSSIntegration.h"
 
-static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 90, "Unsupported NRI version!");
+#include <assert.h> // assert
+#include <stdio.h> // printf
 
 // An ugly temp workaround until DLSS fix the problem
 #ifndef _WIN32
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_Init(unsigned long long InApplicationId, const wchar_t *InApplicationDataPath, ID3D11Device *InDevice, const NVSDK_NGX_FeatureCommonInfo *InFeatureInfo, NVSDK_NGX_Version InSDKVersion)
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_Init(unsigned long long, const wchar_t*, ID3D11Device*, const NVSDK_NGX_FeatureCommonInfo*, NVSDK_NGX_Version )
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_Shutdown1(ID3D11Device* device)
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_Shutdown1(ID3D11Device*)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_API NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext *InDevCtx, NVSDK_NGX_Feature InFeatureID, NVSDK_NGX_Parameter *InParameters, NVSDK_NGX_Handle **OutHandle)
+NVSDK_NGX_API NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext*, NVSDK_NGX_Feature, NVSDK_NGX_Parameter*, NVSDK_NGX_Handle**)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_API NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_ReleaseFeature(NVSDK_NGX_Handle *InHandle)
+NVSDK_NGX_API NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_ReleaseFeature(NVSDK_NGX_Handle*)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_EvaluateFeature_C(ID3D11DeviceContext *InDevCtx, const NVSDK_NGX_Handle *InFeatureHandle, const NVSDK_NGX_Parameter *InParameters, PFN_NVSDK_NGX_ProgressCallback_C InCallback)
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_EvaluateFeature_C(ID3D11DeviceContext*, const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter*, PFN_NVSDK_NGX_ProgressCallback_C)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_AllocateParameters(NVSDK_NGX_Parameter** OutParameters)
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_AllocateParameters(NVSDK_NGX_Parameter**)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_DestroyParameters(NVSDK_NGX_Parameter* InParameters)
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_DestroyParameters(NVSDK_NGX_Parameter*)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_GetCapabilityParameters(NVSDK_NGX_Parameter** OutParameters)
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D11_GetCapabilityParameters(NVSDK_NGX_Parameter**)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_Init(unsigned long long InApplicationId, const wchar_t *InApplicationDataPath, ID3D12Device *InDevice, const NVSDK_NGX_FeatureCommonInfo *InFeatureInfo, NVSDK_NGX_Version InSDKVersion)
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_Init(unsigned long long, const wchar_t*, ID3D12Device*, const NVSDK_NGX_FeatureCommonInfo*, NVSDK_NGX_Version)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_Shutdown1(ID3D12Device* device)
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_Shutdown1(ID3D12Device*)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_API NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsCommandList *InCmdList, NVSDK_NGX_Feature InFeatureID, NVSDK_NGX_Parameter *InParameters, NVSDK_NGX_Handle **OutHandle)
+NVSDK_NGX_API NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsCommandList*, NVSDK_NGX_Feature, NVSDK_NGX_Parameter*, NVSDK_NGX_Handle**)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle *InHandle)
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle*)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_EvaluateFeature_C(ID3D12GraphicsCommandList *InCmdList, const NVSDK_NGX_Handle *InFeatureHandle, const NVSDK_NGX_Parameter *InParameters, PFN_NVSDK_NGX_ProgressCallback_C InCallback)
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_EvaluateFeature_C(ID3D12GraphicsCommandList*, const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter*, PFN_NVSDK_NGX_ProgressCallback_C)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_AllocateParameters(NVSDK_NGX_Parameter** OutParameters)
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_AllocateParameters(NVSDK_NGX_Parameter**)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_DestroyParameters(NVSDK_NGX_Parameter* InParameters)
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_DestroyParameters(NVSDK_NGX_Parameter*)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
-NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_GetCapabilityParameters(NVSDK_NGX_Parameter** OutParameters)
+NVSDK_NGX_Result NVSDK_CONV NVSDK_NGX_D3D12_GetCapabilityParameters(NVSDK_NGX_Parameter**)
 { return NVSDK_NGX_Result_FAIL_FeatureNotSupported; }
 
 #endif
@@ -97,11 +98,11 @@ void DlssIntegration::SetupDeviceExtensions(nri::DeviceCreationDesc& desc)
 
 inline NVSDK_NGX_Resource_VK DlssIntegration::SetupVulkanTexture(const DlssTexture& texture, bool isStorage)
 {
-    VkImage image = (VkImage)NRI.GetTextureNativeObject(*texture.texture, 0);
+    VkImage image = (VkImage)NRI.GetTextureNativeObject(*texture.resource, 0);
     VkImageView view = (VkImageView)NRI.GetDescriptorNativeObject(*texture.descriptor, 0);
     VkImageSubresourceRange subresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VkFormat format = (VkFormat)nri::nriConvertNRIFormatToVK(texture.format);
-    
+
     return NVSDK_NGX_Create_ImageView_Resource_VK(view, image, subresource, format, texture.dims.Width, texture.dims.Height, isStorage);
 }
 
@@ -127,6 +128,8 @@ bool DlssIntegration::InitializeLibrary(nri::Device& device, const char* appData
     {
         ID3D12Device* d3d12Device = (ID3D12Device*)NRI.GetDeviceNativeObject(*m_Device);
         result = NVSDK_NGX_D3D12_Init(m_ApplicationId, path, d3d12Device);
+        if (NVSDK_NGX_SUCCEED(result))
+            result = NVSDK_NGX_D3D12_GetCapabilityParameters(&m_NgxParameters);
     }
     else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VULKAN)
     {
@@ -134,120 +137,118 @@ bool DlssIntegration::InitializeLibrary(nri::Device& device, const char* appData
         VkPhysicalDevice vkPhysicalDevice = (VkPhysicalDevice)NRI.GetVkPhysicalDevice(*m_Device);
         VkInstance vkInstance = (VkInstance)NRI.GetVkInstance(*m_Device);
         result = NVSDK_NGX_VULKAN_Init(m_ApplicationId, path, vkInstance, vkPhysicalDevice, vkDevice);
+        if (NVSDK_NGX_SUCCEED(result))
+            result = NVSDK_NGX_VULKAN_GetCapabilityParameters(&m_NgxParameters);
     }
     else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D11)
     {
         ID3D11Device* d3d11Device = (ID3D11Device*)NRI.GetDeviceNativeObject(*m_Device);
         result = NVSDK_NGX_D3D11_Init(m_ApplicationId, path, d3d11Device);
-    }
-
-    if (NVSDK_NGX_SUCCEED(result))
-    {
-        if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D12)
-            result = NVSDK_NGX_D3D12_GetCapabilityParameters(&m_NgxParameters);
-        else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VULKAN)
-            result = NVSDK_NGX_VULKAN_GetCapabilityParameters(&m_NgxParameters);
-        else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D11)
-            result = NVSDK_NGX_D3D11_GetCapabilityParameters(&m_NgxParameters);
-
         if (NVSDK_NGX_SUCCEED(result))
-        {
-            uint32_t needsUpdatedDriver = 1;
-            result = m_NgxParameters->Get(NVSDK_NGX_Parameter_SuperSampling_NeedsUpdatedDriver, &needsUpdatedDriver);
-
-            uint32_t dlssAvailable = 0;
-            result = m_NgxParameters->Get(NVSDK_NGX_Parameter_SuperSampling_Available, &dlssAvailable);
-
-            m_Initialized = NVSDK_NGX_SUCCEED(result) && dlssAvailable && !needsUpdatedDriver;
-        }
+            result = NVSDK_NGX_D3D11_GetCapabilityParameters(&m_NgxParameters);
     }
 
-    if (!m_Initialized)
+    if (!NVSDK_NGX_SUCCEED(result))
         Shutdown();
 
-    return m_Initialized;
+    return NVSDK_NGX_SUCCEED(result);
 }
 
 bool DlssIntegration::GetOptimalSettings(const NVSDK_NGX_Dimensions& outputResolution, DlssQuality quality, DlssSettings& outSettings) const
 {
     NVSDK_NGX_PerfQuality_Value dlssQuality = DLSS_ConvertQuality(quality);
 
+    float unused = 0.0f;
     NVSDK_NGX_Result result = NGX_DLSS_GET_OPTIMAL_SETTINGS(
         m_NgxParameters,
         outputResolution.Width, outputResolution.Height,
         dlssQuality,
-        &outSettings.renderResolution.Width, &outSettings.renderResolution.Height,
-        &outSettings.maxRenderResolution.Width, &outSettings.maxRenderResolution.Height,
-        &outSettings.minRenderResolution.Width, &outSettings.minRenderResolution.Height,
-        &outSettings.sharpness);
+        &outSettings.optimalResolution.Width, &outSettings.optimalResolution.Height,
+        &outSettings.dynamicResolutionMax.Width, &outSettings.dynamicResolutionMax.Height,
+        &outSettings.dynamicResolutionMin.Width, &outSettings.dynamicResolutionMin.Height,
+        &unused);
 
-    return NVSDK_NGX_SUCCEED(result) && outSettings.renderResolution.Width != 0 && outSettings.renderResolution.Height != 0;
+    return NVSDK_NGX_SUCCEED(result);
 }
 
 bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInitDesc& desc)
 {
-    assert(m_Initialized);
+    const uint32_t creationNodeMask = 0x1;
+    const uint32_t visibilityNodeMask = 0x1;
 
     nri::CommandAllocator* commandAllocator;
-    NRI.CreateCommandAllocator(*commandQueue, 0, commandAllocator);
+    NRI.CreateCommandAllocator(*commandQueue, commandAllocator);
 
     nri::CommandBuffer* commandBuffer;
     NRI.CreateCommandBuffer(*commandAllocator, commandBuffer);
 
-    int32_t flags = NVSDK_NGX_DLSS_Feature_Flags_DoSharpening;
-    flags |= desc.isMotionVectorAtLowRes ? NVSDK_NGX_DLSS_Feature_Flags_MVLowRes : 0;
-    flags |= desc.isContentHDR ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR : 0;
-    flags |= desc.isDepthInverted ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0;
-    flags |= (desc.enableAutoExposure && desc.isContentHDR) ? NVSDK_NGX_DLSS_Feature_Flags_AutoExposure : 0;
+    const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
+
+    int32_t flags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+    flags |= desc.hasHdrContent ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR : 0;
+    flags |= desc.hasInvertedDepth ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0;
+    flags |= desc.allowAutoExposure ? NVSDK_NGX_DLSS_Feature_Flags_AutoExposure : 0;
 
     DlssSettings settings = {};
     if (!GetOptimalSettings(desc.outputResolution, desc.quality, settings))
         return false;
 
-    NVSDK_NGX_DLSS_Create_Params dlssCreateParams = {};
-    dlssCreateParams.Feature.InWidth = settings.renderResolution.Width;
-    dlssCreateParams.Feature.InHeight = settings.renderResolution.Height;
-    dlssCreateParams.Feature.InTargetWidth = desc.outputResolution.Width;
-    dlssCreateParams.Feature.InTargetHeight = desc.outputResolution.Height;
-    dlssCreateParams.Feature.InPerfQualityValue = DLSS_ConvertQuality(desc.quality);
-    dlssCreateParams.InFeatureCreateFlags = flags;
-
-    NVSDK_NGX_Result result = NVSDK_NGX_Result_Fail;
+    NVSDK_NGX_Result result = NVSDK_NGX_Result_Success;
     NRI.BeginCommandBuffer(*commandBuffer, nullptr, 0);
     {
-        uint32_t creationNodeMask = 1;
-        uint32_t visibilityNodeMask = 1;
+        // SR
+        if (NVSDK_NGX_SUCCEED(result))
+        {
+            NVSDK_NGX_DLSS_Create_Params srCreateParams = {};
+            srCreateParams.Feature.InWidth = settings.optimalResolution.Width;
+            srCreateParams.Feature.InHeight = settings.optimalResolution.Height;
+            srCreateParams.Feature.InTargetWidth = desc.outputResolution.Width;
+            srCreateParams.Feature.InTargetHeight = desc.outputResolution.Height;
+            srCreateParams.Feature.InPerfQualityValue = DLSS_ConvertQuality(desc.quality);
+            srCreateParams.InFeatureCreateFlags = flags;
 
-        const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
-        if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D12)
-        {
-            ID3D12GraphicsCommandList* d3d12CommandList = (ID3D12GraphicsCommandList*)NRI.GetCommandBufferNativeObject(*commandBuffer);
-            result = NGX_D3D12_CREATE_DLSS_EXT(d3d12CommandList, creationNodeMask, visibilityNodeMask, &m_DLSS, m_NgxParameters, &dlssCreateParams);
-        }
-        else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VULKAN)
-        {
-            VkCommandBuffer vkCommandBuffer = (VkCommandBuffer)NRI.GetCommandBufferNativeObject(*commandBuffer);
-            result = NGX_VULKAN_CREATE_DLSS_EXT(vkCommandBuffer, creationNodeMask, visibilityNodeMask, &m_DLSS, m_NgxParameters, &dlssCreateParams);
-        }
-        else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D11)
-        {
-            ID3D11DeviceContext* d3d11DeviceContext = (ID3D11DeviceContext*)NRI.GetCommandBufferNativeObject(*commandBuffer);
-            result = NGX_D3D11_CREATE_DLSS_EXT(d3d11DeviceContext, &m_DLSS, m_NgxParameters, &dlssCreateParams);
+            nri::VideoMemoryInfo videoMemoryInfo1 = {};
+            nri::nriQueryVideoMemoryInfo(*m_Device, nri::MemoryLocation::DEVICE, videoMemoryInfo1);
+
+            if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D12)
+            {
+                ID3D12GraphicsCommandList* d3d12CommandList = (ID3D12GraphicsCommandList*)NRI.GetCommandBufferNativeObject(*commandBuffer);
+                result = NGX_D3D12_CREATE_DLSS_EXT(d3d12CommandList, creationNodeMask, visibilityNodeMask, &m_SR, m_NgxParameters, &srCreateParams);
+            }
+            else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VULKAN)
+            {
+                VkCommandBuffer vkCommandBuffer = (VkCommandBuffer)NRI.GetCommandBufferNativeObject(*commandBuffer);
+                result = NGX_VULKAN_CREATE_DLSS_EXT(vkCommandBuffer, creationNodeMask, visibilityNodeMask, &m_SR, m_NgxParameters, &srCreateParams);
+            }
+            else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D11)
+            {
+                ID3D11DeviceContext* d3d11DeviceContext = (ID3D11DeviceContext*)NRI.GetCommandBufferNativeObject(*commandBuffer);
+                result = NGX_D3D11_CREATE_DLSS_EXT(d3d11DeviceContext, &m_SR, m_NgxParameters, &srCreateParams);
+            }
+
+            nri::VideoMemoryInfo videoMemoryInfo2 = {};
+            nri::nriQueryVideoMemoryInfo(*m_Device, nri::MemoryLocation::DEVICE, videoMemoryInfo2);
+            printf("DLSS-SR: allocated %.2f Mb\n", (videoMemoryInfo2.currentUsage - videoMemoryInfo1.currentUsage) / (1024.0f * 1024.0f));
         }
     }
     NRI.EndCommandBuffer(*commandBuffer);
 
-    nri::QueueSubmitDesc queueSubmitDesc = {};
-    queueSubmitDesc.commandBuffers = &commandBuffer;
-    queueSubmitDesc.commandBufferNum = 1;
+    if (NVSDK_NGX_SUCCEED(result))
+    {
+        // Submit
+        nri::QueueSubmitDesc queueSubmitDesc = {};
+        queueSubmitDesc.commandBuffers = &commandBuffer;
+        queueSubmitDesc.commandBufferNum = 1;
 
-    NRI.QueueSubmit(*commandQueue, queueSubmitDesc);
+        NRI.QueueSubmit(*commandQueue, queueSubmitDesc);
 
-    nri::Fence* fence;
-    NRI.CreateFence(*m_Device, 0, fence);
-    NRI.QueueSignal(*commandQueue, *fence, 1);
-    NRI.Wait(*fence, 1);
-    NRI.DestroyFence(*fence);
+        // Wait for completion
+        nri::Fence* fence;
+        NRI.CreateFence(*m_Device, 0, fence);
+        NRI.QueueSignal(*commandQueue, *fence, 1);
+        NRI.Wait(*fence, 1);
+        NRI.DestroyFence(*fence);
+    }
 
     NRI.DestroyCommandBuffer(*commandBuffer);
     NRI.DestroyCommandAllocator(*commandAllocator);
@@ -257,98 +258,83 @@ bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInit
 
 void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDispatchDesc& desc)
 {
-    assert(m_Initialized);
-
     const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
 
     NVSDK_NGX_Result result = NVSDK_NGX_Result_Fail;
     if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D12)
     {
-        ID3D12Resource* resourceInput = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texInput.texture, 0);
-        ID3D12Resource* resourceMv = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texMv.texture, 0);
-        ID3D12Resource* resourceDepth = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texDepth.texture, 0);
-        ID3D12Resource* resourceOutput = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texOutput.texture, 0);
-
-        NVSDK_NGX_D3D12_DLSS_Eval_Params dlssEvalParams = {};
-        dlssEvalParams.Feature.pInColor = resourceInput;
-        dlssEvalParams.Feature.pInOutput = resourceOutput;
-        dlssEvalParams.Feature.InSharpness = desc.sharpness;
-        dlssEvalParams.pInDepth = resourceDepth;
-        dlssEvalParams.pInMotionVectors = resourceMv;
-        dlssEvalParams.InRenderSubrectDimensions = desc.currentRenderResolution;
-        dlssEvalParams.InJitterOffsetX = desc.jitter[0];
-        dlssEvalParams.InJitterOffsetY = desc.jitter[1];
-        dlssEvalParams.InReset = desc.reset;
-        dlssEvalParams.InMVScaleX = desc.motionVectorScale[0];
-        dlssEvalParams.InMVScaleY = desc.motionVectorScale[1];
-
-        if (desc.texExposure.texture)
-        {
-            ID3D12Resource* resourceExposure = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texExposure.texture, 0);
-            dlssEvalParams.pInExposureTexture = resourceExposure;
-        }
+        ID3D12Resource* resourceInput = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texInput.resource, 0);
+        ID3D12Resource* resourceMv = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texMv.resource, 0);
+        ID3D12Resource* resourceDepth = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texDepth.resource, 0);
+        ID3D12Resource* resourceOutput = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texOutput.resource, 0);
 
         ID3D12GraphicsCommandList* d3dCommandList = (ID3D12GraphicsCommandList*)NRI.GetCommandBufferNativeObject(*commandBuffer);
-        result = NGX_D3D12_EVALUATE_DLSS_EXT(d3dCommandList, m_DLSS, m_NgxParameters, &dlssEvalParams);
+        {
+            NVSDK_NGX_D3D12_DLSS_Eval_Params srParams = {};
+            srParams.Feature.pInColor = resourceInput;
+            srParams.Feature.pInOutput = resourceOutput;
+            srParams.pInDepth = resourceDepth;
+            srParams.pInMotionVectors = resourceMv;
+            srParams.InJitterOffsetX = desc.jitter[0];
+            srParams.InJitterOffsetY = desc.jitter[1];
+            srParams.InRenderSubrectDimensions = desc.viewportDims;
+            // Optional
+            srParams.InReset = desc.reset;
+            srParams.InMVScaleX = desc.mvScale[0];
+            srParams.InMVScaleY = desc.mvScale[1];
+
+            result = NGX_D3D12_EVALUATE_DLSS_EXT(d3dCommandList, m_SR, m_NgxParameters, &srParams);
+        }
     }
     else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VULKAN)
     {
-        NVSDK_NGX_Resource_VK resourceInput = SetupVulkanTexture(desc.texInput, false);
-        NVSDK_NGX_Resource_VK resourceMv = SetupVulkanTexture(desc.texMv, false);
-        NVSDK_NGX_Resource_VK resourceDepth = SetupVulkanTexture(desc.texDepth, false);
         NVSDK_NGX_Resource_VK resourceOutput = SetupVulkanTexture(desc.texOutput, true);
-
-        NVSDK_NGX_VK_DLSS_Eval_Params dlssEvalParams = {};
-        dlssEvalParams.Feature.pInColor = &resourceInput;
-        dlssEvalParams.Feature.pInOutput = &resourceOutput;
-        dlssEvalParams.Feature.InSharpness = desc.sharpness;
-        dlssEvalParams.pInDepth = &resourceDepth;
-        dlssEvalParams.pInMotionVectors = &resourceMv;
-        dlssEvalParams.InRenderSubrectDimensions = desc.currentRenderResolution;
-        dlssEvalParams.InJitterOffsetX = desc.jitter[0];
-        dlssEvalParams.InJitterOffsetY = desc.jitter[1];
-        dlssEvalParams.InReset = desc.reset;
-        dlssEvalParams.InMVScaleX = desc.motionVectorScale[0];
-        dlssEvalParams.InMVScaleY = desc.motionVectorScale[1];
-
-        NVSDK_NGX_Resource_VK resourceExposure;
-        if (desc.texExposure.texture)
-        {
-            resourceExposure = SetupVulkanTexture(desc.texExposure, false);
-            dlssEvalParams.pInExposureTexture = &resourceExposure;
-        }
+        NVSDK_NGX_Resource_VK resourceInput = SetupVulkanTexture(desc.texInput);
+        NVSDK_NGX_Resource_VK resourceMv = SetupVulkanTexture(desc.texMv);
+        NVSDK_NGX_Resource_VK resourceDepth = SetupVulkanTexture(desc.texDepth);
 
         VkCommandBuffer vkCommandbuffer = (VkCommandBuffer)NRI.GetCommandBufferNativeObject(*commandBuffer);
-        result = NGX_VULKAN_EVALUATE_DLSS_EXT(vkCommandbuffer, m_DLSS, m_NgxParameters, &dlssEvalParams);
+        {
+            NVSDK_NGX_VK_DLSS_Eval_Params srParams = {};
+            srParams.Feature.pInColor = &resourceInput;
+            srParams.Feature.pInOutput = &resourceOutput;
+            srParams.pInDepth = &resourceDepth;
+            srParams.pInMotionVectors = &resourceMv;
+            srParams.InJitterOffsetX = desc.jitter[0];
+            srParams.InJitterOffsetY = desc.jitter[1];
+            srParams.InRenderSubrectDimensions = desc.viewportDims;
+            // Optional
+            srParams.InReset = desc.reset;
+            srParams.InMVScaleX = desc.mvScale[0];
+            srParams.InMVScaleY = desc.mvScale[1];
+
+            result = NGX_VULKAN_EVALUATE_DLSS_EXT(vkCommandbuffer, m_SR, m_NgxParameters, &srParams);
+        }
     }
     else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D11)
     {
-        ID3D11Resource* resourceInput = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texInput.texture, 0);
-        ID3D11Resource* resourceMv = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texMv.texture, 0);
-        ID3D11Resource* resourceDepth = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texDepth.texture, 0);
-        ID3D11Resource* resourceOutput = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texOutput.texture, 0);
-
-        NVSDK_NGX_D3D11_DLSS_Eval_Params dlssEvalParams = {};
-        dlssEvalParams.Feature.pInColor = resourceInput;
-        dlssEvalParams.Feature.pInOutput = resourceOutput;
-        dlssEvalParams.Feature.InSharpness = desc.sharpness;
-        dlssEvalParams.pInDepth = resourceDepth;
-        dlssEvalParams.pInMotionVectors = resourceMv;
-        dlssEvalParams.InRenderSubrectDimensions = desc.currentRenderResolution;
-        dlssEvalParams.InJitterOffsetX = desc.jitter[0];
-        dlssEvalParams.InJitterOffsetY = desc.jitter[1];
-        dlssEvalParams.InReset = desc.reset;
-        dlssEvalParams.InMVScaleX = desc.motionVectorScale[0];
-        dlssEvalParams.InMVScaleY = desc.motionVectorScale[1];
-
-        if (desc.texExposure.texture)
-        {
-            ID3D11Resource* resourceExposure = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texExposure.texture, 0);
-            dlssEvalParams.pInExposureTexture = resourceExposure;
-        }
+        ID3D11Resource* resourceInput = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texInput.resource, 0);
+        ID3D11Resource* resourceMv = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texMv.resource, 0);
+        ID3D11Resource* resourceDepth = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texDepth.resource, 0);
+        ID3D11Resource* resourceOutput = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texOutput.resource, 0);
 
         ID3D11DeviceContext* d3d11DeviceContext = (ID3D11DeviceContext*)NRI.GetCommandBufferNativeObject(*commandBuffer);
-        result = NGX_D3D11_EVALUATE_DLSS_EXT(d3d11DeviceContext, m_DLSS, m_NgxParameters, &dlssEvalParams);
+        {
+            NVSDK_NGX_D3D11_DLSS_Eval_Params srParams = {};
+            srParams.Feature.pInColor = resourceInput;
+            srParams.Feature.pInOutput = resourceOutput;
+            srParams.pInDepth = resourceDepth;
+            srParams.pInMotionVectors = resourceMv;
+            srParams.InJitterOffsetX = desc.jitter[0];
+            srParams.InJitterOffsetY = desc.jitter[1];
+            srParams.InRenderSubrectDimensions = desc.viewportDims;
+            // Optional
+            srParams.InReset = desc.reset;
+            srParams.InMVScaleX = desc.mvScale[0];
+            srParams.InMVScaleY = desc.mvScale[1];
+
+            result = NGX_D3D11_EVALUATE_DLSS_EXT(d3d11DeviceContext, m_SR, m_NgxParameters, &srParams);
+        }
     }
 
     assert( NVSDK_NGX_SUCCEED(result) );
@@ -356,7 +342,7 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
 
 void DlssIntegration::Shutdown()
 {
-    if (!m_Device || !m_Initialized)
+    if (!m_Device)
         return;
 
     const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
@@ -365,8 +351,11 @@ void DlssIntegration::Shutdown()
         if (m_NgxParameters)
             NVSDK_NGX_D3D12_DestroyParameters(m_NgxParameters);
 
-        if (m_DLSS)
-            NVSDK_NGX_D3D12_ReleaseFeature(m_DLSS);
+        if (m_SR)
+            NVSDK_NGX_D3D12_ReleaseFeature(m_SR);
+
+        if (m_RR)
+            NVSDK_NGX_D3D12_ReleaseFeature(m_RR);
 
         NVSDK_NGX_D3D12_Shutdown1(nullptr);
     }
@@ -375,8 +364,11 @@ void DlssIntegration::Shutdown()
         if (m_NgxParameters)
             NVSDK_NGX_VULKAN_DestroyParameters(m_NgxParameters);
 
-        if (m_DLSS)
-            NVSDK_NGX_VULKAN_ReleaseFeature(m_DLSS);
+        if (m_SR)
+            NVSDK_NGX_VULKAN_ReleaseFeature(m_SR);
+
+        if (m_RR)
+            NVSDK_NGX_VULKAN_ReleaseFeature(m_RR);
 
         NVSDK_NGX_VULKAN_Shutdown1(nullptr);
     }
@@ -385,14 +377,17 @@ void DlssIntegration::Shutdown()
         if (m_NgxParameters)
             NVSDK_NGX_D3D11_DestroyParameters(m_NgxParameters);
 
-        if (m_DLSS)
-            NVSDK_NGX_D3D11_ReleaseFeature(m_DLSS);
+        if (m_SR)
+            NVSDK_NGX_D3D11_ReleaseFeature(m_SR);
+
+        if (m_RR)
+            NVSDK_NGX_D3D11_ReleaseFeature(m_RR);
 
         NVSDK_NGX_D3D11_Shutdown1(nullptr);
     }
 
     m_NgxParameters = nullptr;
-    m_DLSS = nullptr;
+    m_SR = nullptr;
+    m_RR = nullptr;
     m_Device = nullptr;
-    m_Initialized = false;
 }

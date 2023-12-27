@@ -44,10 +44,6 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define PSR_THROUGHPUT_THRESHOLD            0.0 // TODO: even small throughput can produce a bright spot if incoming radiance is huge
 #define MAX_MIP_LEVEL                       11.0
 #define IMPORTANCE_SAMPLES_NUM              16
-#define TAA_HISTORY_SHARPNESS               0.5 // [0; 1], 0.5 matches Catmull-Rom
-#define TAA_MAX_HISTORY_WEIGHT              0.95
-#define TAA_MIN_HISTORY_WEIGHT              0.1
-#define TAA_MOTION_MAX_REUSE                0.1
 #define SPEC_LOBE_ENERGY                    0.95 // trimmed to 95%
 #define AMBIENT_FADE                        ( -0.001 * gUnitToMetersMultiplier * gUnitToMetersMultiplier )
 
@@ -203,7 +199,7 @@ struct InstanceData
 // RESOURCES
 //===============================================================
 
-#include "BindingBridge.hlsli"
+#include "Include/BindingBridge.hlsli"
 
 NRI_RESOURCE( cbuffer, GlobalConstants, b, 0, 0 )
 {
@@ -220,13 +216,13 @@ NRI_RESOURCE( cbuffer, GlobalConstants, b, 0, 0 )
     float4 gViewDirection_gOrthoMode;
     float4 gHairBaseColorOverride; // w is alpha or blend factor
     float2 gHairBetasOverride;
-    float2 gWindowSize;
+    float2 gWindowSize; // represents DPI handling ( >= gOutputSize )
+    float2 gOutputSize; // represents native resolution ( >= gRenderSize )
+    float2 gRenderSize; // up to native resolution ( >= gRectSize )
+    float2 gRectSize; // dynamic resolution scaling
     float2 gInvWindowSize;
-    float2 gOutputSize;
     float2 gInvOutputSize;
-    float2 gRenderSize;
     float2 gInvRenderSize;
-    float2 gRectSize;
     float2 gInvRectSize;
     float2 gRectSizePrev;
     float2 gJitter;
@@ -248,6 +244,7 @@ NRI_RESOURCE( cbuffer, GlobalConstants, b, 0, 0 )
     float gAperture;
     float gFocalDistance;
     float gFocalLength;
+    float gTAA;
     uint32_t gDenoiserType;
     uint32_t gDisableShadowsAndEnableImportanceSampling; // TODO: remove - modify GetSunIntensity to return 0 if sun is below horizon
     uint32_t gOnScreen;
@@ -258,11 +255,12 @@ NRI_RESOURCE( cbuffer, GlobalConstants, b, 0, 0 )
     uint32_t gTracingMode;
     uint32_t gSampleNum;
     uint32_t gBounceNum;
-    uint32_t gTAA;
     uint32_t gResolve;
     uint32_t gPSR;
     uint32_t gValidation;
     uint32_t gTrimLobe;
+    uint32_t gSR;
+    uint32_t gRR;
 
     // Ambient
     float gAmbientMaxAccumulatedFramesNum;
@@ -367,33 +365,30 @@ float3 GetMotion( float3 X, float3 Xprev )
     return motion;
 }
 
-// IMPORTANT: requires STL::Rng::Hash::Initialize
-float3 ApplyExposure( float3 Lsum, bool applyToneMap )
+float3 ApplyExposure( float3 Lsum )
 {
-    // Exposure
     if( gOnScreen <= SHOW_DENOISED_SPECULAR )
-    {
         Lsum *= gSunDirection_gExposure.w;
-
-        // Dithering
-        float rnd = STL::Rng::Hash::GetFloat( );
-        float luma = STL::Color::Luminance( Lsum );
-        float amplitude = lerp( 0.4, 1.0 / 1024.0, STL::Math::Sqrt01( luma ) );
-        float dither = 1.0 + ( rnd - 0.5 ) * amplitude;
-        Lsum *= dither;
-    }
-
-    // Tonemap
-    if( applyToneMap && gOnScreen == SHOW_FINAL )
-        Lsum = STL::Color::HdrToLinear_Uncharted( Lsum );
 
     return Lsum;
 }
 
-float3 BicubicFilterNoCorners( Texture2D<float3> tex, SamplerState samp, float2 samplePos, float2 invTextureSize, float sharpness )
+float3 ApplyTonemap( float3 Lsum )
+{
+    #if( NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION )
+        if( gOnScreen == SHOW_FINAL )
+            Lsum = STL::Color::HdrToLinear_Uncharted( Lsum );
+    #else
+        Lsum = Lsum.xxx;
+    #endif
+
+    return Lsum;
+}
+
+float3 BicubicFilterNoCorners( Texture2D<float3> tex, SamplerState samp, float2 samplePos, float2 invResourceSize, float sharpness )
 {
     float2 centerPos = floor( samplePos - 0.5 ) + 0.5;
-    float2 f = samplePos - centerPos;
+    float2 f = saturate( samplePos - centerPos );
     float2 f2 = f * f;
     float2 f3 = f * f2;
     float2 w0 = -sharpness * f3 + 2.0 * sharpness * f2 - sharpness * f;
@@ -401,9 +396,9 @@ float3 BicubicFilterNoCorners( Texture2D<float3> tex, SamplerState samp, float2 
     float2 w2 = -( 2.0 - sharpness ) * f3 + ( 3.0 - 2.0 * sharpness ) * f2 + sharpness * f;
     float2 w3 = sharpness * f3 - sharpness * f2;
     float2 wl2 = w1 + w2;
-    float2 tc2 = invTextureSize * ( centerPos + w2 * STL::Math::PositiveRcp( wl2 ) );
-    float2 tc0 = invTextureSize * ( centerPos - 1.0 );
-    float2 tc3 = invTextureSize * ( centerPos + 2.0 );
+    float2 tc2 = invResourceSize * ( centerPos + w2 * STL::Math::PositiveRcp( wl2 ) );
+    float2 tc0 = invResourceSize * ( centerPos - 1.0 );
+    float2 tc3 = invResourceSize * ( centerPos + 2.0 );
 
     float w = wl2.x * w0.y;
     float3 color = tex.SampleLevel( samp, float2( tc2.x, tc0.y ), 0 ) * w;
@@ -417,7 +412,7 @@ float3 BicubicFilterNoCorners( Texture2D<float3> tex, SamplerState samp, float2 
     color += tex.SampleLevel( samp, float2( tc2.x, tc2.y ), 0 ) * w;
     sum += w;
 
-    w = w3.x  * wl2.y;
+    w = w3.x * wl2.y;
     color += tex.SampleLevel( samp, float2( tc3.x, tc2.y ), 0 ) * w;
     sum += w;
 

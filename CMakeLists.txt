@@ -105,7 +105,7 @@ source_group ("NRD Integration" FILES ${NRD_INTEGRATION_HEADERS})
 add_executable (${PROJECT_NAME} ${NRD_SAMPLE_SOURCE} ${NRD_INTEGRATION_HEADERS})
 
 target_include_directories (${PROJECT_NAME} PRIVATE "Source" "External")
-target_include_directories (${PROJECT_NAME} PRIVATE "External/NRIFramework/Include")
+target_include_directories (${PROJECT_NAME} PRIVATE "External/NRIFramework/Include" "External/NRIFramework/Shaders")
 target_include_directories (${PROJECT_NAME} PRIVATE "External/NRIFramework/External/NRI/Include")
 target_include_directories (${PROJECT_NAME} PRIVATE "External/NRIFramework/External")
 target_include_directories (${PROJECT_NAME} PRIVATE "External/NRD/Include" "External/NRD/Integration")
@@ -136,21 +136,21 @@ endfunction ()
 
 # DLSS
 if (WIN32)
-    find_library (NGX_DEBUG_LIB NAMES nvsdk_ngx_s_dbg.lib PATHS "External/NGX/lib/Windows_x86_64/x86_64")
-    find_library (NGX_RELEASE_LIB NAMES nvsdk_ngx_s.lib PATHS "External/NGX/lib/Windows_x86_64/x86_64")
-    find_file (NGX_DLL NAMES nvngx_dlss.dll PATHS "External/NGX/lib/Windows_x86_64/rel")
+    find_library (NGX_D_LIB NAMES nvsdk_ngx_s_dbg.lib PATHS "External/NGX/lib/Windows_x86_64/x86_64")
+    find_library (NGX_LIB NAMES nvsdk_ngx_s.lib PATHS "External/NGX/lib/Windows_x86_64/x86_64")
+    find_file (DLSS_SR_DLL NAMES nvngx_dlss.dll PATHS "External/NGX/lib/Windows_x86_64/rel")
 else ()
-    find_library (NGX_DEBUG_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
-    find_library (NGX_RELEASE_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
-    find_file (NGX_DLL NAMES libnvidia-ngx-dlss.so.3.1.1 PATHS "External/NGX/lib/Linux_x86_64/rel")
+    find_library (NGX_D_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
+    find_library (NGX_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
+    find_file (DLSS_SR_DLL NAMES libnvidia-ngx-dlss.so.3.5.10 PATHS "External/NGX/lib/Linux_x86_64/rel")
 endif ()
 
-if (NGX_DEBUG_LIB AND NGX_RELEASE_LIB AND NGX_DLL)
+if (NGX_D_LIB AND NGX_LIB AND DLSS_SR_DLL)
     target_include_directories (${PROJECT_NAME} PRIVATE "External/NRIFramework/External/NRI/External/vulkan/include")
-    target_link_libraries (${PROJECT_NAME} PRIVATE debug ${NGX_DEBUG_LIB})
-    target_link_libraries (${PROJECT_NAME} PRIVATE optimized ${NGX_RELEASE_LIB})
+    target_link_libraries (${PROJECT_NAME} PRIVATE debug ${NGX_D_LIB})
+    target_link_libraries (${PROJECT_NAME} PRIVATE optimized ${NGX_LIB})
 
-    copy_library (${PROJECT_NAME} ${NGX_DLL})
+    copy_library (${PROJECT_NAME} ${DLSS_SR_DLL})
 
     file (GLOB DLSS_INTEGRATION_HEADERS "Source/DLSS/*.h" "Source/DLSS/*.hpp")
     source_group ("DLSS Integration" FILES ${DLSS_INTEGRATION_HEADERS})
@@ -172,6 +172,7 @@ set (SHADERMAKE_GENERAL_ARGS
     -I "External"
     -I "External/NGX"
     -I "External/NRD/External"
+    -I "External/NRIFramework/Shaders"
     -D COMPILER_DXC
     -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
     -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}

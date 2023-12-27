@@ -124,8 +124,8 @@ This approach simplifies and accelerates ray tracing, but adds difficulties to B
 
 - Install [*Cmake*](https://cmake.org/download/) 3.15+
 - Install on
-    - Windows: latest *WindowsSDK* (22000+), *VulkanSDK* (1.3.216+)
-    - Linux (x86-64): *VulkanSDK*, *libx11-dev*, *libxrandr-dev*, *libwayland-dev*
+    - Windows: latest *WindowsSDK* and *VulkanSDK*
+    - Linux (x86-64): latest *VulkanSDK*, *libx11-dev*, *libxrandr-dev*, *libwayland-dev*
     - Linux (aarch64): find a precompiled binary for [*DXC*](https://github.com/microsoft/DirectXShaderCompiler), *libx11-dev*, *libxrandr-dev*, *libwayland-dev*
 - Build (variant 1) - using *Git* and *CMake* explicitly
     - Clone project and init submodules
@@ -162,7 +162,7 @@ Any ray tracing compatible GPU.
 - Space - animation toggle
 - PgUp/PgDown - switch between denoisers
 
-By default *NRD* is used in common mode. But it can also be used in occlusion-only (including directional) and SH (spherical harmonics) modes in the sample. To change the behavior `NRD_MODE` macro needs to be changed from `NORMAL` to `OCCLUSION`, `SH` or `DIRECTIONAL_OCCLUSION` in two places: `NRDSample.cpp` and `Shared.hlsli`.
+By default *NRD* is used in common mode. But it can also be used in occlusion-only (including directional) and SH (spherical harmonics) modes in the sample. To change the behavior `NRD_MODE` macro needs to be changed from `NORMAL` to `OCCLUSION`, `SH` or `DIRECTIONAL_OCCLUSION` in `Shared.hlsli`.
 
 Notes:
 - RELAX doesn't support AO / SO denoising. If RELAX is the current denoiser, ambient term will be flat, but energy correct.

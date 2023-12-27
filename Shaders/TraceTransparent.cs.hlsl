@@ -141,12 +141,12 @@ float3 TraceTransparent( TraceTransparentDesc desc )
 [numthreads( 16, 16, 1)]
 void main( int2 pixelPos : SV_DispatchThreadId )
 {
-    // Do not generate NANs for unused threads
-    if( pixelPos.x >= gRectSize.x || pixelPos.y >= gRectSize.y )
-        return;
-
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
     float2 sampleUv = pixelUv + gJitter;
+
+    // Do not generate NANs for unused threads
+    if( pixelUv.x > 1.0 || pixelUv.y > 1.0 )
+        return;
 
     // Initialize RNG
     STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );

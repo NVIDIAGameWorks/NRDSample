@@ -310,6 +310,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
     //=====================================================================================================================================================================
 
     TraceOpaqueResult result = ( TraceOpaqueResult )0;
+    result.specHitDist = NRD_FrontEnd_SpecHitDistAveraging_Begin( );
 
     uint pathNum = desc.pathNum << ( gTracingMode == RESOLUTION_FULL ? 1 : 0 );
     uint diffPathsNum = 0;
@@ -368,21 +369,11 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 float3 ray = 0;
                 uint samplesNum = 0;
 
+                // If IS is enabled, generate up to IMPORTANCE_SAMPLES_NUM rays depending on roughness
+                // If IS is disabled, there is no need to generate up to IMPORTANCE_SAMPLES_NUM rays for specular because VNDF v3 doesn't produce rays pointing inside the surface
                 uint maxSamplesNum = 0;
-                if( bounceIndex == 1 )
-                {
-                    if( gDisableShadowsAndEnableImportanceSampling )
-                    {
-                        // If IS is enabled, generate up to IMPORTANCE_SAMPLES_NUM rays depending on roughness
-                        maxSamplesNum = IMPORTANCE_SAMPLES_NUM * ( isDiffuse ? 1.0 : materialProps.roughness );
-                    }
-                    else if( !isDiffuse )
-                    {
-                        // If IS is disabled, we still need to generate up to IMPORTANCE_SAMPLES_NUM
-                        // rays for specular because VNDF can generate rays pointing inside the surface
-                        maxSamplesNum = IMPORTANCE_SAMPLES_NUM * materialProps.roughness;
-                    }
-                }
+                if( bounceIndex == 1 && gDisableShadowsAndEnableImportanceSampling ) // TODO: use IS in each bounce?
+                    maxSamplesNum = IMPORTANCE_SAMPLES_NUM * ( isDiffuse ? 1.0 : materialProps.roughness );
                 maxSamplesNum = max( maxSamplesNum, 1 );
 
                 float3 selectedHairThroughput = 0;
@@ -422,7 +413,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                             #if( NRD_MODE == DIRECTIONAL_OCCLUSION )
                                 r = STL::ImportanceSampling::Uniform::GetRay( rnd );
                             #else
-                                r = STL::ImportanceSampling::Cosine::GetRay( rnd );
+                                r = STL::ImportanceSampling::Cosine::GetRay( rnd ); // brighter
                             #endif
                         }
                         else
@@ -431,9 +422,6 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                             r = reflect( -Vlocal, Hlocal );
                         }
                     }
-
-                    // IMPORTANT: ignore rays pointing inside the surface!
-                    bool isMiss = !geometryProps.IsHair( ) && r.z < 0.0;
 
                     // Transform to world space
                     r = STL::Geometry::RotateVectorInverse( mLocalBasis, r );
@@ -444,7 +432,8 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                     // - better separate direct and indirect lighting denoising
 
                     //   1. If IS enabled, check the ray in LightBVH
-                    if( gDisableShadowsAndEnableImportanceSampling && !isMiss && maxSamplesNum != 1 )
+                    bool isMiss = false;
+                    if( gDisableShadowsAndEnableImportanceSampling && maxSamplesNum != 1 )
                         isMiss = CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), r, 0.0, INF, mipAndCone, gLightTlas, GEOMETRY_ALL, desc.rayFlags );
 
                     //   2. Count rays hitting emissive surfaces
@@ -674,7 +663,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
             else
             {
                 result.specRadiance += Lsum;
-                result.specHitDist += normHitDist;
+                NRD_FrontEnd_SpecHitDistAveraging_Add( result.specHitDist, normHitDist );
             }
         }
     }
@@ -701,15 +690,16 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
     // Others are not divided by sampling probability, we need to average across diffuse / specular only paths
     float diffNorm = diffPathsNum == 0 ? 0.0 : 1.0 / float( diffPathsNum );
+    #if( NRD_MODE == DIRECTIONAL_OCCLUSION || NRD_MODE == SH )
+        result.diffDirection *= diffNorm;
+    #endif
     result.diffHitDist *= diffNorm;
 
     float specNorm = pathNum == diffPathsNum ? 0.0 : 1.0 / float( pathNum - diffPathsNum );
-    result.specHitDist *= specNorm;
-
     #if( NRD_MODE == DIRECTIONAL_OCCLUSION || NRD_MODE == SH )
-        result.diffDirection *= diffNorm;
         result.specDirection *= specNorm;
     #endif
+    NRD_FrontEnd_SpecHitDistAveraging_End( result.specHitDist );
 
     return result;
 }
@@ -753,6 +743,10 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 {
     const float NaN = sqrt( -1 );
 
+    // Pixel and sample UV
+    float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
+    float2 sampleUv = pixelUv + gJitter;
+
     // Checkerboard
     uint2 outPixelPos = pixelPos;
     if( gTracingMode == RESOLUTION_HALF )
@@ -761,7 +755,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     uint checkerboard = STL::Sequence::CheckerBoard( pixelPos, gFrameIndex ) != 0;
 
     // Do not generate NANs for unused threads
-    if( pixelPos.x >= gRectSize.x || pixelPos.y >= gRectSize.y )
+    if( pixelUv.x > 1.0 || pixelUv.y > 1.0 )
     {
         #if( USE_DRS_STRESS_TEST == 1 )
             WriteResult( checkerboard, outPixelPos, NaN, NaN, NaN, NaN );
@@ -769,10 +763,6 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
         return;
     }
-
-    // Pixel and sample UV
-    float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
-    float2 sampleUv = pixelUv + gJitter;
 
     //================================================================================================================================================================================
     // Primary rays
@@ -803,6 +793,10 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     {
         gOut_ShadowData[ pixelPos ] = SIGMA_FrontEnd_PackShadow( viewZ, 0.0, 0.0 );
         gOut_DirectEmission[ pixelPos ] = materialProps0.Lemi;
+
+        #if( USE_INF_STRESS_TEST == 1 )
+            WriteResult( checkerboard, outPixelPos, NaN, NaN, NaN, NaN );
+        #endif
 
         return;
     }

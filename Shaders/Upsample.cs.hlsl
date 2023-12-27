@@ -20,12 +20,25 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 {
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvWindowSize;
 
+    // Do not generate NANs for unused threads
+    if( pixelUv.x > 1.0 || pixelUv.y > 1.0 )
+        return;
+
+    // DLSS upscales render resolution to output resolution
+    float2 rectSize = gRectSize;
+    float2 invRenderSize = gInvRenderSize;
+    if( gSR || gRR )
+    {
+        rectSize = gOutputSize;
+        invRenderSize = gInvOutputSize;
+    }
+
     // Upsampling
-    float2 uvScaled = clamp( pixelUv * gRectSize, 1.5, gRectSize - 1.5 );
-    float3 upsampled = BicubicFilterNoCorners( gIn_Image, gLinearSampler, uvScaled, gInvRenderSize, 0.66 ).xyz;
+    float2 pixelPosScaled = pixelUv * rectSize;
+    float3 upsampled = BicubicFilterNoCorners( gIn_Image, gLinearSampler, pixelPosScaled, invRenderSize, 0.66 ).xyz;
 
     // Split screen - noisy input / denoised output
-    float3 input = gIn_Image.SampleLevel( gNearestSampler, uvScaled * gInvRenderSize, 0 ).xyz;
+    float3 input = gIn_Image.SampleLevel( gNearestSampler, pixelPosScaled * invRenderSize, 0 ).xyz;
     float3 result = pixelUv.x < gSeparator ? input : upsampled;
 
     // Split screen - vertical line

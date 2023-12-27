@@ -400,12 +400,10 @@ float ReprojectIrradiance(
     out float3 prevLdiff, out float3 prevLspec
 )
 {
+    // Get UV and ignore back projection
+    float2 uv = STL::Geometry::GetScreenUv( isPrevFrame ? gWorldToClipPrev : gWorldToClip, geometryProps.X, true ) - gJitter;
+
     float2 rescale = ( isPrevFrame ? gRectSizePrev : gRectSize ) * gInvRenderSize;
-
-    // IMPORTANT: not Xprev because confidence is based on viewZ
-    float4 clip = STL::Geometry::ProjectiveTransform( isPrevFrame ? gWorldToClipPrev : gWorldToClip, geometryProps.X );
-    float2 uv = ( clip.xy / clip.w ) * float2( 0.5, -0.5 ) + 0.5 - gJitter;
-
     float4 data = texSpecViewZ.SampleLevel( gNearestSampler, uv * rescale, 0 );
     float prevViewZ = abs( data.w ) / NRD_FP16_VIEWZ_SCALE;
 
@@ -415,9 +413,6 @@ float ReprojectIrradiance(
     // Initial state
     float weight = 1.0;
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
-
-    // Ignore back-projection
-    weight *= float( clip.w > 0.0 );
 
     // Ignore undenoised regions ( split screen mode is active )
     weight *= float( pixelUv.x > gSeparator );
@@ -450,8 +445,7 @@ float ReprojectIrradiance(
         weight *= float( NoL * STL::Math::Sign( data.w ) > 0.0 );
 
         // Confidence - ignore too short rays
-        float4 clip = STL::Geometry::ProjectiveTransform( gWorldToClip, geometryProps.X );
-        float2 uv = ( clip.xy / clip.w ) * float2( 0.5, -0.5 ) + 0.5 - gJitter;
+        float2 uv = STL::Geometry::GetScreenUv( gWorldToClip, geometryProps.X, true ) - gJitter;
         float d = length( ( uv - pixelUv ) * gRectSize );
         weight *= STL::Math::LinearStep( 1.0, 3.0, d );
     }

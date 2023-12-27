@@ -46,6 +46,6 @@ jobs:
           path: |
             README.md
             3-Run NRD sample.bat
-            _Build/Release/
+            _Bin/Release/
             _Data/
             _Shaders/

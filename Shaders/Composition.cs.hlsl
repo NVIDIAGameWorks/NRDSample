@@ -33,12 +33,12 @@ NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedSpec_ViewZ, u, 1, 1 );
 [numthreads( 16, 16, 1)]
 void main( int2 pixelPos : SV_DispatchThreadId )
 {
-    // Do not generate NANs for unused threads
-    if( pixelPos.x >= gRectSize.x || pixelPos.y >= gRectSize.y )
-        return;
-
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
     float2 sampleUv = pixelUv + gJitter;
+
+    // Do not generate NANs for unused threads
+    if( pixelUv.x > 1.0 || pixelUv.y > 1.0 )
+        return;
 
     // ViewZ
     float viewZ = gIn_ViewZ[ pixelPos ];
@@ -201,6 +201,8 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 Lspec = spec.xyz * specDemod;
 
     // Ambient
+    // TODO: drop ambient in the future and use a radiance cache instead, at least because in case of many RPP hit distance
+    // is not averaged for specular, it's "min" across paths. It's needed for proper specular motion, but makes SO biased!
     float3 ambient = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
     ambient *= exp2( AMBIENT_FADE * STL::Math::LengthSquared( Xv ) );
     ambient *= gAmbient;

@@ -36,16 +36,6 @@ compile_commands.json
 *.log
 *.ninja
 
-# library
-*.lib
-*.exp
-*.dll
-*.ilk
-*.pdb
-*.so
-*.so.*
-*.manifest
-
 # external packages
 External/Detex/
 External/Glfw/
