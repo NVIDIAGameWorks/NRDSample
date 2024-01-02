@@ -655,6 +655,7 @@ private:
     float m_MinResolutionScale = 0.5f;
     float m_DofAperture = 0.0f;
     float m_DofFocalDistance = 1.0f;
+    float m_SdrScale = 1.0f;
     bool m_HasTransparent = false;
     bool m_ShowUi = true;
     bool m_ForceHistoryReset = false;
@@ -663,6 +664,7 @@ private:
     bool m_ShowValidationOverlay = false;
     bool m_PositiveZ = true;
     bool m_ReversedZ = false;
+    bool m_IsSrgb = false;
 };
 
 Sample::~Sample()
@@ -1712,7 +1714,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 sampleShaders +=
                                     " --useAPI --binary --flatten --stripReflection --WX --colorize"
                                     " -c Shaders.cfg -o _Shaders --sourceDir Shaders"
-                                    " -I Shaders -I External -I External/NGX -I External/NRD/External"
+                                    " -I Shaders -I External -I External/NGX -I External/NRD/External -I External/NRIFramework/Shaders"
                                     " -D COMPILER_DXC -D NRD_NORMAL_ENCODING=" STRINGIFY(NRD_NORMAL_ENCODING) " -D NRD_ROUGHNESS_ENCODING=" STRINGIFY(NRD_ROUGHNESS_ENCODING);
 
                                 nrdShaders +=
@@ -2272,16 +2274,16 @@ void Sample::GenerateAnimatedCubes()
 nri::Format Sample::CreateSwapChain()
 {
     nri::SwapChainDesc swapChainDesc = {};
-    swapChainDesc.windowSystemType = GetWindowSystemType();
     swapChainDesc.window = GetWindow();
     swapChainDesc.commandQueue = m_CommandQueue;
-    swapChainDesc.format = nri::SwapChainFormat::BT709_G22_8BIT;
+    swapChainDesc.format = nri::SwapChainFormat::BT709_G10_16BIT; // or BT709_G22_10BIT
     swapChainDesc.verticalSyncInterval = m_VsyncInterval;
     swapChainDesc.width = (uint16_t)GetWindowResolution().x;
     swapChainDesc.height = (uint16_t)GetWindowResolution().y;
     swapChainDesc.textureNum = SWAP_CHAIN_TEXTURE_NUM;
 
     NRI_ABORT_ON_FAILURE(NRI.CreateSwapChain(*m_Device, swapChainDesc, m_SwapChain));
+    m_IsSrgb = swapChainDesc.format != nri::SwapChainFormat::BT709_G10_16BIT;
 
     uint32_t swapChainTextureNum = 0;
     nri::Texture* const* swapChainTextures = NRI.GetSwapChainTextures(*m_SwapChain, swapChainTextureNum);
@@ -2970,6 +2972,8 @@ void Sample::CreateResources(nri::Format swapChainFormat)
     nri::Format normalFormat = nri::Format::RGBA16_SNORM;
 #endif
 
+    nri::Format taaFormat = m_IsSrgb ? nri::Format::R10_G10_B10_A2_UNORM : nri::Format::RGBA16_SFLOAT;
+
     const uint16_t w = (uint16_t)m_RenderResolution.x;
     const uint16_t h = (uint16_t)m_RenderResolution.y;
     const uint64_t instanceDataSize = m_Scene.instances.size() * sizeof(InstanceData);
@@ -3045,9 +3049,9 @@ void Sample::CreateResources(nri::Format swapChainFormat)
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
     CreateTexture(descriptorDescs, "Texture::ComposedSpec_ViewZ", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
-    CreateTexture(descriptorDescs, "Texture::TaaHistory", nri::Format::R10_G10_B10_A2_UNORM, w, h, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::TaaHistory", taaFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
-    CreateTexture(descriptorDescs, "Texture::TaaHistoryPrev", nri::Format::R10_G10_B10_A2_UNORM, w, h, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::TaaHistoryPrev", taaFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
 
 #if( NRD_MODE == SH )
@@ -4103,6 +4107,11 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
     DecomposeProjection(STYLE_D3D, STYLE_D3D, m_Camera.state.mViewToClip, &flags, nullptr, nullptr, frustum.pv, project, nullptr);
     float orthoMode = ( flags & PROJ_ORTHO ) == 0 ? 0.0f : -1.0f;
 
+    nri::DisplayDesc displayDesc = {};
+    NRI.GetDisplayDesc(*m_SwapChain, displayDesc);
+
+    m_SdrScale = displayDesc.sdrLuminance / 80.0f;
+
     const uint32_t bufferedFrameIndex = frameIndex % BUFFERED_FRAME_MAX_NUM;
     const uint64_t rangeOffset = m_Frames[bufferedFrameIndex].globalConstantBufferOffset;
     nri::Buffer* globalConstants = Get(Buffer::GlobalConstants);
@@ -4150,6 +4159,7 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
         data->gFocalDistance                                = m_DofFocalDistance;
         data->gFocalLength                                  = ( 0.5f * ( 35.0f * 0.001f ) ) / Tan( DegToRad( m_Settings.camFov * 0.5f ) ); // for 35 mm sensor size (aka old-school 35 mm film)
         data->gTAA                                          = (m_Settings.denoiser != DENOISER_REFERENCE && m_Settings.TAA) ? taaAccumulationFactor : 0;
+        data->gHdrScale                                     = displayDesc.isHDR ? 0.9f * displayDesc.maxLuminance / 80.0f : 1.0f;
         data->gDenoiserType                                 = (uint32_t)m_Settings.denoiser;
         data->gDisableShadowsAndEnableImportanceSampling    = (sunDirection.z < 0.0f && m_Settings.importanceSampling) ? 1 : 0;
         data->gOnScreen                                     = m_Settings.onScreen + ((NRD_MODE == OCCLUSION || NRD_MODE == DIRECTIONAL_OCCLUSION) ? 3 : 0); // preserve original mapping
@@ -4164,8 +4174,9 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
         data->gPSR                                          = m_Settings.PSR && m_Settings.tracingMode != RESOLUTION_HALF;
         data->gValidation                                   = m_ShowValidationOverlay && m_Settings.denoiser != DENOISER_REFERENCE && m_Settings.separator != 1.0f;
         data->gTrimLobe                                     = m_Settings.specularLobeTrimming ? 1 : 0;
-        data->gSR                                           = m_Settings.SR;
-        data->gRR                                           = m_Settings.RR;
+        data->gSR                                           = m_Settings.SR ? 1 : 0;
+        data->gRR                                           = m_Settings.RR ? 1 : 0;
+        data->gIsSrgb                                       = m_IsSrgb ? 1 : 0;
 
         // Ambient
         data->gAmbientMaxAccumulatedFramesNum               = m_ForceHistoryReset ? 0 : float(maxAccumulatedFrameNum);
@@ -4964,7 +4975,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
             desc.colorNum = 1;
 
             NRI.CmdBeginRendering(commandBuffer, desc);
-            RenderUserInterface(*m_Device, commandBuffer);
+            RenderUserInterface(*m_Device, commandBuffer, m_SdrScale, m_IsSrgb);
             NRI.CmdEndRendering(commandBuffer);
 
             const nri::TextureTransitionBarrierDesc afterTransitions = nri::TextureTransitionFromState(beforeTransitions, {nri::AccessBits::UNKNOWN, nri::TextureLayout::PRESENT});

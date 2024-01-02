@@ -28,8 +28,8 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     color = ApplyTonemap( color );
 
     // Conversion
-    if( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR )
-        color = STL::Color::LinearToSrgb( color );
+    if( gIsSrgb && ( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR ) )
+        color = STL::Color::ToSrgb( color );
 
     // Output
     gOut_Image[ pixelPos ] = color;

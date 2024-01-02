@@ -113,9 +113,9 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     float2 pixelPosPrev = saturate( pixelUvPrev ) * gRectSizePrev;
     float3 history = BicubicFilterNoCorners( gIn_History, gLinearSampler, pixelPosPrev, gInvRenderSize, TAA_HISTORY_SHARPNESS ).xyz;
 
-    bool isSrgb = gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR;
+    bool isSrgb = gIsSrgb && ( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR );
     if( isSrgb )
-        history = STL::Color::SrgbToLinear( history );
+        history = STL::Color::FromSrgb( history );
 
     // History clamping
     // IMPORTANT: must be done in linear space
@@ -150,7 +150,7 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
 
     // Output
     if( isSrgb )
-        result = STL::Color::LinearToSrgb( result );
+        result = STL::Color::ToSrgb( result );
 
     gOut_Result[ pixelPos ] = result;
 }

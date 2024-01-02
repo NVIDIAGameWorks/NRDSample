@@ -245,6 +245,7 @@ NRI_RESOURCE( cbuffer, GlobalConstants, b, 0, 0 )
     float gFocalDistance;
     float gFocalLength;
     float gTAA;
+    float gHdrScale;
     uint32_t gDenoiserType;
     uint32_t gDisableShadowsAndEnableImportanceSampling; // TODO: remove - modify GetSunIntensity to return 0 if sun is below horizon
     uint32_t gOnScreen;
@@ -261,6 +262,7 @@ NRI_RESOURCE( cbuffer, GlobalConstants, b, 0, 0 )
     uint32_t gTrimLobe;
     uint32_t gSR;
     uint32_t gRR;
+    uint32_t gIsSrgb;
 
     // Ambient
     float gAmbientMaxAccumulatedFramesNum;
@@ -377,7 +379,7 @@ float3 ApplyTonemap( float3 Lsum )
 {
     #if( NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION )
         if( gOnScreen == SHOW_FINAL )
-            Lsum = STL::Color::HdrToLinear_Uncharted( Lsum );
+            Lsum = gHdrScale * STL::Color::HdrToLinear_Uncharted( Lsum );
     #else
         Lsum = Lsum.xxx;
     #endif
@@ -461,7 +463,7 @@ float GetCircleOfConfusion( float distance ) // diameter
 //=============================================================================================
 
 #define SKY_INTENSITY 1.0
-#define SUN_INTENSITY 8.0
+#define SUN_INTENSITY 10.0
 
 float3 GetSunIntensity( float3 v, float3 sunDirection, float tanAngularRadius )
 {
@@ -480,11 +482,11 @@ float3 GetSunIntensity( float3 v, float3 sunDirection, float tanAngularRadius )
     sun += glow;
 
     float3 sunColor = lerp( float3( 1.0, 0.6, 0.3 ), float3( 1.0, 0.9, 0.7 ), STL::Math::Sqrt01( sunDirection.z ) );
-    sunColor *= saturate( sun );
+    sunColor *= sun;
 
     sunColor *= STL::Math::SmoothStep( -0.01, 0.05, sunDirection.z );
 
-    return STL::Color::GammaToLinear( sunColor ) * SUN_INTENSITY;
+    return STL::Color::FromGamma( sunColor ) * SUN_INTENSITY;
 }
 
 float3 GetSkyIntensity( float3 v, float3 sunDirection, float tanAngularRadius )
@@ -501,7 +503,7 @@ float3 GetSkyIntensity( float3 v, float3 sunDirection, float tanAngularRadius )
     float ground = 0.5 + 0.5 * STL::Math::SmoothStep( -1.0, 0.0, v.z );
     skyColor *= ground;
 
-    return STL::Color::GammaToLinear( saturate( skyColor ) ) * SKY_INTENSITY + GetSunIntensity( v, sunDirection, tanAngularRadius );
+    return STL::Color::FromGamma( skyColor ) * SKY_INTENSITY + GetSunIntensity( v, sunDirection, tanAngularRadius );
 }
 
 #endif

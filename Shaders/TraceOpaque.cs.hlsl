@@ -277,7 +277,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                 float3 psrNormal = STL::Geometry::RotateVectorInverse( mirrorMatrix, materialProps.N );
 
-                gOut_BaseColor_Metalness[ desc.pixelPos ] = float4( STL::Color::LinearToSrgb( materialProps.baseColor ), materialProps.metalness );
+                gOut_BaseColor_Metalness[ desc.pixelPos ] = float4( STL::Color::ToSrgb( materialProps.baseColor ), materialProps.metalness );
                 gOut_Normal_Roughness[ desc.pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( psrNormal, materialProps.roughness, materialID );
             }
             else
@@ -811,7 +811,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     #endif
 
     gOut_Normal_Roughness[ pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( materialProps0.N, materialProps0.roughness, materialID );
-    gOut_BaseColor_Metalness[ pixelPos ] = float4( STL::Color::LinearToSrgb( materialProps0.baseColor ), materialProps0.metalness );
+    gOut_BaseColor_Metalness[ pixelPos ] = float4( STL::Color::ToSrgb( materialProps0.baseColor ), materialProps0.metalness );
 
     // Debug
     if( gOnScreen == SHOW_INSTANCE_INDEX )
