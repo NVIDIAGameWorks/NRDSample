@@ -81,6 +81,9 @@ static inline NVSDK_NGX_PerfQuality_Value DLSS_ConvertQuality(DlssQuality qualit
     if (quality == DlssQuality::QUALITY)
         return NVSDK_NGX_PerfQuality_Value_MaxQuality;
 
+    if (quality == DlssQuality::AA)
+        return NVSDK_NGX_PerfQuality_Value_DLAA;
+
     return NVSDK_NGX_PerfQuality_Value_UltraPerformance;
 }
 

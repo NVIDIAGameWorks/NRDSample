@@ -318,7 +318,7 @@ float3 HairEval(HairContext c, const float3 wi, const float3 wo)
     // Compute contribution of remaining terms after kMaxScatterEvents
     result += ap[kMaxScatterEvents] * Mp(cosThetaI, cosThetaO, sinThetaI, sinThetaO, c.v[kMaxScatterEvents]) * k1_2Pi;
 
-    return result;
+    return saturate( result );
 }
 
 bool HairSampleRay(const HairContext c, const float3 wi, out float3 wo, out float pdf, out float3 weight, float2 u[2])
@@ -435,7 +435,10 @@ bool HairSampleRay(const HairContext c, const float3 wi, out float3 wo, out floa
 
     pdf += Mp(cosThetaI, cosThetaO, sinThetaI, sinThetaO, c.v[kMaxScatterEvents]) * apPdf[kMaxScatterEvents] * k1_2Pi;
 
-    weight = HairEval(c, wi, wo) / pdf;
+    if( pdf < 0.001 )
+        pdf = 0;
 
-    return (pdf > 0.f);
+    weight = pdf == 0.0 ? 0.0 : HairEval(c, wi, wo) / pdf;
+
+    return pdf != 0.0;
 }

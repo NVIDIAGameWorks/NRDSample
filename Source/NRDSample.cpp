@@ -414,7 +414,7 @@ struct DescriptorDesc
 struct TextureState
 {
     Texture texture;
-    nri::AccessAndLayout nextState;
+    nri::AccessLayoutStage after;
 };
 
 struct AnimatedInstance
@@ -510,7 +510,7 @@ public:
 
     void InitCmdLine(cmdline::parser& cmdLine) override
     {
-        cmdLine.add<int32_t>("dlssQuality", 'd', "DLSS quality: [-1: 3]", false, -1, cmdline::range(-1, 3));
+        cmdLine.add<int32_t>("dlssQuality", 'd', "DLSS quality: [-1: 4]", false, -1, cmdline::range(-1, 4));
         cmdLine.add("debugNRD", 0, "enable NRD validation");
     }
 
@@ -527,7 +527,7 @@ public:
     inline nri::Texture*& Get(Texture index)
     { return m_Textures[(uint32_t)index]; }
 
-    inline nri::TextureTransitionBarrierDesc& GetState(Texture index)
+    inline nri::TextureBarrierDesc& GetState(Texture index)
     { return m_TextureStates[(uint32_t)index]; }
 
     inline nri::Format GetFormat(Texture index)
@@ -568,7 +568,7 @@ public:
     void UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFrameNum);
     void RestoreBindings(nri::CommandBuffer& commandBuffer, const Frame& frame);
     void BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffer, uint32_t bufferedFrameIndex);
-    uint32_t BuildOptimizedTransitions(const TextureState* states, uint32_t stateNum, std::array<nri::TextureTransitionBarrierDesc, MAX_TEXTURE_TRANSITIONS_NUM>& transitions);
+    uint16_t BuildOptimizedTransitions(const TextureState* states, uint32_t stateNum, std::array<nri::TextureBarrierDesc, MAX_TEXTURE_TRANSITIONS_NUM>& transitions);
 
     inline float3 GetSunDirection() const
     {
@@ -619,7 +619,7 @@ private:
     nri::Descriptor* m_MorphTargetUpdatePrimitivesConstantBufferView = nullptr;
 
     std::vector<nri::Texture*> m_Textures;
-    std::vector<nri::TextureTransitionBarrierDesc> m_TextureStates;
+    std::vector<nri::TextureBarrierDesc> m_TextureStates;
     std::vector<nri::Format> m_TextureFormats;
     std::vector<nri::Buffer*> m_Buffers;
     std::vector<nri::Memory*> m_MemoryAllocations;
@@ -2276,7 +2276,7 @@ nri::Format Sample::CreateSwapChain()
     nri::SwapChainDesc swapChainDesc = {};
     swapChainDesc.window = GetWindow();
     swapChainDesc.commandQueue = m_CommandQueue;
-    swapChainDesc.format = nri::SwapChainFormat::BT709_G10_16BIT; // or BT709_G22_10BIT
+    swapChainDesc.format = nri::SwapChainFormat::BT709_G22_8BIT; // or BT709_G10_16BIT
     swapChainDesc.verticalSyncInterval = m_VsyncInterval;
     swapChainDesc.width = (uint16_t)GetWindowResolution().x;
     swapChainDesc.height = (uint16_t)GetWindowResolution().y;
@@ -2322,44 +2322,44 @@ void Sample::CreatePipelineLayoutAndDescriptorPool()
 {
     const nri::DescriptorRangeDesc descriptorRanges0[] =
     {
-        { 0, 1, nri::DescriptorType::CONSTANT_BUFFER, nri::ShaderStage::COMPUTE },
-        { 0, 3, nri::DescriptorType::SAMPLER, nri::ShaderStage::COMPUTE },
+        { 0, 1, nri::DescriptorType::CONSTANT_BUFFER, nri::StageBits::COMPUTE_SHADER },
+        { 0, 3, nri::DescriptorType::SAMPLER, nri::StageBits::COMPUTE_SHADER },
     };
 
     const nri::DescriptorRangeDesc descriptorRanges1[] =
     {
-        { 0, 12, nri::DescriptorType::TEXTURE, nri::ShaderStage::COMPUTE },
-        { 0, 13, nri::DescriptorType::STORAGE_TEXTURE, nri::ShaderStage::COMPUTE },
+        { 0, 12, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER },
+        { 0, 13, nri::DescriptorType::STORAGE_TEXTURE, nri::StageBits::COMPUTE_SHADER },
     };
 
     const uint32_t textureNum = helper::GetCountOf(m_Scene.materials) * TEXTURES_PER_MATERIAL;
     nri::DescriptorRangeDesc descriptorRanges2[] =
     {
-        { 0, 2, nri::DescriptorType::ACCELERATION_STRUCTURE, nri::ShaderStage::COMPUTE },
-        { 2, 3, nri::DescriptorType::STRUCTURED_BUFFER, nri::ShaderStage::COMPUTE },
-        { 5, textureNum, nri::DescriptorType::TEXTURE, nri::ShaderStage::COMPUTE, nri::VARIABLE_DESCRIPTOR_NUM, nri::DESCRIPTOR_ARRAY },
+        { 0, 2, nri::DescriptorType::ACCELERATION_STRUCTURE, nri::StageBits::COMPUTE_SHADER },
+        { 2, 3, nri::DescriptorType::STRUCTURED_BUFFER, nri::StageBits::COMPUTE_SHADER },
+        { 5, textureNum, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER, nri::VARIABLE_DESCRIPTOR_NUM, nri::DESCRIPTOR_ARRAY },
     };
 
     const nri::DescriptorRangeDesc descriptorRanges3[] =
     {
-        { 0, 3, nri::DescriptorType::STRUCTURED_BUFFER, nri::ShaderStage::COMPUTE },
-        { 0, 2, nri::DescriptorType::STORAGE_STRUCTURED_BUFFER, nri::ShaderStage::COMPUTE },
+        { 0, 3, nri::DescriptorType::STRUCTURED_BUFFER, nri::StageBits::COMPUTE_SHADER },
+        { 0, 2, nri::DescriptorType::STORAGE_STRUCTURED_BUFFER, nri::StageBits::COMPUTE_SHADER },
     };
 
-   nri::DynamicConstantBufferDesc dynamicConstantBuffer = { 0, nri::ShaderStage::COMPUTE };
+   nri::DynamicConstantBufferDesc dynamicConstantBuffer = { 0, nri::StageBits::COMPUTE_SHADER };
 
     const nri::DescriptorSetDesc descriptorSetDesc[] =
     {
         { 0, descriptorRanges0, helper::GetCountOf(descriptorRanges0) },
-        { 1, descriptorRanges1, helper::GetCountOf(descriptorRanges1), nullptr, 0, nri::DescriptorSetBindingBits::PARTIALLY_BOUND },
+        { 1, descriptorRanges1, helper::GetCountOf(descriptorRanges1), nullptr, 0, nri::PARTIALLY_BOUND },
         { 2, descriptorRanges2, helper::GetCountOf(descriptorRanges2) },
-        { 3, descriptorRanges3, helper::GetCountOf(descriptorRanges3), &dynamicConstantBuffer, 1, nri::DescriptorSetBindingBits::PARTIALLY_BOUND },
+        { 3, descriptorRanges3, helper::GetCountOf(descriptorRanges3), &dynamicConstantBuffer, 1, nri::PARTIALLY_BOUND },
     };
 
     nri::PipelineLayoutDesc pipelineLayoutDesc = {};
     pipelineLayoutDesc.descriptorSets = descriptorSetDesc;
     pipelineLayoutDesc.descriptorSetNum = helper::GetCountOf(descriptorSetDesc);
-    pipelineLayoutDesc.stageMask = nri::PipelineLayoutShaderStageBits::COMPUTE;
+    pipelineLayoutDesc.shaderStages = nri::StageBits::COMPUTE_SHADER;
 
     NRI_ABORT_ON_FAILURE(NRI.CreatePipelineLayout(*m_Device, pipelineLayoutDesc, m_PipelineLayout));
 
@@ -2408,77 +2408,77 @@ void Sample::CreatePipelines()
     const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
 
     { // Pipeline::MorphMeshUpdateVertices
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "MorphMeshUpdateVertices.cs", shaderCodeStorage);
+        pipelineDesc.shader = utils::LoadShader(deviceDesc.graphicsAPI, "MorphMeshUpdateVertices.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
     }
 
     { // Pipeline::MorphMeshUpdatePrimitives
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "MorphMeshUpdatePrimitives.cs", shaderCodeStorage);
+        pipelineDesc.shader = utils::LoadShader(deviceDesc.graphicsAPI, "MorphMeshUpdatePrimitives.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
     }
 
     { // Pipeline::TraceAmbient
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "TraceAmbient.cs", shaderCodeStorage);
+        pipelineDesc.shader = utils::LoadShader(deviceDesc.graphicsAPI, "TraceAmbient.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
     }
 
     { // Pipeline::TraceOpaque
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "TraceOpaque.cs", shaderCodeStorage);
+        pipelineDesc.shader = utils::LoadShader(deviceDesc.graphicsAPI, "TraceOpaque.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
     }
 
     { // Pipeline::Composition
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "Composition.cs", shaderCodeStorage);
+        pipelineDesc.shader = utils::LoadShader(deviceDesc.graphicsAPI, "Composition.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
     }
 
     { // Pipeline::TraceTransparent
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "TraceTransparent.cs", shaderCodeStorage);
+        pipelineDesc.shader = utils::LoadShader(deviceDesc.graphicsAPI, "TraceTransparent.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
     }
 
     { // Pipeline::Temporal
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "Temporal.cs", shaderCodeStorage);
+        pipelineDesc.shader = utils::LoadShader(deviceDesc.graphicsAPI, "Temporal.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
     }
 
     { // Pipeline::Upsample
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "Upsample.cs", shaderCodeStorage);
+        pipelineDesc.shader = utils::LoadShader(deviceDesc.graphicsAPI, "Upsample.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
     }
 
     { // Pipeline::UpsampleNis
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "UpsampleNis.cs", shaderCodeStorage);
+        pipelineDesc.shader = utils::LoadShader(deviceDesc.graphicsAPI, "UpsampleNis.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
     }
 
     { // Pipeline::DlssBefore
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "DlssBefore.cs", shaderCodeStorage);
+        pipelineDesc.shader = utils::LoadShader(deviceDesc.graphicsAPI, "DlssBefore.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
     }
 
     { // Pipeline::DlssAfter
-        pipelineDesc.computeShader = utils::LoadShader(deviceDesc.graphicsAPI, "DlssAfter.cs", shaderCodeStorage);
+        pipelineDesc.shader = utils::LoadShader(deviceDesc.graphicsAPI, "DlssAfter.cs", shaderCodeStorage);
 
         NRI_ABORT_ON_FAILURE(NRI.CreateComputePipeline(*m_Device, pipelineDesc, pipeline));
         m_Pipelines.push_back(pipeline);
@@ -3117,6 +3117,8 @@ void Sample::CreateResources(nri::Format swapChainFormat)
             }
             else
             {
+                NRI.SetBufferDebugName(*(nri::Buffer*)desc.resource, desc.debugName);
+
                 if (!(desc.bufferUsage & nri::BufferUsageBits::RAY_TRACING_BUFFER))
                 {
                     if (desc.bufferUsage & nri::BufferUsageBits::SHADER_RESOURCE)
@@ -3132,12 +3134,12 @@ void Sample::CreateResources(nri::Format swapChainFormat)
                         m_Descriptors.push_back(descriptor);
                     }
                 }
-
-                NRI.SetBufferDebugName(*(nri::Buffer*)desc.resource, desc.debugName);
             }
         }
         else
         {
+            NRI.SetTextureDebugName(*(nri::Texture*)desc.resource, desc.debugName);
+
             nri::Texture2DViewDesc viewDesc = {(nri::Texture*)desc.resource, desc.isArray ? nri::Texture2DViewType::SHADER_RESOURCE_2D_ARRAY : nri::Texture2DViewType::SHADER_RESOURCE_2D, desc.format};
             NRI_ABORT_ON_FAILURE(NRI.CreateTexture2DView(viewDesc, descriptor));
             m_Descriptors.push_back(descriptor);
@@ -3149,8 +3151,6 @@ void Sample::CreateResources(nri::Format swapChainFormat)
                 NRI_ABORT_ON_FAILURE(NRI.CreateTexture2DView(viewDesc, descriptor));
                 m_Descriptors.push_back(descriptor);
             }
-
-            NRI.SetTextureDebugName(*(nri::Texture*)desc.resource, desc.debugName);
         }
     }
 
@@ -3650,7 +3650,7 @@ void Sample::CreateDescriptorSets()
     }
 }
 
-void Sample::CreateTexture(std::vector<DescriptorDesc>& descriptorDescs, const char* debugName, nri::Format format, nri::Dim_t width, nri::Dim_t height, nri::Mip_t mipNum, nri::Dim_t arraySize, nri::TextureUsageBits usage, nri::AccessBits state)
+void Sample::CreateTexture(std::vector<DescriptorDesc>& descriptorDescs, const char* debugName, nri::Format format, nri::Dim_t width, nri::Dim_t height, nri::Mip_t mipNum, nri::Dim_t arraySize, nri::TextureUsageBits usage, nri::AccessBits access)
 {
     const nri::TextureDesc textureDesc = nri::Texture2D(format, width, height, mipNum, arraySize, usage);
 
@@ -3658,9 +3658,17 @@ void Sample::CreateTexture(std::vector<DescriptorDesc>& descriptorDescs, const c
     NRI_ABORT_ON_FAILURE(NRI.CreateTexture(*m_Device, textureDesc, texture));
     m_Textures.push_back(texture);
 
-    if (state != nri::AccessBits::UNKNOWN)
+    if (access != nri::AccessBits::UNKNOWN)
     {
-        nri::TextureTransitionBarrierDesc transition = nri::TextureTransitionFromUnknown(texture, {state, state == nri::AccessBits::SHADER_RESOURCE ? nri::TextureLayout::SHADER_RESOURCE : nri::TextureLayout::GENERAL});
+        nri::Layout layout = nri::Layout::SHADER_RESOURCE;
+        if (access & nri::AccessBits::COPY_SOURCE)
+            layout = nri::Layout::COPY_SOURCE;
+        else if (access & nri::AccessBits::COPY_DESTINATION)
+            layout = nri::Layout::COPY_DESTINATION;
+        else if (access & nri::AccessBits::SHADER_RESOURCE_STORAGE)
+            layout = nri::Layout::SHADER_RESOURCE_STORAGE;
+
+        nri::TextureBarrierDesc transition = nri::TextureBarrierFromUnknown(texture, {access, layout});
         m_TextureStates.push_back(transition);
         m_TextureFormats.push_back(format);
     }
@@ -3752,26 +3760,25 @@ void Sample::UploadStaticData()
 
     // Gather upload data for read-only textures
     std::vector<nri::TextureUploadDesc> textureData;
-    textureData.push_back( {&subresources[0], Get(Texture::NisData1), nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE, 1, 1} );
-    textureData.push_back( {&subresources[1], Get(Texture::NisData2), nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE, 1, 1} );
+    textureData.push_back( {&subresources[0], Get(Texture::NisData1), {nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE}} );
+    textureData.push_back( {&subresources[1], Get(Texture::NisData2), {nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE}} );
     size_t subresourceOffset = 2;
 
     for (size_t i = 0; i < m_Scene.textures.size(); i++)
     {
         const utils::Texture* texture = m_Scene.textures[i];
+        textureData.push_back( {&subresources[subresourceOffset], Get( (Texture)((size_t)Texture::MaterialTextures + i) ), {nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE}} );
+
         nri::Mip_t mipNum = texture->GetMipNum();
         nri::Dim_t arraySize = texture->GetArraySize();
-
-        textureData.push_back( {&subresources[subresourceOffset], Get( (Texture)((size_t)Texture::MaterialTextures + i) ), nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE, mipNum, arraySize} );
-
         subresourceOffset += size_t(arraySize) * size_t(mipNum);
     }
 
     // Append textures without data to initialize initial state
-    for (const nri::TextureTransitionBarrierDesc& state : m_TextureStates)
+    for (const nri::TextureBarrierDesc& state : m_TextureStates)
     {
         nri::TextureUploadDesc desc = {};
-        desc.nextState = state.nextState;
+        desc.after = {state.after.access, state.after.layout};
         desc.texture = (nri::Texture*)state.texture;
 
         textureData.push_back(desc);
@@ -4035,25 +4042,25 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
     NRI.UnmapBuffer(*Get(Buffer::WorldTlasDataStaging));
     NRI.UnmapBuffer(*Get(Buffer::LightTlasDataStaging));
 
-    const nri::BufferTransitionBarrierDesc transition1[] =
+    const nri::BufferBarrierDesc transition1[] =
     {
-        { Get(Buffer::InstanceData), nri::AccessBits::SHADER_RESOURCE,  nri::AccessBits::COPY_DESTINATION },
+        { Get(Buffer::InstanceData), {nri::AccessBits::SHADER_RESOURCE}, {nri::AccessBits::COPY_DESTINATION} },
     };
 
-    nri::TransitionBarrierDesc transitionBarriers = {transition1, nullptr, helper::GetCountOf(transition1), 0};
-    NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+    nri::BarrierGroupDesc transitionBarriers = {nullptr, transition1, nullptr, 0, (uint16_t)helper::GetCountOf(transition1), 0};
+    NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
     NRI.CmdCopyBuffer(commandBuffer, *Get(Buffer::InstanceData), 0, 0, *Get(Buffer::InstanceDataStaging), 0, instanceDataOffset, instanceDataSize);
     NRI.CmdBuildTopLevelAccelerationStructure(commandBuffer, worldGeometryObjectsNum, *Get(Buffer::WorldTlasDataStaging), tlasDataOffset, TLAS_BUILD_BITS, *Get(AccelerationStructure::TLAS_World), *Get(Buffer::WorldScratch), 0);
     NRI.CmdBuildTopLevelAccelerationStructure(commandBuffer, lightGeometryObjectsNum, *Get(Buffer::LightTlasDataStaging), tlasDataOffset, TLAS_BUILD_BITS, *Get(AccelerationStructure::TLAS_Emissive), *Get(Buffer::LightScratch), 0);
 
-    const nri::BufferTransitionBarrierDesc transition2[] =
+    const nri::BufferBarrierDesc transition2[] =
     {
-        {Get(Buffer::InstanceData), nri::AccessBits::COPY_DESTINATION,  nri::AccessBits::SHADER_RESOURCE},
+        {Get(Buffer::InstanceData), {nri::AccessBits::COPY_DESTINATION}, {nri::AccessBits::SHADER_RESOURCE}},
     };
 
-    transitionBarriers = {transition2, nullptr, helper::GetCountOf(transition2), 0};
-    NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+    transitionBarriers = {nullptr, transition2, nullptr, 0, (uint16_t)helper::GetCountOf(transition2), 0};
+    NRI.CmdBarrier(commandBuffer, transitionBarriers);
 }
 
 void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFrameNum)
@@ -4229,22 +4236,22 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
     NRI.UnmapBuffer(*globalConstants);
 }
 
-uint32_t Sample::BuildOptimizedTransitions(const TextureState* states, uint32_t stateNum, std::array<nri::TextureTransitionBarrierDesc, MAX_TEXTURE_TRANSITIONS_NUM>& transitions)
+uint16_t Sample::BuildOptimizedTransitions(const TextureState* states, uint32_t stateNum, std::array<nri::TextureBarrierDesc, MAX_TEXTURE_TRANSITIONS_NUM>& transitions)
 {
     uint32_t n = 0;
 
     for (uint32_t i = 0; i < stateNum; i++)
     {
         const TextureState& state = states[i];
-        nri::TextureTransitionBarrierDesc& transition = GetState(state.texture);
+        nri::TextureBarrierDesc& transition = GetState(state.texture);
 
-        bool isStateChanged = transition.nextState.acessBits != state.nextState.acessBits || transition.nextState.layout != state.nextState.layout;
-        bool isStorageBarrier = transition.nextState.acessBits == nri::AccessBits::SHADER_RESOURCE_STORAGE && state.nextState.acessBits == nri::AccessBits::SHADER_RESOURCE_STORAGE;
+        bool isStateChanged = transition.after.access != state.after.access || transition.after.layout != state.after.layout;
+        bool isStorageBarrier = transition.after.access == nri::AccessBits::SHADER_RESOURCE_STORAGE && state.after.access == nri::AccessBits::SHADER_RESOURCE_STORAGE;
         if (isStateChanged || isStorageBarrier)
-            transitions[n++] = nri::TextureTransitionFromState(transition, {state.nextState.acessBits, state.nextState.layout});
+            transitions[n++] = nri::TextureBarrierFromState(transition, {state.after.access, state.after.layout});
     }
 
-    return n;
+    return (uint16_t)n;
 }
 
 void Sample::RestoreBindings(nri::CommandBuffer& commandBuffer, const Frame& frame)
@@ -4257,7 +4264,7 @@ void Sample::RestoreBindings(nri::CommandBuffer& commandBuffer, const Frame& fra
 
 void Sample::RenderFrame(uint32_t frameIndex)
 {
-    std::array<nri::TextureTransitionBarrierDesc, MAX_TEXTURE_TRANSITIONS_NUM> optimizedTransitions = {};
+    std::array<nri::TextureBarrierDesc, MAX_TEXTURE_TRANSITIONS_NUM> optimizedTransitions = {};
 
     const uint32_t bufferedFrameIndex = frameIndex % BUFFERED_FRAME_MAX_NUM;
     const Frame& frame = m_Frames[bufferedFrameIndex];
@@ -4314,6 +4321,8 @@ void Sample::RenderFrame(uint32_t frameIndex)
     uint32_t maxAccumulatedFrameNum = uint32_t(m_Settings.maxAccumulatedFrameNum * resetHistoryFactor + 0.5f);
     uint32_t maxFastAccumulatedFrameNum = uint32_t(m_Settings.maxFastAccumulatedFrameNum * resetHistoryFactor + 0.5f);
 
+    bool wantPrintf = IsButtonPressed(Button::Middle) || IsKeyToggled(Key::P);
+
     nrd::CommonSettings commonSettings = {};
     memcpy(commonSettings.viewToClipMatrix, &m_Camera.state.mViewToClip, sizeof(m_Camera.state.mViewToClip));
     memcpy(commonSettings.viewToClipMatrixPrev, &m_Camera.statePrev.mViewToClip, sizeof(m_Camera.statePrev.mViewToClip));
@@ -4337,6 +4346,8 @@ void Sample::RenderFrame(uint32_t frameIndex)
     commonSettings.denoisingRange = GetDenoisingRange();
     commonSettings.disocclusionThreshold = m_Settings.disocclusionThreshold * 0.01f;
     commonSettings.splitScreen = (m_Settings.denoiser == DENOISER_REFERENCE || m_Settings.RR) ? 1.0f : m_Settings.separator;
+    commonSettings.printfAt[0] = wantPrintf ? (uint16_t)ImGui::GetIO().MousePos.x : 9999;
+    commonSettings.printfAt[1] = wantPrintf ? (uint16_t)ImGui::GetIO().MousePos.y : 9999;
     commonSettings.debug = m_Settings.debug;
     commonSettings.frameIndex = frameIndex;
     commonSettings.accumulationMode = m_ForceHistoryReset ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
@@ -4435,15 +4446,15 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 helper::Annotation annotation(NRI, commandBuffer, "Morph mesh: update vertices");
 
                 {
-                    const nri::BufferTransitionBarrierDesc bufferTransitions[] =
+                    const nri::BufferBarrierDesc bufferTransitions[] =
                     {
                         // Output
-                        {Get(Buffer::MorphedPositions), nri::AccessBits::SHADER_RESOURCE,  nri::AccessBits::SHADER_RESOURCE_STORAGE},
-                        {Get(Buffer::MorphedAttributes), nri::AccessBits::SHADER_RESOURCE,  nri::AccessBits::SHADER_RESOURCE_STORAGE},
+                        {Get(Buffer::MorphedPositions), {nri::AccessBits::SHADER_RESOURCE}, {nri::AccessBits::SHADER_RESOURCE_STORAGE}},
+                        {Get(Buffer::MorphedAttributes), {nri::AccessBits::SHADER_RESOURCE}, {nri::AccessBits::SHADER_RESOURCE_STORAGE}},
                     };
 
-                    nri::TransitionBarrierDesc transitionBarriers = { bufferTransitions, nullptr, helper::GetCountOf(bufferTransitions), 0};
-                    NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+                    nri::BarrierGroupDesc transitionBarriers = { nullptr, bufferTransitions, nullptr, 0, (uint16_t)helper::GetCountOf(bufferTransitions), 0};
+                    NRI.CmdBarrier(commandBuffer, transitionBarriers);
                 }
 
                 NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::MorphMeshUpdateVertices));
@@ -4482,19 +4493,19 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 }
 
                 {
-                    const nri::BufferTransitionBarrierDesc bufferTransitions[] =
+                    const nri::BufferBarrierDesc bufferTransitions[] =
                     {
                         // Input
-                        {Get(Buffer::MorphedPositions), nri::AccessBits::SHADER_RESOURCE_STORAGE,  nri::AccessBits::SHADER_RESOURCE},
-                        {Get(Buffer::MorphedAttributes), nri::AccessBits::SHADER_RESOURCE_STORAGE,  nri::AccessBits::SHADER_RESOURCE},
+                        {Get(Buffer::MorphedPositions), {nri::AccessBits::SHADER_RESOURCE_STORAGE}, {nri::AccessBits::SHADER_RESOURCE}},
+                        {Get(Buffer::MorphedAttributes), {nri::AccessBits::SHADER_RESOURCE_STORAGE}, {nri::AccessBits::SHADER_RESOURCE}},
 
                         // Output
-                        {Get(Buffer::PrimitiveData), nri::AccessBits::SHADER_RESOURCE, nri::AccessBits::SHADER_RESOURCE_STORAGE},
-                        {Get(Buffer::MorphedPrimitivePrevData), nri::AccessBits::SHADER_RESOURCE, nri::AccessBits::SHADER_RESOURCE_STORAGE},
+                        {Get(Buffer::PrimitiveData), {nri::AccessBits::SHADER_RESOURCE}, {nri::AccessBits::SHADER_RESOURCE_STORAGE}},
+                        {Get(Buffer::MorphedPrimitivePrevData), {nri::AccessBits::SHADER_RESOURCE}, {nri::AccessBits::SHADER_RESOURCE_STORAGE}},
                     };
 
-                    nri::TransitionBarrierDesc transitionBarriers = { bufferTransitions, nullptr, helper::GetCountOf(bufferTransitions), 0 };
-                    NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+                    nri::BarrierGroupDesc transitionBarriers = { nullptr, bufferTransitions, nullptr, 0, (uint16_t)helper::GetCountOf(bufferTransitions), 0 };
+                    NRI.CmdBarrier(commandBuffer, transitionBarriers);
                 }
             }
 
@@ -4556,14 +4567,14 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 }
 
                 {
-                    const nri::BufferTransitionBarrierDesc bufferTransitions[] =
+                    const nri::BufferBarrierDesc bufferTransitions[] =
                     {
-                        {Get(Buffer::PrimitiveData), nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE},
-                        {Get(Buffer::MorphedPrimitivePrevData), nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE},
+                        {Get(Buffer::PrimitiveData), {nri::AccessBits::SHADER_RESOURCE_STORAGE}, {nri::AccessBits::SHADER_RESOURCE}},
+                        {Get(Buffer::MorphedPrimitivePrevData), {nri::AccessBits::SHADER_RESOURCE_STORAGE}, {nri::AccessBits::SHADER_RESOURCE}},
                     };
 
-                    nri::TransitionBarrierDesc transitionBarriers = { bufferTransitions, nullptr, helper::GetCountOf(bufferTransitions), 0 };
-                    NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+                    nri::BarrierGroupDesc transitionBarriers = { nullptr, bufferTransitions, nullptr, 0, (uint16_t)helper::GetCountOf(bufferTransitions), 0 };
+                    NRI.CmdBarrier(commandBuffer, transitionBarriers);
                 }
             }
         }
@@ -4584,11 +4595,11 @@ void Sample::RenderFrame(uint32_t frameIndex)
             const TextureState transitions[] =
             {
                 // Output
-                {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
             };
 
-            nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
-            NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+            nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, optimizedTransitions.data(), 0, 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
+            NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
             NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::TraceAmbient));
             NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::TraceAmbient1), &kDummyDynamicConstantOffset);
@@ -4602,28 +4613,28 @@ void Sample::RenderFrame(uint32_t frameIndex)
             const TextureState transitions[] =
             {
                 // Input
-                {Texture::ComposedDiff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::ComposedDiff, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 // Output
-                {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::BaseColor_Metalness, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::DirectLighting, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::DirectEmission, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::PsrThroughput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::Unfiltered_ShadowData, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::Unfiltered_Shadow_Translucency, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::Unfiltered_Diff, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::Unfiltered_Spec, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::BaseColor_Metalness, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::DirectLighting, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::DirectEmission, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::PsrThroughput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::Unfiltered_ShadowData, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::Unfiltered_Shadow_Translucency, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::Unfiltered_Diff, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::Unfiltered_Spec, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
 #if( NRD_MODE == SH )
-                {Texture::Unfiltered_DiffSh, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::Unfiltered_SpecSh, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::Unfiltered_DiffSh, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::Unfiltered_SpecSh, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
 #endif
             };
-            nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
-            NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+            nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, optimizedTransitions.data(), 0, 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
+            NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
             NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::TraceOpaque));
             NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::TraceOpaque1), &kDummyDynamicConstantOffset);
@@ -4663,7 +4674,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 m_ReblurSettings.maxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
                 m_ReblurSettings.checkerboardMode = m_Settings.tracingMode == RESOLUTION_HALF ? nrd::CheckerboardMode::WHITE : nrd::CheckerboardMode::OFF;
                 m_ReblurSettings.enableMaterialTestForDiffuse = true;
-                m_ReblurSettings.enableMaterialTestForSpecular = false;
+                m_ReblurSettings.enableMaterialTestForSpecular = true;
 
                 nrd::ReblurSettings settings = m_ReblurSettings;
             #if( NRD_MODE == SH || NRD_MODE == DIRECTIONAL_OCCLUSION )
@@ -4707,7 +4718,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 m_RelaxSettings.specularMaxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
                 m_RelaxSettings.checkerboardMode = m_Settings.tracingMode == RESOLUTION_HALF ? nrd::CheckerboardMode::WHITE : nrd::CheckerboardMode::OFF;
                 m_RelaxSettings.enableMaterialTestForDiffuse = true;
-                m_RelaxSettings.enableMaterialTestForSpecular = false;
+                m_RelaxSettings.enableMaterialTestForSpecular = true;
 
                 nrd::RelaxSettings settings = m_RelaxSettings;
             #if( NRD_MODE == SH || NRD_MODE == DIRECTIONAL_OCCLUSION )
@@ -4748,26 +4759,26 @@ void Sample::RenderFrame(uint32_t frameIndex)
             const TextureState transitions[] =
             {
                 // Input
-                {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::BaseColor_Metalness, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::DirectLighting, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::DirectEmission, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::PsrThroughput, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::Shadow, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::Diff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::Spec, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::BaseColor_Metalness, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::DirectLighting, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::DirectEmission, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::PsrThroughput, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::Ambient, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::Shadow, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::Diff, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::Spec, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
             #if( NRD_MODE == SH )
-                {Texture::DiffSh, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::SpecSh, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::DiffSh, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::SpecSh, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
             #endif
                 // Output
-                {Texture::ComposedDiff, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::ComposedDiff, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
             };
-            nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
-            NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+            nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, optimizedTransitions.data(), 0, 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
+            NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
             NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::Composition));
             NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::Composition1), &kDummyDynamicConstantOffset);
@@ -4781,15 +4792,15 @@ void Sample::RenderFrame(uint32_t frameIndex)
             const TextureState transitions[] =
             {
                 // Input
-                {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::ComposedDiff, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::ComposedDiff, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 // Output
-                {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
             };
-            nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
-            NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+            nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, optimizedTransitions.data(), 0, 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
+            NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
             NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::TraceTransparent));
             NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::TraceTransparent1), &kDummyDynamicConstantOffset);
@@ -4825,14 +4836,14 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 const TextureState transitions[] =
                 {
                     // Input
-                    {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                    {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                     // Output
-                    {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                    {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
-                    {Texture::DlssInput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                    {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                    {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                    {Texture::DlssInput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
                 };
-                nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
-                NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+                nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, optimizedTransitions.data(), 0, 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
+                NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
                 NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::DlssBefore));
                 NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::DlssBefore1), &kDummyDynamicConstantOffset);
@@ -4846,14 +4857,14 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 const TextureState transitions[] =
                 {
                     // Input
-                    {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                    {Texture::Mv, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                    {Texture::DlssInput, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                    {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                    {Texture::Mv, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                    {Texture::DlssInput, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                     // Output
-                    {Texture::DlssOutput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                    {Texture::DlssOutput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
                 };
-                nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
-                NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+                nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, optimizedTransitions.data(), 0, 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
+                NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
                 DlssDispatchDesc dlssDesc = {};
                 dlssDesc.texOutput = {Get(Texture::DlssOutput), Get(Descriptor::DlssOutput_StorageTexture), GetFormat(Texture::DlssOutput), {GetOutputResolution().x, GetOutputResolution().y}};
@@ -4878,10 +4889,10 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 const TextureState transitions[] =
                 {
                     // Output
-                    {Texture::DlssOutput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                    {Texture::DlssOutput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
                 };
-                nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
-                NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+                nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, optimizedTransitions.data(), 0, 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
+                NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
                 NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::DlssAfter));
                 NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::DlssAfter1), &kDummyDynamicConstantOffset);
@@ -4897,14 +4908,14 @@ void Sample::RenderFrame(uint32_t frameIndex)
             const TextureState transitions[] =
             {
                 // Input
-                {Texture::Mv, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {taaSrc, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {Texture::Mv, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {taaSrc, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 // Output
-                {taaDst, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {taaDst, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
             };
-            nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
-            NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+            nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, optimizedTransitions.data(), 0, 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
+            NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
             NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::Temporal));
             NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(isEven ? DescriptorSet::Temporal1a : DescriptorSet::Temporal1b), &kDummyDynamicConstantOffset);
@@ -4918,13 +4929,13 @@ void Sample::RenderFrame(uint32_t frameIndex)
             const TextureState transitions[] =
             {
                 // Input
-                {IsDlssEnabled() ? Texture::DlssOutput : taaDst, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
-                {Texture::Validation, nri::AccessBits::SHADER_RESOURCE, nri::TextureLayout::SHADER_RESOURCE},
+                {IsDlssEnabled() ? Texture::DlssOutput : taaDst, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::Validation, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 // Output
-                {Texture::Final, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::TextureLayout::GENERAL},
+                {Texture::Final, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
             };
-            nri::TransitionBarrierDesc transitionBarriers = {nullptr, optimizedTransitions.data(), 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
-            NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+            nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, optimizedTransitions.data(), 0, 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
+            NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
             if (IsNisAllowed() && m_Settings.NIS)
             {
@@ -4954,21 +4965,21 @@ void Sample::RenderFrame(uint32_t frameIndex)
         const BackBuffer* backBuffer = &m_SwapChainBuffers[backBufferIndex];
 
         { // Copy to back-buffer
-            const nri::TextureTransitionBarrierDesc transitions[] =
+            const nri::TextureBarrierDesc transitions[] =
             {
-                nri::TextureTransitionFromState(GetState(Texture::Final), {nri::AccessBits::COPY_SOURCE, nri::TextureLayout::COPY_SOURCE}),
-                nri::TextureTransitionFromUnknown(backBuffer->texture, {nri::AccessBits::COPY_DESTINATION, nri::TextureLayout::COPY_DESTINATION}),
+                nri::TextureBarrierFromState(GetState(Texture::Final), {nri::AccessBits::COPY_SOURCE, nri::Layout::COPY_SOURCE}),
+                nri::TextureBarrierFromUnknown(backBuffer->texture, {nri::AccessBits::COPY_DESTINATION, nri::Layout::COPY_DESTINATION}),
             };
-            nri::TransitionBarrierDesc transitionBarriers = {nullptr, transitions, 0, helper::GetCountOf(transitions)};
-            NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+            nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, transitions, 0, 0, (uint16_t)helper::GetCountOf(transitions)};
+            NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
             NRI.CmdCopyTexture(commandBuffer, *backBuffer->texture, 0, nullptr, *Get(Texture::Final), 0, nullptr);
         }
 
         { // UI
-            nri::TextureTransitionBarrierDesc beforeTransitions = nri::TextureTransition(backBuffer->texture, {nri::AccessBits::COPY_DESTINATION, nri::TextureLayout::COPY_DESTINATION}, {nri::AccessBits::COLOR_ATTACHMENT, nri::TextureLayout::COLOR_ATTACHMENT});
-            nri::TransitionBarrierDesc transitionBarriers = {nullptr, &beforeTransitions, 0, 1};
-            NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+            nri::TextureBarrierDesc beforeTransitions = nri::TextureBarrier(backBuffer->texture, {nri::AccessBits::COPY_DESTINATION, nri::Layout::COPY_DESTINATION, nri::StageBits::COPY}, {nri::AccessBits::COLOR_ATTACHMENT, nri::Layout::COLOR_ATTACHMENT, nri::StageBits::COLOR_ATTACHMENT});
+            nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, &beforeTransitions, 0, 0, 1};
+            NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
             nri::AttachmentsDesc desc = {};
             desc.colors = &backBuffer->colorAttachment;
@@ -4978,9 +4989,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
             RenderUserInterface(*m_Device, commandBuffer, m_SdrScale, m_IsSrgb);
             NRI.CmdEndRendering(commandBuffer);
 
-            const nri::TextureTransitionBarrierDesc afterTransitions = nri::TextureTransitionFromState(beforeTransitions, {nri::AccessBits::UNKNOWN, nri::TextureLayout::PRESENT});
-            transitionBarriers = {nullptr, &afterTransitions, 0, 1};
-            NRI.CmdPipelineBarrier(commandBuffer, &transitionBarriers, nullptr, nri::BarrierDependency::ALL_STAGES);
+            const nri::TextureBarrierDesc afterTransitions = nri::TextureBarrierFromState(beforeTransitions, {nri::AccessBits::UNKNOWN, nri::Layout::PRESENT, nri::StageBits::ALL});
+            transitionBarriers = {nullptr, nullptr, &afterTransitions, 0, 0, 1};
+            NRI.CmdBarrier(commandBuffer, transitionBarriers);
         }
     }
     NRI.EndCommandBuffer(commandBuffer);

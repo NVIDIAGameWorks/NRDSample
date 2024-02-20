@@ -395,7 +395,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                         hairSd.T = float3( 1, 0, 0 );
                         hairSd.V = Vlocal;
 
-                        HairData hairData;
+                        HairData hairData = ( HairData )0;
                         hairData.baseColor = materialProps.baseColor;
                         hairData.betaM = materialProps.roughness;
                         hairData.betaN = materialProps.metalness;
@@ -677,6 +677,9 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
     float3 diffDemod = ( 1.0 - Fenv ) * albedo * 0.99 + 0.01;
     float3 specDemod = Fenv * 0.99 + 0.01;
 
+    if( NRD_NORMAL_ENCODING == 2 && desc.geometryProps.IsHair( ) )
+        specDemod = 1.0;
+
     if( gOnScreen != SHOW_MIP_SPECULAR )
     {
         result.diffRadiance /= diffDemod;
@@ -807,10 +810,18 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     #if( USE_SIMULATED_MATERIAL_ID_TEST == 1 )
         if( gDebug == 0.0 )
-            materialID *= float( frac( geometryProps0.X ).x < 0.05 );
+            materialID = frac( geometryProps0.X ).x < 0.05 ? MATERIAL_ID_PSR : materialID;
     #endif
 
-    gOut_Normal_Roughness[ pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( materialProps0.N, materialProps0.roughness, materialID );
+    float3 N = materialProps0.N;
+    if( geometryProps0.IsHair( ) )
+    {
+        // Generate a better guide for hair
+        float3 B = cross( geometryProps0.V, geometryProps0.T.xyz );
+        N = normalize( cross( geometryProps0.T.xyz, B ) );
+    }
+
+    gOut_Normal_Roughness[ pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( N, materialProps0.roughness, materialID );
     gOut_BaseColor_Metalness[ pixelPos ] = float4( STL::Color::ToSrgb( materialProps0.baseColor ), materialProps0.metalness );
 
     // Debug
@@ -912,7 +923,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     // Debug
     #if( USE_SIMULATED_MATERIAL_ID_TEST == 1 )
-        if( frac( X ).x < 0.05 )
+        if( frac( geometryProps0.X ).x < 0.05 )
             result.diffRadiance = float3( 0, 10, 0 ) * STL::Color::Luminance( result.diffRadiance );
     #endif
 

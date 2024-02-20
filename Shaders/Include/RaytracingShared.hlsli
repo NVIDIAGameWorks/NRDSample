@@ -289,12 +289,12 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps )
             float3x3 mLocalBasis = HairGetBasis( N, T );
             float3 vLocal = STL::Geometry::RotateVector( mLocalBasis, geometryProps.V );
 
-            HairSurfaceData hairSd = (HairSurfaceData)0;
+            HairSurfaceData hairSd = ( HairSurfaceData )0;
             hairSd.N = float3( 0, 0, 1 );
             hairSd.T = float3( 1, 0, 0 );
             hairSd.V = vLocal;
 
-            HairData hairData;
+            HairData hairData = ( HairData )0;
             hairData.baseColor = baseColor;
             hairData.betaM = roughness;
             hairData.betaN = metalness;

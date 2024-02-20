@@ -29,6 +29,7 @@ enum class DlssQuality
     PERFORMANCE,
     BALANCED,
     QUALITY,
+    AA,
 
     MAX_NUM
 };
