@@ -17,11 +17,9 @@
 #pragma warning(pop)
 
 #define DLSS_INTEGRATION_MAJOR 1
-#define DLSS_INTEGRATION_MINOR 6
-#define DLSS_INTEGRATION_DATE "18 December 2023"
+#define DLSS_INTEGRATION_MINOR 7
+#define DLSS_INTEGRATION_DATE "1 March 2024"
 #define DLSS_INTEGRATION 1
-
-static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 108, "Unsupported NRI version!");
 
 enum class DlssQuality
 {

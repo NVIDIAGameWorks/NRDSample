@@ -111,14 +111,7 @@ enum class AccelerationStructure : uint32_t
 
 enum class Buffer : uint32_t
 {
-    // HOST_UPLOAD
-    GlobalConstants,
-    DynamicConstants,
-    InstanceDataStaging,
-    WorldTlasDataStaging,
-    LightTlasDataStaging,
-
-    // DEVICE. read only
+    // DEVICE (read only)
     InstanceData,
     MorphMeshIndices,
     MorphMeshVertices,
@@ -205,6 +198,10 @@ enum class Descriptor : uint32_t
     LinearMipmapLinear_Sampler,
     LinearMipmapNearest_Sampler,
     NearestMipmapNearest_Sampler,
+
+    Global_ConstantBuffer,
+    MorphTargetPose_ConstantBuffer,
+    MorphTargetUpdatePrimitives_ConstantBuffer,
 
     InstanceData_Buffer,
     MorphMeshIndices_Buffer,
@@ -294,6 +291,7 @@ enum class Descriptor : uint32_t
 
 enum class DescriptorSet : uint32_t
 {
+    Global0,
     TraceAmbient1,
     TraceOpaque1,
     Composition1,
@@ -321,18 +319,16 @@ enum class DescriptorSet : uint32_t
 
 struct NRIInterface
     : public nri::CoreInterface
+    , public nri::HelperInterface
+    , public nri::StreamerInterface
     , public nri::SwapChainInterface
     , public nri::RayTracingInterface
-    , public nri::HelperInterface
 {};
 
 struct Frame
 {
     nri::CommandAllocator* commandAllocator;
     nri::CommandBuffer* commandBuffer;
-    nri::Descriptor* globalConstantBufferDescriptor;
-    nri::DescriptorSet* globalConstantBufferDescriptorSet;
-    uint64_t globalConstantBufferOffset;
 };
 
 struct Settings
@@ -450,55 +446,6 @@ struct AnimatedInstance
     }
 };
 
-class DynamicConstantBufferAllocator
-{
-public:
-    void Initialize(NRIInterface* NRI, nri::Device* device, nri::Buffer *constantBuffer, uint32_t size)
-    {
-        m_NRI = NRI;
-        m_Device = device;
-        m_ConstantBuffer = constantBuffer;
-        m_Size = size;
-
-        const nri::DeviceDesc& deviceDesc = m_NRI->GetDeviceDesc(*m_Device);
-        m_Alignment = deviceDesc.constantBufferOffsetAlignment;
-    }
-
-    template<typename T> constexpr T GetAlignedSize(const T& size)
-    {
-        return T(((size + m_Alignment - 1) / m_Alignment) * m_Alignment);
-    }
-
-    template<typename T> uint32_t Allocate(const T& constantBufferData)
-    {
-        uint32_t constantBufferViewSize = GetAlignedSize(static_cast<uint32_t>(sizeof(T)));
-
-        // assumes we have enough buffer to not overwrite the heap over multiple frames
-        if (m_DynamicConstantBufferOffset + constantBufferViewSize > m_Size)
-            m_DynamicConstantBufferOffset = 0;
-
-        T* pMappedData = static_cast<T*>(m_NRI->MapBuffer(*m_ConstantBuffer, m_DynamicConstantBufferOffset, constantBufferViewSize));
-        std::memcpy(pMappedData, &constantBufferData, sizeof(T));
-
-        uint32_t dynamicConstantBufferOffset = m_DynamicConstantBufferOffset;
-        m_DynamicConstantBufferOffset += constantBufferViewSize;
-
-        m_NRI->UnmapBuffer(*m_ConstantBuffer);
-
-        return dynamicConstantBufferOffset;
-    }
-
-    nri::Buffer* GetBuffer() const { return m_ConstantBuffer; }
-
-private:
-    nri::Device* m_Device = nullptr;
-    NRIInterface* m_NRI = nullptr;
-    nri::Buffer* m_ConstantBuffer = nullptr;
-    uint32_t m_Size = 0;
-    uint32_t m_DynamicConstantBufferOffset = 0;
-    uint32_t m_Alignment = 0;
-};
-
 class Sample : public SampleBase
 {
 public:
@@ -508,21 +455,17 @@ public:
 
     ~Sample();
 
-    void InitCmdLine(cmdline::parser& cmdLine) override
-    {
-        cmdLine.add<int32_t>("dlssQuality", 'd', "DLSS quality: [-1: 4]", false, -1, cmdline::range(-1, 4));
-        cmdLine.add("debugNRD", 0, "enable NRD validation");
-    }
+    inline float GetDenoisingRange() const
+    { return 4.0f * m_Scene.aabb.GetRadius(); }
+    
+    inline bool IsNisAllowed() const
+    { return m_Settings.separator == 0.0f && !m_ShowValidationOverlay; }
 
-    void ReadCmdLine(cmdline::parser& cmdLine) override
-    {
-        m_DlssQuality = cmdLine.get<int32_t>("dlssQuality");
-        m_DebugNRD = cmdLine.exist("debugNRD");
-    }
+    inline nrd::RelaxSettings GetDefaultRelaxSettings() const
+    { return {}; }
 
-    bool Initialize(nri::GraphicsAPI graphicsAPI) override;
-    void PrepareFrame(uint32_t frameIndex) override;
-    void RenderFrame(uint32_t frameIndex) override;
+    inline bool IsDlssEnabled() const
+    { return m_Settings.SR || m_Settings.RR; }
 
     inline nri::Texture*& Get(Texture index)
     { return m_Textures[(uint32_t)index]; }
@@ -548,27 +491,25 @@ public:
     inline nri::AccelerationStructure*& Get(AccelerationStructure index)
     { return m_AccelerationStructures[(uint32_t)index]; }
 
-    void LoadScene();
-    void AddInnerGlassSurfaces();
-    void GenerateAnimatedCubes();
+    inline void InitCmdLine(cmdline::parser& cmdLine) override
+    {
+        cmdLine.add<int32_t>("dlssQuality", 'd', "DLSS quality: [-1: 4]", false, -1, cmdline::range(-1, 4));
+        cmdLine.add("debugNRD", 0, "enable NRD validation");
+    }
 
-    nri::Format CreateSwapChain();
-    void CreateCommandBuffers();
-    void CreatePipelineLayoutAndDescriptorPool();
-    void CreatePipelines();
-    void CreateAccelerationStructures();
-    void CreateSamplers();
-    void CreateResources(nri::Format swapChainFormat);
-    void CreateDescriptorSets();
+    inline void ReadCmdLine(cmdline::parser& cmdLine) override
+    {
+        m_DlssQuality = cmdLine.get<int32_t>("dlssQuality");
+        m_DebugNRD = cmdLine.exist("debugNRD");
+    }
 
-    void CreateTexture(std::vector<DescriptorDesc>& descriptorDescs, const char* debugName, nri::Format format, nri::Dim_t width, nri::Dim_t height, nri::Mip_t mipNum, nri::Dim_t arraySize, nri::TextureUsageBits usage, nri::AccessBits state);
-    void CreateBuffer(std::vector<DescriptorDesc>& descriptorDescs, const char* debugName, uint64_t elements, uint32_t stride, nri::BufferUsageBits usage, nri::Format format = nri::Format::UNKNOWN);
+    inline nrd::ReblurSettings GetDefaultReblurSettings() const
+    {
+        nrd::ReblurSettings defaults = {};
+        defaults.antilagSettings.luminanceAntilagPower = 1.0f;
 
-    void UploadStaticData();
-    void UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFrameNum);
-    void RestoreBindings(nri::CommandBuffer& commandBuffer, const Frame& frame);
-    void BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffer, uint32_t bufferedFrameIndex);
-    uint16_t BuildOptimizedTransitions(const TextureState* states, uint32_t stateNum, std::array<nri::TextureBarrierDesc, MAX_TEXTURE_TRANSITIONS_NUM>& transitions);
+        return defaults;
+    }
 
     inline float3 GetSunDirection() const
     {
@@ -580,44 +521,52 @@ public:
         return sunDirection;
     }
 
-    inline float GetDenoisingRange() const
-    { return 4.0f * m_Scene.aabb.GetRadius(); }
+    bool Initialize(nri::GraphicsAPI graphicsAPI) override;
+    void LatencySleep(uint32_t frameIndex) override;
+    void PrepareFrame(uint32_t frameIndex) override;
+    void RenderFrame(uint32_t frameIndex) override;
 
-    // IMPORTANT: in this sample NIS implemented only if complex final image compositing is not needed
-    inline bool IsNisAllowed() const
-    { return m_Settings.separator == 0.0f && !m_ShowValidationOverlay; }
-
-    inline nrd::ReblurSettings GetDefaultReblurSettings() const
-    {
-        nrd::ReblurSettings defaults = {};
-        defaults.antilagSettings.luminanceAntilagPower = 1.0f;
-
-        return defaults;
-    }
-
-    inline nrd::RelaxSettings GetDefaultRelaxSettings() const
-    { return {}; }
-
-    inline bool IsDlssEnabled() const
-    { return m_Settings.SR || m_Settings.RR; }
+    void LoadScene();
+    void AddInnerGlassSurfaces();
+    void GenerateAnimatedCubes();
+    nri::Format CreateSwapChain();
+    void CreateCommandBuffers();
+    void CreatePipelineLayoutAndDescriptorPool();
+    void CreatePipelines();
+    void CreateAccelerationStructures();
+    void CreateSamplers();
+    void CreateResources(nri::Format swapChainFormat);
+    void CreateDescriptorSets();
+    void CreateTexture(std::vector<DescriptorDesc>& descriptorDescs, const char* debugName, nri::Format format, nri::Dim_t width, nri::Dim_t height, nri::Mip_t mipNum, nri::Dim_t arraySize, nri::TextureUsageBits usage, nri::AccessBits state);
+    void CreateBuffer(std::vector<DescriptorDesc>& descriptorDescs, const char* debugName, uint64_t elements, uint32_t stride, nri::BufferUsageBits usage, nri::Format format = nri::Format::UNKNOWN);
+    void UploadStaticData();
+    void UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFrameNum);
+    void RestoreBindings(nri::CommandBuffer& commandBuffer);
+    void GatherInstanceData();
+    uint16_t BuildOptimizedTransitions(const TextureState* states, uint32_t stateNum, std::array<nri::TextureBarrierDesc, MAX_TEXTURE_TRANSITIONS_NUM>& transitions);
 
 private:
+    // NRD
     NrdIntegration m_NRD;
+    nrd::CommonSettings m_CommonSettings = {};
+    nrd::RelaxSettings m_RelaxSettings = {};
+    nrd::ReblurSettings m_ReblurSettings = {};
+    nrd::ReferenceSettings m_ReferenceSettings = {};
+
+    // DLSS
     DlssIntegration m_DLSS;
+
+    // NRI
     NRIInterface NRI = {};
     utils::Scene m_Scene;
     nri::Device* m_Device = nullptr;
+    nri::Streamer* m_Streamer = nullptr;
     nri::SwapChain* m_SwapChain = nullptr;
     nri::CommandQueue* m_CommandQueue = nullptr;
     nri::Fence* m_FrameFence;
     nri::DescriptorPool* m_DescriptorPool = nullptr;
     nri::PipelineLayout* m_PipelineLayout = nullptr;
     std::array<Frame, BUFFERED_FRAME_MAX_NUM> m_Frames = {};
-
-    DynamicConstantBufferAllocator m_DynamicConstantBufferAllocator = {};
-    nri::Descriptor* m_MorphTargetPoseConstantBufferView = nullptr;
-    nri::Descriptor* m_MorphTargetUpdatePrimitivesConstantBufferView = nullptr;
-
     std::vector<nri::Texture*> m_Textures;
     std::vector<nri::TextureBarrierDesc> m_TextureStates;
     std::vector<nri::Format> m_TextureFormats;
@@ -628,11 +577,13 @@ private:
     std::vector<nri::Pipeline*> m_Pipelines;
     std::vector<nri::AccelerationStructure*> m_AccelerationStructures;
     std::vector<BackBuffer> m_SwapChainBuffers;
+
+    // Data
+    std::vector<InstanceData> m_InstanceData;
+    std::vector<nri::GeometryObjectInstance> m_WorldTlasData;
+    std::vector<nri::GeometryObjectInstance> m_LightTlasData;
     std::vector<AnimatedInstance> m_AnimatedInstances;
     std::array<float, 256> m_FrameTimes = {};
-    nrd::RelaxSettings m_RelaxSettings = {};
-    nrd::ReblurSettings m_ReblurSettings = {};
-    nrd::ReferenceSettings m_ReferenceSettings = {};
     Settings m_Settings = {};
     Settings m_SettingsPrev = {};
     Settings m_SettingsDefault = {};
@@ -642,8 +593,10 @@ private:
     float3 m_PrevLocalPos = {};
     float2 m_HairBetasOverride = float2(0.25f, 0.6f);
     uint2 m_RenderResolution = {};
-    uint64_t m_ConstantBufferSize = 0;
     uint64_t m_MorphMeshScratchSize = 0;
+    uint64_t m_WorldTlasDataOffsetInDynamicBuffer = 0;
+    uint64_t m_LightTlasDataOffsetInDynamicBuffer = 0;
+    uint32_t m_GlobalConstantBufferOffset = 0;
     uint32_t m_OpaqueObjectsNum = 0;
     uint32_t m_TransparentObjectsNum = 0;
     uint32_t m_EmissiveObjectsNum = 0;
@@ -682,10 +635,7 @@ Sample::~Sample()
     {
         NRI.DestroyCommandBuffer(*frame.commandBuffer);
         NRI.DestroyCommandAllocator(*frame.commandAllocator);
-        NRI.DestroyDescriptor(*frame.globalConstantBufferDescriptor);
     }
-
-    NRI.DestroyDescriptor(*m_MorphTargetPoseConstantBufferView);
 
     for (BackBuffer& backBuffer : m_SwapChainBuffers)
         NRI.DestroyDescriptor(*backBuffer.colorAttachment);
@@ -712,6 +662,7 @@ Sample::~Sample()
     NRI.DestroyDescriptorPool(*m_DescriptorPool);
     NRI.DestroyFence(*m_FrameFence);
     NRI.DestroySwapChain(*m_SwapChain);
+    NRI.DestroyStreamer(*m_Streamer);
 
     for (size_t i = 0; i < m_MemoryAllocations.size(); i++)
     {
@@ -719,7 +670,7 @@ Sample::~Sample()
             NRI.FreeMemory(*m_MemoryAllocations[i]);
     }
 
-    DestroyUserInterface();
+    DestroyUI(NRI);
 
     nri::nriDestroyDevice(*m_Device);
 }
@@ -744,18 +695,26 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     NRI_ABORT_ON_FAILURE( nri::nriCreateDevice(deviceCreationDesc, m_Device) );
 
     NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&NRI) );
+    NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::HelperInterface), (nri::HelperInterface*)&NRI) );
+    NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::StreamerInterface), (nri::StreamerInterface*)&NRI) );
     NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::SwapChainInterface), (nri::SwapChainInterface*)&NRI) );
     NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::RayTracingInterface), (nri::RayTracingInterface*)&NRI) );
-    NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::HelperInterface), (nri::HelperInterface*)&NRI) );
 
     NRI_ABORT_ON_FAILURE( NRI.GetCommandQueue(*m_Device, nri::CommandQueueType::GRAPHICS, m_CommandQueue) );
     NRI_ABORT_ON_FAILURE( NRI.CreateFence(*m_Device, 0, m_FrameFence) );
 
-    const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
-    m_ConstantBufferSize = helper::Align(sizeof(GlobalConstants), deviceDesc.constantBufferOffsetAlignment);
-    m_RenderResolution = GetOutputResolution();
+    // Create streamer
+    nri::StreamerDesc streamerDesc = {};
+    streamerDesc.constantBufferMemoryLocation = nri::MemoryLocation::HOST_UPLOAD;
+    streamerDesc.constantBufferSize = DYNAMIC_CONSTANT_BUFFER_SIZE;
+    streamerDesc.dynamicBufferMemoryLocation = nri::MemoryLocation::HOST_UPLOAD;
+    streamerDesc.dynamicBufferUsageBits = nri::BufferUsageBits::VERTEX_BUFFER | nri::BufferUsageBits::INDEX_BUFFER | nri::BufferUsageBits::ACCELERATION_STRUCTURE_BUILD_READ;
+    streamerDesc.frameInFlightNum = BUFFERED_FRAME_MAX_NUM + 1; // TODO: "+1" for just in case?
+    NRI_ABORT_ON_FAILURE( NRI.CreateStreamer(*m_Device, streamerDesc, m_Streamer) );
 
     // Initialize DLSS
+    m_RenderResolution = GetOutputResolution();
+
     if (m_DlssQuality != -1 && m_DLSS.InitializeLibrary(*m_Device, ""))
     {
         DlssInitDesc dlssInitDesc = {};
@@ -931,7 +890,17 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     m_SettingsDefault = m_Settings;
     m_ShowValidationOverlay = m_DebugNRD;
 
-    return CreateUserInterface(*m_Device, NRI, NRI, swapChainFormat);
+    return InitUI(NRI, NRI, *m_Device, swapChainFormat);
+}
+
+void Sample::LatencySleep(uint32_t frameIndex)
+{
+    const Frame& frame = m_Frames[frameIndex % BUFFERED_FRAME_MAX_NUM];
+    if (frameIndex >= BUFFERED_FRAME_MAX_NUM)
+    {
+        NRI.Wait(*m_FrameFence, 1 + frameIndex - BUFFERED_FRAME_MAX_NUM);
+        NRI.ResetCommandAllocator(*frame.commandAllocator);
+    }
 }
 
 void Sample::PrepareFrame(uint32_t frameIndex)
@@ -961,6 +930,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
             m_Settings.denoiser = DENOISER_REFERENCE;
     }
 
+    BeginUI();
     if (!IsKeyPressed(Key::LAlt) && m_ShowUi)
     {
         ImGui::SetNextWindowPos(ImVec2(m_Settings.windowAlignment ? 5.0f : GetOutputResolution().x - m_UiWidth - 5.0f, 5.0f));
@@ -1414,11 +1384,13 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 isSame = false;
                             else if (m_ReblurSettings.historyFixFrameNum != defaults.historyFixFrameNum)
                                 isSame = false;
+                            else if (m_ReblurSettings.minBlurRadius != defaults.minBlurRadius)
+                                isSame = false;
+                            else if (m_ReblurSettings.maxBlurRadius != defaults.maxBlurRadius)
+                                isSame = false;
                             else if (m_ReblurSettings.diffusePrepassBlurRadius != defaults.diffusePrepassBlurRadius)
                                 isSame = false;
                             else if (m_ReblurSettings.specularPrepassBlurRadius != defaults.specularPrepassBlurRadius)
-                                isSame = false;
-                            else if (m_ReblurSettings.blurRadius != defaults.blurRadius)
                                 isSame = false;
                             else if (m_ReblurSettings.lobeAngleFraction != defaults.lobeAngleFraction)
                                 isSame = false;
@@ -1442,7 +1414,8 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             ImGui::SameLine();
                             if (ImGui::Button("No spatial"))
                             {
-                                m_ReblurSettings.blurRadius = 0.0f;
+                                m_ReblurSettings.minBlurRadius = 0.0f;
+                                m_ReblurSettings.maxBlurRadius = 0.0f;
                                 m_ReblurSettings.diffusePrepassBlurRadius = 0.0f;
                                 m_ReblurSettings.specularPrepassBlurRadius = 0.0f;
                             }
@@ -1496,7 +1469,11 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 ImGui::PopStyleColor();
                         #endif
 
-                            ImGui::SliderFloat("Blur base radius (px)", &m_ReblurSettings.blurRadius, 0.0f, 60.0f, "%.1f");
+                            ImGui::PushStyleColor(ImGuiCol_Text, m_ReblurSettings.minBlurRadius < 0.5f ? UI_RED : UI_DEFAULT);
+                            ImGui::SliderFloat("Min blur radius (px)", &m_ReblurSettings.minBlurRadius, 0.0f, 5.0f, "%.1f");
+                            ImGui::PopStyleColor();
+
+                            ImGui::SliderFloat("Max blur radius (px)", &m_ReblurSettings.maxBlurRadius, 0.0f, 60.0f, "%.1f");
                             ImGui::SliderFloat("Lobe fraction", &m_ReblurSettings.lobeAngleFraction, 0.0f, 1.0f, "%.2f");
                             ImGui::SliderFloat("Roughness fraction", &m_ReblurSettings.roughnessFraction, 0.0f, 1.0f, "%.2f");
                             ImGui::SliderInt("History fix frames", (int32_t*)&m_ReblurSettings.historyFixFrameNum, 0, 3);
@@ -1970,6 +1947,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
         }
         ImGui::End();
     }
+    EndUI(NRI, *m_Streamer);
 
     // Animate scene and update camera
     cBoxf cameraLimits = m_Scene.aabb;
@@ -2169,6 +2147,98 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                 m_improveMeTests = &RELAX_interior_improveMeTests;
         }
     }
+
+    // Global history reset
+    float sunCurr = Smoothstep( -0.9f, 0.05f, Sin( DegToRad(m_Settings.sunElevation) ) );
+    float sunPrev = Smoothstep( -0.9f, 0.05f, Sin( DegToRad(m_SettingsPrev.sunElevation) ) );
+    float resetHistoryFactor = 1.0f - Smoothstep( 0.0f, 0.2f, Abs(sunCurr - sunPrev) );
+
+    if (m_SettingsPrev.denoiser != m_Settings.denoiser)
+        m_ForceHistoryReset = true;
+    if (m_SettingsPrev.denoiser == DENOISER_REFERENCE && m_SettingsPrev.tracingMode != m_Settings.tracingMode)
+        m_ForceHistoryReset = true;
+    if (m_SettingsPrev.ortho != m_Settings.ortho)
+        m_ForceHistoryReset = true;
+    if (m_SettingsPrev.onScreen != m_Settings.onScreen)
+        m_ForceHistoryReset = true;
+    if (m_SettingsPrev.RR != m_Settings.RR)
+        m_ForceHistoryReset = true;
+    if (frameIndex == 0)
+        m_ForceHistoryReset = true;
+
+    // NRD common settings
+    if (m_Settings.adaptiveAccumulation)
+    {
+        bool isFastHistoryEnabled = m_Settings.maxAccumulatedFrameNum > m_Settings.maxFastAccumulatedFrameNum;
+
+        float fps = 1000.0f / m_Timer.GetSmoothedFrameTime();
+        float maxAccumulatedFrameNum = Clamp(ACCUMULATION_TIME * fps, 5.0f, float(MAX_HISTORY_FRAME_NUM));
+        float maxFastAccumulatedFrameNum = isFastHistoryEnabled ? (maxAccumulatedFrameNum / 5.0f) : float(MAX_HISTORY_FRAME_NUM);
+
+        m_Settings.maxAccumulatedFrameNum = int32_t(maxAccumulatedFrameNum + 0.5f);
+        m_Settings.maxFastAccumulatedFrameNum = int32_t(maxFastAccumulatedFrameNum + 0.5f);
+    }
+
+    uint32_t maxAccumulatedFrameNum = uint32_t(m_Settings.maxAccumulatedFrameNum * resetHistoryFactor + 0.5f);
+    uint32_t maxFastAccumulatedFrameNum = uint32_t(m_Settings.maxFastAccumulatedFrameNum * resetHistoryFactor + 0.5f);
+
+    m_ReblurSettings.maxAccumulatedFrameNum = maxAccumulatedFrameNum;
+    m_ReblurSettings.maxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
+    m_ReblurSettings.checkerboardMode = m_Settings.tracingMode == RESOLUTION_HALF ? nrd::CheckerboardMode::WHITE : nrd::CheckerboardMode::OFF;
+    m_ReblurSettings.enableMaterialTestForDiffuse = true;
+    m_ReblurSettings.enableMaterialTestForSpecular = true;
+
+    m_RelaxSettings.diffuseMaxAccumulatedFrameNum = maxAccumulatedFrameNum;
+    m_RelaxSettings.diffuseMaxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
+    m_RelaxSettings.specularMaxAccumulatedFrameNum = maxAccumulatedFrameNum;
+    m_RelaxSettings.specularMaxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
+    m_RelaxSettings.checkerboardMode = m_Settings.tracingMode == RESOLUTION_HALF ? nrd::CheckerboardMode::WHITE : nrd::CheckerboardMode::OFF;
+    m_RelaxSettings.enableMaterialTestForDiffuse = true;
+    m_RelaxSettings.enableMaterialTestForSpecular = true;
+
+    bool wantPrintf = IsButtonPressed(Button::Middle) || IsKeyToggled(Key::P);
+
+    uint32_t rectW = uint32_t(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
+    uint32_t rectH = uint32_t(m_RenderResolution.y * m_Settings.resolutionScale + 0.5f);
+
+    memcpy(m_CommonSettings.viewToClipMatrix, &m_Camera.state.mViewToClip, sizeof(m_Camera.state.mViewToClip));
+    memcpy(m_CommonSettings.viewToClipMatrixPrev, &m_Camera.statePrev.mViewToClip, sizeof(m_Camera.statePrev.mViewToClip));
+    memcpy(m_CommonSettings.worldToViewMatrix, &m_Camera.state.mWorldToView, sizeof(m_Camera.state.mWorldToView));
+    memcpy(m_CommonSettings.worldToViewMatrixPrev, &m_Camera.statePrev.mWorldToView, sizeof(m_Camera.statePrev.mWorldToView));
+    m_CommonSettings.motionVectorScale[0] = m_Settings.mvType == MV_3D ? 1.0f : 1.0f / float(rectW);
+    m_CommonSettings.motionVectorScale[1] = m_Settings.mvType == MV_3D ? 1.0f : 1.0f / float(rectH);
+    m_CommonSettings.motionVectorScale[2] = m_Settings.mvType != MV_2D ? 1.0f : 0.0f;
+    m_CommonSettings.cameraJitter[0] = m_Settings.cameraJitter ? m_Camera.state.viewportJitter.x : 0.0f;
+    m_CommonSettings.cameraJitter[1] = m_Settings.cameraJitter ? m_Camera.state.viewportJitter.y : 0.0f;
+    m_CommonSettings.cameraJitterPrev[0] = m_Settings.cameraJitter ? m_Camera.statePrev.viewportJitter.x : 0.0f;
+    m_CommonSettings.cameraJitterPrev[1] = m_Settings.cameraJitter ? m_Camera.statePrev.viewportJitter.y : 0.0f;
+    m_CommonSettings.resourceSize[0] = (uint16_t)m_RenderResolution.x;
+    m_CommonSettings.resourceSize[1] = (uint16_t)m_RenderResolution.y;
+    m_CommonSettings.resourceSizePrev[0] = (uint16_t)m_RenderResolution.x;
+    m_CommonSettings.resourceSizePrev[1] = (uint16_t)m_RenderResolution.y;
+    m_CommonSettings.rectSize[0] = (uint16_t)(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
+    m_CommonSettings.rectSize[1] = (uint16_t)(m_RenderResolution.y * m_Settings.resolutionScale + 0.5f);
+    m_CommonSettings.rectSizePrev[0] = (uint16_t)(m_RenderResolution.x * m_SettingsPrev.resolutionScale + 0.5f);
+    m_CommonSettings.rectSizePrev[1] = (uint16_t)(m_RenderResolution.y * m_SettingsPrev.resolutionScale + 0.5f);
+    m_CommonSettings.denoisingRange = GetDenoisingRange();
+    m_CommonSettings.disocclusionThreshold = m_Settings.disocclusionThreshold * 0.01f;
+    m_CommonSettings.splitScreen = (m_Settings.denoiser == DENOISER_REFERENCE || m_Settings.RR) ? 1.0f : m_Settings.separator;
+    m_CommonSettings.printfAt[0] = wantPrintf ? (uint16_t)ImGui::GetIO().MousePos.x : 9999;
+    m_CommonSettings.printfAt[1] = wantPrintf ? (uint16_t)ImGui::GetIO().MousePos.y : 9999;
+    m_CommonSettings.debug = m_Settings.debug;
+    m_CommonSettings.frameIndex = frameIndex;
+    m_CommonSettings.accumulationMode = m_ForceHistoryReset ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
+    m_CommonSettings.isMotionVectorInWorldSpace = m_Settings.mvType == MV_3D;
+    m_CommonSettings.isBaseColorMetalnessAvailable = true;
+    m_CommonSettings.enableValidation = m_ShowValidationOverlay;
+
+    m_NRD.NewFrame();
+    m_NRD.SetCommonSettings(m_CommonSettings);
+
+    UpdateConstantBuffer(frameIndex, maxAccumulatedFrameNum);
+    GatherInstanceData();
+
+    NRI.CopyStreamerUpdateRequests(*m_Streamer);
 }
 
 void Sample::LoadScene()
@@ -2322,7 +2392,6 @@ void Sample::CreatePipelineLayoutAndDescriptorPool()
 {
     const nri::DescriptorRangeDesc descriptorRanges0[] =
     {
-        { 0, 1, nri::DescriptorType::CONSTANT_BUFFER, nri::StageBits::COMPUTE_SHADER },
         { 0, 3, nri::DescriptorType::SAMPLER, nri::StageBits::COMPUTE_SHADER },
     };
 
@@ -2350,7 +2419,7 @@ void Sample::CreatePipelineLayoutAndDescriptorPool()
 
     const nri::DescriptorSetDesc descriptorSetDesc[] =
     {
-        { 0, descriptorRanges0, helper::GetCountOf(descriptorRanges0) },
+        { 0, descriptorRanges0, helper::GetCountOf(descriptorRanges0), &dynamicConstantBuffer, 1 },
         { 1, descriptorRanges1, helper::GetCountOf(descriptorRanges1), nullptr, 0, nri::PARTIALLY_BOUND },
         { 2, descriptorRanges2, helper::GetCountOf(descriptorRanges2) },
         { 3, descriptorRanges3, helper::GetCountOf(descriptorRanges3), &dynamicConstantBuffer, 1, nri::PARTIALLY_BOUND },
@@ -2364,24 +2433,25 @@ void Sample::CreatePipelineLayoutAndDescriptorPool()
     NRI_ABORT_ON_FAILURE(NRI.CreatePipelineLayout(*m_Device, pipelineLayoutDesc, m_PipelineLayout));
 
     nri::DescriptorPoolDesc descriptorPoolDesc = {};
+    {
+        descriptorPoolDesc.descriptorSetMaxNum += 1;
+        descriptorPoolDesc.dynamicConstantBufferMaxNum += descriptorSetDesc[0].dynamicConstantBufferNum;
+        descriptorPoolDesc.samplerMaxNum += descriptorSetDesc[0].ranges[0].descriptorNum * BUFFERED_FRAME_MAX_NUM;
 
-    descriptorPoolDesc.descriptorSetMaxNum += BUFFERED_FRAME_MAX_NUM;
-    descriptorPoolDesc.constantBufferMaxNum += descriptorSetDesc[0].ranges[0].descriptorNum * BUFFERED_FRAME_MAX_NUM;
-    descriptorPoolDesc.samplerMaxNum += descriptorSetDesc[0].ranges[1].descriptorNum * BUFFERED_FRAME_MAX_NUM;
+        descriptorPoolDesc.descriptorSetMaxNum += uint32_t(DescriptorSet::MAX_NUM);
+        descriptorPoolDesc.textureMaxNum += descriptorSetDesc[1].ranges[0].descriptorNum * uint32_t(DescriptorSet::MAX_NUM);
+        descriptorPoolDesc.storageTextureMaxNum += descriptorSetDesc[1].ranges[1].descriptorNum * uint32_t(DescriptorSet::MAX_NUM);
 
-    descriptorPoolDesc.descriptorSetMaxNum += uint32_t(DescriptorSet::MAX_NUM);
-    descriptorPoolDesc.textureMaxNum += descriptorSetDesc[1].ranges[0].descriptorNum * uint32_t(DescriptorSet::MAX_NUM);
-    descriptorPoolDesc.storageTextureMaxNum += descriptorSetDesc[1].ranges[1].descriptorNum * uint32_t(DescriptorSet::MAX_NUM);
+        descriptorPoolDesc.descriptorSetMaxNum += 1;
+        descriptorPoolDesc.accelerationStructureMaxNum += descriptorSetDesc[2].ranges[0].descriptorNum;
+        descriptorPoolDesc.structuredBufferMaxNum += descriptorSetDesc[2].ranges[1].descriptorNum;
+        descriptorPoolDesc.textureMaxNum += descriptorSetDesc[2].ranges[2].descriptorNum;
 
-    descriptorPoolDesc.descriptorSetMaxNum += 1;
-    descriptorPoolDesc.accelerationStructureMaxNum += descriptorSetDesc[2].ranges[0].descriptorNum;
-    descriptorPoolDesc.structuredBufferMaxNum += descriptorSetDesc[2].ranges[1].descriptorNum;
-    descriptorPoolDesc.textureMaxNum += descriptorSetDesc[2].ranges[2].descriptorNum;
-
-    descriptorPoolDesc.descriptorSetMaxNum += 2;
-    descriptorPoolDesc.structuredBufferMaxNum += descriptorSetDesc[3].ranges[0].descriptorNum * 2;
-    descriptorPoolDesc.storageStructuredBufferMaxNum += descriptorSetDesc[3].ranges[1].descriptorNum * 2;
-    descriptorPoolDesc.dynamicConstantBufferMaxNum += descriptorSetDesc[3].dynamicConstantBufferNum * 2;
+        descriptorPoolDesc.descriptorSetMaxNum += 2;
+        descriptorPoolDesc.dynamicConstantBufferMaxNum += descriptorSetDesc[3].dynamicConstantBufferNum * 2;
+        descriptorPoolDesc.structuredBufferMaxNum += descriptorSetDesc[3].ranges[0].descriptorNum * 2;
+        descriptorPoolDesc.storageStructuredBufferMaxNum += descriptorSetDesc[3].ranges[1].descriptorNum * 2;
+    }
 
     NRI_ABORT_ON_FAILURE(NRI.CreateDescriptorPool(*m_Device, descriptorPoolDesc, m_DescriptorPool));
 }
@@ -2554,7 +2624,7 @@ void Sample::CreateAccelerationStructures()
         nri::MemoryDesc memoryDesc = {};
         NRI.GetBufferMemoryInfo(*uploadBuffer, nri::MemoryLocation::HOST_UPLOAD, memoryDesc);
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::ALL_NODES, memoryDesc.type, memoryDesc.size, uploadMemory));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, memoryDesc.type, memoryDesc.size, uploadMemory));
 
         const nri::BufferMemoryBindingDesc memoryBindingDesc = {uploadMemory, uploadBuffer};
         NRI_ABORT_ON_FAILURE(NRI.BindBufferMemory(*m_Device, &memoryBindingDesc, 1));
@@ -2576,7 +2646,7 @@ void Sample::CreateAccelerationStructures()
         NRI.GetAccelerationStructureMemoryInfo(*accelerationStructure, memoryDesc);
 
         nri::Memory* memory = nullptr;
-        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::ALL_NODES, memoryDesc.type, memoryDesc.size, memory));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, memoryDesc.type, memoryDesc.size, memory));
         m_MemoryAllocations.push_back(memory);
 
         const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = {memory, accelerationStructure};
@@ -2584,7 +2654,7 @@ void Sample::CreateAccelerationStructures()
 
         // Descriptor::World_AccelerationStructure
         nri::Descriptor* descriptor = nullptr;
-        NRI.CreateAccelerationStructureDescriptor(*accelerationStructure, 0, descriptor);
+        NRI.CreateAccelerationStructureDescriptor(*accelerationStructure, descriptor);
         m_Descriptors.push_back(descriptor);
     }
 
@@ -2602,7 +2672,7 @@ void Sample::CreateAccelerationStructures()
         NRI.GetAccelerationStructureMemoryInfo(*accelerationStructure, memoryDesc);
 
         nri::Memory* memory = nullptr;
-        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::ALL_NODES, memoryDesc.type, memoryDesc.size, memory));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, memoryDesc.type, memoryDesc.size, memory));
         m_MemoryAllocations.push_back(memory);
 
         const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = {memory, accelerationStructure};
@@ -2610,7 +2680,7 @@ void Sample::CreateAccelerationStructures()
 
         // Descriptor::Light_AccelerationStructure
         nri::Descriptor* descriptor = nullptr;
-        NRI.CreateAccelerationStructureDescriptor(*accelerationStructure, 0, descriptor);
+        NRI.CreateAccelerationStructureDescriptor(*accelerationStructure, descriptor);
         m_Descriptors.push_back(descriptor);
     }
 
@@ -2731,7 +2801,7 @@ void Sample::CreateAccelerationStructures()
             NRI.GetAccelerationStructureMemoryInfo(*accelerationStructure, memoryDesc);
 
             nri::Memory* memory = nullptr;
-            NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::ALL_NODES, memoryDesc.type, memoryDesc.size, memory));
+            NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, memoryDesc.type, memoryDesc.size, memory));
             m_MemoryAllocations.push_back(memory);
 
             const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = {memory, accelerationStructure};
@@ -2801,7 +2871,7 @@ void Sample::CreateAccelerationStructures()
         NRI.GetAccelerationStructureMemoryInfo(*accelerationStructure, memoryDesc);
 
         nri::Memory* memory = nullptr;
-        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::ALL_NODES, memoryDesc.type, memoryDesc.size, memory));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, memoryDesc.type, memoryDesc.size, memory));
         m_MemoryAllocations.push_back(memory);
 
         const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = {memory, accelerationStructure};
@@ -2830,7 +2900,7 @@ void Sample::CreateAccelerationStructures()
     NRI.GetBufferMemoryInfo(*scratchBuffer, nri::MemoryLocation::DEVICE, memoryDesc);
 
     nri::Memory* scratchMemory = nullptr;
-    NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, nri::ALL_NODES, memoryDesc.type, memoryDesc.size, scratchMemory));
+    NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, memoryDesc.type, memoryDesc.size, scratchMemory));
 
     const nri::BufferMemoryBindingDesc bufferMemoryBindingDesc = { scratchMemory, scratchBuffer };
     NRI_ABORT_ON_FAILURE(NRI.BindBufferMemory(*m_Device, &bufferMemoryBindingDesc, 1));
@@ -2844,15 +2914,19 @@ void Sample::CreateAccelerationStructures()
 
     double stamp2 = m_Timer.GetTimeStamp();
 
-    // Write and execute commands
-    NRI.BeginCommandBuffer(*commandBuffer, nullptr, 0);
+    // Record
+    NRI.BeginCommandBuffer(*commandBuffer, nullptr);
     {
         for (const Parameters& params : parameters)
             NRI.CmdBuildBottomLevelAccelerationStructure(*commandBuffer, params.geometryObjectsNum, &geometryObjects[params.geometryObjectBase], params.buildBits, *params.accelerationStructure, *scratchBuffer, params.scratchOffset);
     }
     NRI.EndCommandBuffer(*commandBuffer);
 
-    nri::QueueSubmitDesc queueSubmitDesc = {&commandBuffer, 1};
+    // Submit
+    nri::QueueSubmitDesc queueSubmitDesc = {};
+    queueSubmitDesc.commandBuffers = &commandBuffer;
+    queueSubmitDesc.commandBufferNum = 1;
+
     NRI.QueueSubmit(*m_CommandQueue, queueSubmitDesc);
 
     // Wait idle
@@ -2982,14 +3056,9 @@ void Sample::CreateResources(nri::Format swapChainFormat)
 
     std::vector<DescriptorDesc> descriptorDescs;
 
-    // Buffers (HOST_UPLOAD) See Descriptor::UploadHeapBufferNum
-    CreateBuffer(descriptorDescs, "Buffer::GlobalConstants", m_ConstantBufferSize * BUFFERED_FRAME_MAX_NUM, 1, nri::BufferUsageBits::CONSTANT_BUFFER);
-    CreateBuffer(descriptorDescs, "Buffer::DynamicConstants", DYNAMIC_CONSTANT_BUFFER_SIZE, 1, nri::BufferUsageBits::CONSTANT_BUFFER);
-    CreateBuffer(descriptorDescs, "Buffer::InstanceDataStaging", instanceDataSize * BUFFERED_FRAME_MAX_NUM, 1, nri::BufferUsageBits::NONE);
-    CreateBuffer(descriptorDescs, "Buffer::WorldTlasDataStaging", m_Scene.instances.size() * sizeof(nri::GeometryObjectInstance) * BUFFERED_FRAME_MAX_NUM, 1, nri::BufferUsageBits::ACCELERATION_STRUCTURE_BUILD_READ);
-    CreateBuffer(descriptorDescs, "Buffer::LightTlasDataStaging", m_Scene.instances.size() * sizeof(nri::GeometryObjectInstance) * BUFFERED_FRAME_MAX_NUM, 1, nri::BufferUsageBits::ACCELERATION_STRUCTURE_BUILD_READ);
-
-    constexpr uint32_t offset = uint32_t(Buffer::InstanceData);
+    m_InstanceData.resize(m_Scene.instances.size());
+    m_WorldTlasData.resize(m_Scene.instances.size());
+    m_LightTlasData.resize(m_Scene.instances.size());
 
     // Buffers (DEVICE, read-only)
     CreateBuffer(descriptorDescs, "Buffer::InstanceData", instanceDataSize / sizeof(InstanceData), sizeof(InstanceData), nri::BufferUsageBits::SHADER_RESOURCE, nri::Format::UNKNOWN);
@@ -3070,43 +3139,44 @@ void Sample::CreateResources(nri::Format swapChainFormat)
     CreateTexture(descriptorDescs, "Texture::NisData2", nri::Format::RGBA16_SFLOAT, kFilterSize / 4, kPhaseCount, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE, nri::AccessBits::UNKNOWN);
 
-    for (const utils::Texture* textureData : m_Scene.textures)
-        CreateTexture(descriptorDescs, "", textureData->GetFormat(), textureData->GetWidth(), textureData->GetHeight(), textureData->GetMipNum(), textureData->GetArraySize(), nri::TextureUsageBits::SHADER_RESOURCE, nri::AccessBits::UNKNOWN);
+    for (const utils::Texture* texture : m_Scene.textures)
+        CreateTexture(descriptorDescs, "", texture->GetFormat(), texture->GetWidth(), texture->GetHeight(), texture->GetMipNum(), texture->GetArraySize(), nri::TextureUsageBits::SHADER_RESOURCE, nri::AccessBits::UNKNOWN);
 
     // Bind memory
     nri::ResourceGroupDesc resourceGroupDesc = {};
-    resourceGroupDesc.memoryLocation = nri::MemoryLocation::HOST_UPLOAD;
-    resourceGroupDesc.bufferNum = offset;
+    resourceGroupDesc.memoryLocation = nri::MemoryLocation::DEVICE;
+    resourceGroupDesc.bufferNum = helper::GetCountOf(m_Buffers);
     resourceGroupDesc.buffers = m_Buffers.data();
+    resourceGroupDesc.textureNum = helper::GetCountOf(m_Textures);
+    resourceGroupDesc.textures = m_Textures.data();
 
     size_t baseAllocation = m_MemoryAllocations.size();
     m_MemoryAllocations.resize(baseAllocation + NRI.CalculateAllocationNumber(*m_Device, resourceGroupDesc), nullptr);
     NRI_ABORT_ON_FAILURE( NRI.AllocateAndBindMemory(*m_Device, resourceGroupDesc, m_MemoryAllocations.data() + baseAllocation));
 
-    resourceGroupDesc.memoryLocation = nri::MemoryLocation::DEVICE;
-    resourceGroupDesc.bufferNum = helper::GetCountOf(m_Buffers) - offset;
-    resourceGroupDesc.buffers = m_Buffers.data() + offset;
-    resourceGroupDesc.textureNum = helper::GetCountOf(m_Textures);
-    resourceGroupDesc.textures = m_Textures.data();
-
-    baseAllocation = m_MemoryAllocations.size();
-    m_MemoryAllocations.resize(baseAllocation + NRI.CalculateAllocationNumber(*m_Device, resourceGroupDesc), nullptr);
-    NRI_ABORT_ON_FAILURE( NRI.AllocateAndBindMemory(*m_Device, resourceGroupDesc, m_MemoryAllocations.data() + baseAllocation));
-
     // Create descriptors
-    for (uint32_t i = 0; i < BUFFERED_FRAME_MAX_NUM; i++)
-    {
-        nri::BufferViewDesc bufferDesc = {};
-        bufferDesc.buffer = Get(Buffer::GlobalConstants);
-        bufferDesc.viewType = nri::BufferViewType::CONSTANT;
-        bufferDesc.offset = i * m_ConstantBufferSize;
-        bufferDesc.size = m_ConstantBufferSize;
+    nri::Descriptor* descriptor = nullptr;
 
-        NRI_ABORT_ON_FAILURE(NRI.CreateBufferView(bufferDesc, m_Frames[i].globalConstantBufferDescriptor));
-        m_Frames[i].globalConstantBufferOffset = bufferDesc.offset;
+    {
+        const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
+
+        nri::BufferViewDesc constantBufferViewDesc = {};
+        constantBufferViewDesc.viewType = nri::BufferViewType::CONSTANT;
+        constantBufferViewDesc.buffer = NRI.GetStreamerConstantBuffer(*m_Streamer);
+        
+        constantBufferViewDesc.size = helper::Align(sizeof(GlobalConstants), deviceDesc.constantBufferOffsetAlignment);
+        NRI_ABORT_ON_FAILURE(NRI.CreateBufferView(constantBufferViewDesc, descriptor));
+        m_Descriptors.push_back(descriptor);
+
+        constantBufferViewDesc.size = helper::Align(sizeof(MorphMeshUpdateVerticesConstants), deviceDesc.constantBufferOffsetAlignment);
+        NRI_ABORT_ON_FAILURE(NRI.CreateBufferView(constantBufferViewDesc, descriptor));
+        m_Descriptors.push_back(descriptor);
+
+        constantBufferViewDesc.size = helper::Align(sizeof(MorphMeshUpdatePrimitivesConstants), deviceDesc.constantBufferOffsetAlignment);
+        NRI_ABORT_ON_FAILURE(NRI.CreateBufferView(constantBufferViewDesc, descriptor));
+        m_Descriptors.push_back(descriptor);
     }
 
-    nri::Descriptor* descriptor = nullptr;
     for (const DescriptorDesc& desc : descriptorDescs)
     {
         if (desc.textureUsage == nri::TextureUsageBits::NONE)
@@ -3153,34 +3223,33 @@ void Sample::CreateResources(nri::Format swapChainFormat)
             }
         }
     }
-
-    // Init dynamic allocator helper
-    m_DynamicConstantBufferAllocator.Initialize(&NRI, m_Device, Get(Buffer::DynamicConstants), DYNAMIC_CONSTANT_BUFFER_SIZE);
 }
 
 void Sample::CreateDescriptorSets()
 {
     nri::DescriptorSet* descriptorSet = nullptr;
 
-    // Global constant buffer & samplers
-    const nri::Descriptor* samplers[] =
-    {
-        Get(Descriptor::LinearMipmapLinear_Sampler),
-        Get(Descriptor::LinearMipmapNearest_Sampler),
-        Get(Descriptor::NearestMipmapNearest_Sampler),
-    };
+    
+    { // Global constant buffer & samplers
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 0, &descriptorSet, 1, 0));
+        m_DescriptorSets.push_back(descriptorSet);
 
-    for (Frame& frame : m_Frames)
-    {
+        const nri::Descriptor* samplers[] =
+        {
+            Get(Descriptor::LinearMipmapLinear_Sampler),
+            Get(Descriptor::LinearMipmapNearest_Sampler),
+            Get(Descriptor::NearestMipmapNearest_Sampler),
+        };
+
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
         {
-            { &frame.globalConstantBufferDescriptor, 1 },
             { samplers, helper::GetCountOf(samplers) },
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 0, &frame.globalConstantBufferDescriptorSet, 1, nri::ALL_NODES, 0));
-
-        NRI.UpdateDescriptorRanges(*frame.globalConstantBufferDescriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        
+        nri::Descriptor* constantBuffer = Get(Descriptor::Global_ConstantBuffer);
+        NRI.UpdateDynamicConstantBuffers(*descriptorSet, 0, 1, &constantBuffer);
     }
 
     { // DescriptorSet::TraceAmbient1
@@ -3189,7 +3258,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Ambient_StorageTexture),
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3197,7 +3266,7 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 1, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 1, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::TraceOpaque1
@@ -3229,7 +3298,7 @@ void Sample::CreateDescriptorSets()
 #endif
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3238,7 +3307,7 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::Composition1
@@ -3266,7 +3335,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::ComposedSpec_ViewZ_StorageTexture),
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3275,7 +3344,7 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::TraceTransparent1
@@ -3293,7 +3362,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Mv_StorageTexture),
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3302,7 +3371,7 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::Temporal1a
@@ -3318,7 +3387,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::TaaHistory_StorageTexture),
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3327,7 +3396,7 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::Temporal1b
@@ -3343,7 +3412,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::TaaHistoryPrev_StorageTexture),
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3352,7 +3421,7 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::Upsample1
@@ -3367,7 +3436,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Final_StorageTexture),
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3376,7 +3445,7 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::Upsample1a
@@ -3391,7 +3460,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Final_StorageTexture),
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3400,7 +3469,7 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::Upsample1b
@@ -3415,7 +3484,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Final_StorageTexture),
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3424,7 +3493,7 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::UpsampleNis1
@@ -3440,7 +3509,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Final_StorageTexture),
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3449,7 +3518,7 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::UpsampleNis1a
@@ -3465,7 +3534,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Final_StorageTexture),
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3474,7 +3543,7 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::UpsampleNis1b
@@ -3490,7 +3559,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Final_StorageTexture),
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3499,7 +3568,7 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::DlssBefore1
@@ -3515,7 +3584,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::DlssInput_StorageTexture),
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3524,7 +3593,7 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::DlssAfter1
@@ -3533,7 +3602,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::DlssOutput_StorageTexture),
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 1, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3541,7 +3610,7 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 1, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 1, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::RayTracing2
@@ -3570,7 +3639,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::Light_AccelerationStructure)
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 2, &descriptorSet, 1, nri::ALL_NODES, helper::GetCountOf(textures)));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 2, &descriptorSet, 1, helper::GetCountOf(textures)));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3580,7 +3649,7 @@ void Sample::CreateDescriptorSets()
             { textures.data(), helper::GetCountOf(textures) }
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::MorphTargetPose3
@@ -3595,7 +3664,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::MorphedAttributes_StorageBuffer),
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 3, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 3, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3604,15 +3673,10 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) }
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
 
-        nri::BufferViewDesc constantBufferViewDesc = {};
-        constantBufferViewDesc.viewType = nri::BufferViewType::CONSTANT;
-        constantBufferViewDesc.buffer = m_DynamicConstantBufferAllocator.GetBuffer();
-        constantBufferViewDesc.size = m_DynamicConstantBufferAllocator.GetAlignedSize(sizeof(MorphMeshUpdateVerticesConstants));
-        NRI_ABORT_ON_FAILURE(NRI.CreateBufferView(constantBufferViewDesc, m_MorphTargetPoseConstantBufferView));
-
-        NRI.UpdateDynamicConstantBuffers(*descriptorSet, nri::ALL_NODES, 0, 1, &m_MorphTargetPoseConstantBufferView);
+        nri::Descriptor* constantBuffer = Get(Descriptor::MorphTargetPose_ConstantBuffer);
+        NRI.UpdateDynamicConstantBuffers(*descriptorSet, 0, 1, &constantBuffer);
     }
 
     { // DescriptorSet::MorphTargetUpdatePrimitives3
@@ -3629,7 +3693,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::MorphedPrimitivePrevData_StorageBuffer)
         };
 
-        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 3, &descriptorSet, 1, nri::ALL_NODES, 0));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 3, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
@@ -3638,15 +3702,10 @@ void Sample::CreateDescriptorSets()
             { storageResources, helper::GetCountOf(storageResources) }
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, nri::ALL_NODES, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
 
-        nri::BufferViewDesc constantBufferViewDesc = {};
-        constantBufferViewDesc.viewType = nri::BufferViewType::CONSTANT;
-        constantBufferViewDesc.buffer = m_DynamicConstantBufferAllocator.GetBuffer();
-        constantBufferViewDesc.size = m_DynamicConstantBufferAllocator.GetAlignedSize(sizeof(MorphMeshUpdatePrimitivesConstants));
-        NRI_ABORT_ON_FAILURE(NRI.CreateBufferView(constantBufferViewDesc, m_MorphTargetUpdatePrimitivesConstantBufferView));
-
-        NRI.UpdateDynamicConstantBuffers(*descriptorSet, nri::ALL_NODES, 0, 1, &m_MorphTargetUpdatePrimitivesConstantBufferView);
+        nri::Descriptor* constantBuffer = Get(Descriptor::MorphTargetUpdatePrimitives_ConstantBuffer);
+        NRI.UpdateDynamicConstantBuffers(*descriptorSet, 0, 1, &constantBuffer);
     }
 }
 
@@ -3759,15 +3818,15 @@ void Sample::UploadStaticData()
     }
 
     // Gather upload data for read-only textures
-    std::vector<nri::TextureUploadDesc> textureData;
-    textureData.push_back( {&subresources[0], Get(Texture::NisData1), {nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE}} );
-    textureData.push_back( {&subresources[1], Get(Texture::NisData2), {nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE}} );
+    std::vector<nri::TextureUploadDesc> textureUploadDescs;
+    textureUploadDescs.push_back( {&subresources[0], Get(Texture::NisData1), {nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE}} );
+    textureUploadDescs.push_back( {&subresources[1], Get(Texture::NisData2), {nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE}} );
     size_t subresourceOffset = 2;
 
     for (size_t i = 0; i < m_Scene.textures.size(); i++)
     {
         const utils::Texture* texture = m_Scene.textures[i];
-        textureData.push_back( {&subresources[subresourceOffset], Get( (Texture)((size_t)Texture::MaterialTextures + i) ), {nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE}} );
+        textureUploadDescs.push_back( {&subresources[subresourceOffset], Get( (Texture)((size_t)Texture::MaterialTextures + i) ), {nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE}} );
 
         nri::Mip_t mipNum = texture->GetMipNum();
         nri::Dim_t arraySize = texture->GetArraySize();
@@ -3781,7 +3840,7 @@ void Sample::UploadStaticData()
         desc.after = {state.after.access, state.after.layout};
         desc.texture = (nri::Texture*)state.texture;
 
-        textureData.push_back(desc);
+        textureUploadDescs.push_back(desc);
     }
 
     std::vector<utils::Index> morphMeshIndices(m_Scene.morphMeshTotalIndicesNum);
@@ -3796,18 +3855,18 @@ void Sample::UploadStaticData()
     }
 
     // Buffer data
-    nri::BufferUploadDesc dataDescArray[] =
+    nri::BufferUploadDesc bufferUploadDescs[] =
     {
-        { primitiveData.data(), helper::GetByteSizeOf(primitiveData), Get(Buffer::PrimitiveData), 0, nri::AccessBits::SHADER_RESOURCE },
-        { morphMeshIndices.data(), helper::GetByteSizeOf(morphMeshIndices), Get(Buffer::MorphMeshIndices), 0, nri::AccessBits::SHADER_RESOURCE},
-        { m_Scene.morphVertices.data(), helper::GetByteSizeOf(m_Scene.morphVertices), Get(Buffer::MorphMeshVertices), 0, nri::AccessBits::SHADER_RESOURCE}
+        {primitiveData.data(), helper::GetByteSizeOf(primitiveData), Get(Buffer::PrimitiveData), 0, {nri::AccessBits::SHADER_RESOURCE}},
+        {morphMeshIndices.data(), helper::GetByteSizeOf(morphMeshIndices), Get(Buffer::MorphMeshIndices), 0, {nri::AccessBits::SHADER_RESOURCE}},
+        {m_Scene.morphVertices.data(), helper::GetByteSizeOf(m_Scene.morphVertices), Get(Buffer::MorphMeshVertices), 0, {nri::AccessBits::SHADER_RESOURCE}}
     };
 
     // Upload data and apply states
-    NRI_ABORT_ON_FAILURE(NRI.UploadData(*m_CommandQueue, textureData.data(), helper::GetCountOf(textureData), dataDescArray, helper::GetCountOf(dataDescArray)));
+    NRI_ABORT_ON_FAILURE(NRI.UploadData(*m_CommandQueue, textureUploadDescs.data(), helper::GetCountOf(textureUploadDescs), bufferUploadDescs, helper::GetCountOf(bufferUploadDescs)));
 }
 
-void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffer, uint32_t bufferedFrameIndex)
+void Sample::GatherInstanceData()
 {
     bool isAnimatedObjects = m_Settings.animatedObjects;
     if (m_Settings.blink)
@@ -3816,21 +3875,13 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
         isAnimatedObjects &= WaveTriangle(period) > 0.5;
     }
 
-    uint64_t tlasCount = m_Scene.instances.size();
-    uint64_t tlasDataSize = tlasCount * sizeof(nri::GeometryObjectInstance);
-    uint64_t tlasDataOffset = tlasDataSize * bufferedFrameIndex;
-    uint64_t instanceDataSize = tlasCount * sizeof(InstanceData);
-    uint64_t instanceDataOffset = instanceDataSize * bufferedFrameIndex;
     uint64_t staticInstanceCount = m_Scene.instances.size() - m_AnimatedInstances.size();
     uint64_t instanceCount = staticInstanceCount + (isAnimatedObjects ? m_Settings.animatedObjectNum : 0);
-
-    auto instanceData = (InstanceData*)NRI.MapBuffer(*Get(Buffer::InstanceDataStaging), instanceDataOffset, instanceDataSize);
-    auto worldTlasData = (nri::GeometryObjectInstance*)NRI.MapBuffer(*Get(Buffer::WorldTlasDataStaging), tlasDataOffset, tlasDataSize);
-    auto lightTlasData = (nri::GeometryObjectInstance*)NRI.MapBuffer(*Get(Buffer::LightTlasDataStaging), tlasDataOffset, tlasDataSize);
-
     uint32_t instanceIndex = 0;
-    uint32_t worldGeometryObjectsNum = 0;
-    uint32_t lightGeometryObjectsNum = 0;
+
+    m_InstanceData.clear();
+    m_WorldTlasData.clear();
+    m_LightTlasData.clear();
 
     float4x4 mCameraTranslation = float4x4::Identity();
     mCameraTranslation.AddTranslation( m_Camera.GetRelative(double3::Zero()) );
@@ -3839,31 +3890,29 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
     // Add static opaque (includes emissives)
     if (m_OpaqueObjectsNum)
     {
-        nri::GeometryObjectInstance geometryObjectInstance = {};
-        memcpy(geometryObjectInstance.transform, mCameraTranslation.a16, sizeof(geometryObjectInstance.transform));
-        geometryObjectInstance.instanceId = instanceIndex;
-        geometryObjectInstance.mask = FLAG_DEFAULT;
-        geometryObjectInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE;
-        geometryObjectInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticOpaque), 0);
+        nri::GeometryObjectInstance& tlasInstance = m_WorldTlasData.emplace_back();
+        memcpy(tlasInstance.transform, mCameraTranslation.a16, sizeof(tlasInstance.transform));
+        tlasInstance.instanceId = instanceIndex;
+        tlasInstance.mask = FLAG_DEFAULT;
+        tlasInstance.shaderBindingTableLocalOffset = 0;
+        tlasInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE;
+        tlasInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticOpaque));
 
-        *worldTlasData++ = geometryObjectInstance;
         instanceIndex += m_OpaqueObjectsNum;
-        worldGeometryObjectsNum++;
     }
 
     // Add static transparent
     if (m_TransparentObjectsNum)
     {
-        nri::GeometryObjectInstance geometryObjectInstance = {};
-        memcpy(geometryObjectInstance.transform, mCameraTranslation.a16, sizeof(geometryObjectInstance.transform));
-        geometryObjectInstance.instanceId = instanceIndex;
-        geometryObjectInstance.mask = FLAG_TRANSPARENT;
-        geometryObjectInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE;
-        geometryObjectInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticTransparent), 0);
+        nri::GeometryObjectInstance& tlasInstance = m_WorldTlasData.emplace_back();
+        memcpy(tlasInstance.transform, mCameraTranslation.a16, sizeof(tlasInstance.transform));
+        tlasInstance.instanceId = instanceIndex;
+        tlasInstance.mask = FLAG_TRANSPARENT;
+        tlasInstance.shaderBindingTableLocalOffset = 0;
+        tlasInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE;
+        tlasInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticTransparent));
 
-        *worldTlasData++ = geometryObjectInstance;
         instanceIndex += m_TransparentObjectsNum;
-        worldGeometryObjectsNum++;
 
         m_HasTransparent = m_TransparentObjectsNum ? true : false;
     }
@@ -3871,16 +3920,15 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
     // Add static emissives (only emissives in a separate TLAS)
     if (m_EmissiveObjectsNum)
     {
-        nri::GeometryObjectInstance geometryObjectInstance = {};
-        memcpy(geometryObjectInstance.transform, mCameraTranslation.a16, sizeof(geometryObjectInstance.transform));
-        geometryObjectInstance.instanceId = instanceIndex;
-        geometryObjectInstance.mask = FLAG_DEFAULT;
-        geometryObjectInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE;
-        geometryObjectInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticEmissive), 0);
+        nri::GeometryObjectInstance& tlasInstance = m_LightTlasData.emplace_back();
+        memcpy(tlasInstance.transform, mCameraTranslation.a16, sizeof(tlasInstance.transform));
+        tlasInstance.instanceId = instanceIndex;
+        tlasInstance.mask = FLAG_DEFAULT;
+        tlasInstance.shaderBindingTableLocalOffset = 0;
+        tlasInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE;
+        tlasInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticEmissive));
 
-        *lightTlasData++ = geometryObjectInstance;
         instanceIndex += m_EmissiveObjectsNum;
-        lightGeometryObjectsNum++;
     }
 
     // Gather instance data and add dynamic objects
@@ -4004,63 +4052,60 @@ void Sample::BuildTopLevelAccelerationStructure(nri::CommandBuffer& commandBuffe
             if (material.IsHair())
                 flags |= FLAG_HAIR;
 
-            instanceData->mOverloadedMatrix0 = mOverloadedMatrix.col0;
-            instanceData->mOverloadedMatrix1 = mOverloadedMatrix.col1;
-            instanceData->mOverloadedMatrix2 = mOverloadedMatrix.col2;
-            instanceData->baseColorAndMetalnessScale = material.baseColorAndMetalnessScale;
-            instanceData->emissionAndRoughnessScale = material.emissiveAndRoughnessScale;
-            instanceData->textureOffsetAndFlags = baseTextureIndex | ( flags << FLAG_FIRST_BIT );
-            instanceData->primitiveOffset = meshInstance.primitiveOffset;
-            instanceData->morphedPrimitiveOffset = meshInstance.morphedPrimitiveOffset;
-            instanceData->invScale = (isLeftHanded ? -1.0f : 1.0f) / Max(scale.x, Max(scale.y, scale.z));
-            instanceData++;
+            InstanceData& instanceData = m_InstanceData.emplace_back();
+            instanceData.mOverloadedMatrix0 = mOverloadedMatrix.col0;
+            instanceData.mOverloadedMatrix1 = mOverloadedMatrix.col1;
+            instanceData.mOverloadedMatrix2 = mOverloadedMatrix.col2;
+            instanceData.baseColorAndMetalnessScale = material.baseColorAndMetalnessScale;
+            instanceData.emissionAndRoughnessScale = material.emissiveAndRoughnessScale;
+            instanceData.textureOffsetAndFlags = baseTextureIndex | ( flags << FLAG_FIRST_BIT );
+            instanceData.primitiveOffset = meshInstance.primitiveOffset;
+            instanceData.morphedPrimitiveOffset = meshInstance.morphedPrimitiveOffset;
+            instanceData.invScale = (isLeftHanded ? -1.0f : 1.0f) / Max(scale.x, Max(scale.y, scale.z));
 
             // Add dynamic geometry
             if (instance.allowUpdate)
             {
-                nri::GeometryObjectInstance geometryObjectInstance = {};
-                memcpy(geometryObjectInstance.transform, mObjectToWorld.a16, sizeof(geometryObjectInstance.transform));
-                geometryObjectInstance.instanceId = instanceIndex++;
-                geometryObjectInstance.mask = flags;
-                geometryObjectInstance.shaderBindingTableLocalOffset = 0;
-                geometryObjectInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE | (material.IsAlphaOpaque() ? nri::TopLevelInstanceBits::NONE : nri::TopLevelInstanceBits::FORCE_OPAQUE);
-                geometryObjectInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*m_AccelerationStructures[meshInstance.blasIndex], 0);
+                nri::GeometryObjectInstance tlasInstance = {};
+                memcpy(tlasInstance.transform, mObjectToWorld.a16, sizeof(tlasInstance.transform));
+                tlasInstance.instanceId = instanceIndex++;
+                tlasInstance.mask = flags;
+                tlasInstance.shaderBindingTableLocalOffset = 0;
+                tlasInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE | (material.IsAlphaOpaque() ? nri::TopLevelInstanceBits::NONE : nri::TopLevelInstanceBits::FORCE_OPAQUE);
+                tlasInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*m_AccelerationStructures[meshInstance.blasIndex]);
 
-                *worldTlasData++ = geometryObjectInstance;
-                worldGeometryObjectsNum++;
+                m_WorldTlasData.push_back(tlasInstance);
 
                 if (flags == FLAG_FORCED_EMISSION || material.IsEmissive())
-                {
-                    *lightTlasData++ = geometryObjectInstance;
-                    lightGeometryObjectsNum++;
-                }
+                    m_LightTlasData.push_back(tlasInstance);
             }
         }
     }
 
-    NRI.UnmapBuffer(*Get(Buffer::InstanceDataStaging));
-    NRI.UnmapBuffer(*Get(Buffer::WorldTlasDataStaging));
-    NRI.UnmapBuffer(*Get(Buffer::LightTlasDataStaging));
-
-    const nri::BufferBarrierDesc transition1[] =
     {
-        { Get(Buffer::InstanceData), {nri::AccessBits::SHADER_RESOURCE}, {nri::AccessBits::COPY_DESTINATION} },
-    };
+        nri::BufferUpdateRequestDesc bufferUpdateRequestDesc = {};
+        bufferUpdateRequestDesc.data = m_InstanceData.data();
+        bufferUpdateRequestDesc.dataSize = m_InstanceData.size() * sizeof(InstanceData);
+        bufferUpdateRequestDesc.dstBuffer = Get(Buffer::InstanceData);
 
-    nri::BarrierGroupDesc transitionBarriers = {nullptr, transition1, nullptr, 0, (uint16_t)helper::GetCountOf(transition1), 0};
-    NRI.CmdBarrier(commandBuffer, transitionBarriers);
+        NRI.AddStreamerBufferUpdateRequest(*m_Streamer, bufferUpdateRequestDesc);
+    }
 
-    NRI.CmdCopyBuffer(commandBuffer, *Get(Buffer::InstanceData), 0, 0, *Get(Buffer::InstanceDataStaging), 0, instanceDataOffset, instanceDataSize);
-    NRI.CmdBuildTopLevelAccelerationStructure(commandBuffer, worldGeometryObjectsNum, *Get(Buffer::WorldTlasDataStaging), tlasDataOffset, TLAS_BUILD_BITS, *Get(AccelerationStructure::TLAS_World), *Get(Buffer::WorldScratch), 0);
-    NRI.CmdBuildTopLevelAccelerationStructure(commandBuffer, lightGeometryObjectsNum, *Get(Buffer::LightTlasDataStaging), tlasDataOffset, TLAS_BUILD_BITS, *Get(AccelerationStructure::TLAS_Emissive), *Get(Buffer::LightScratch), 0);
-
-    const nri::BufferBarrierDesc transition2[] =
     {
-        {Get(Buffer::InstanceData), {nri::AccessBits::COPY_DESTINATION}, {nri::AccessBits::SHADER_RESOURCE}},
-    };
+        nri::BufferUpdateRequestDesc bufferUpdateRequestDesc = {};
+        bufferUpdateRequestDesc.data = m_WorldTlasData.data();
+        bufferUpdateRequestDesc.dataSize = m_WorldTlasData.size() * sizeof(nri::GeometryObjectInstance);
 
-    transitionBarriers = {nullptr, transition2, nullptr, 0, (uint16_t)helper::GetCountOf(transition2), 0};
-    NRI.CmdBarrier(commandBuffer, transitionBarriers);
+        m_WorldTlasDataOffsetInDynamicBuffer = NRI.AddStreamerBufferUpdateRequest(*m_Streamer, bufferUpdateRequestDesc);
+    }
+
+    {
+        nri::BufferUpdateRequestDesc bufferUpdateRequestDesc = {};
+        bufferUpdateRequestDesc.data = m_LightTlasData.data();
+        bufferUpdateRequestDesc.dataSize = m_LightTlasData.size() * sizeof(nri::GeometryObjectInstance);
+
+        m_LightTlasDataOffsetInDynamicBuffer = NRI.AddStreamerBufferUpdateRequest(*m_Streamer, bufferUpdateRequestDesc);
+    }
 }
 
 void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFrameNum)
@@ -4119,77 +4164,9 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
 
     m_SdrScale = displayDesc.sdrLuminance / 80.0f;
 
-    const uint32_t bufferedFrameIndex = frameIndex % BUFFERED_FRAME_MAX_NUM;
-    const uint64_t rangeOffset = m_Frames[bufferedFrameIndex].globalConstantBufferOffset;
-    nri::Buffer* globalConstants = Get(Buffer::GlobalConstants);
-    auto data = (GlobalConstants*)NRI.MapBuffer(*globalConstants, rangeOffset, sizeof(GlobalConstants));
+    // NIS
+    NISConfig config = {};
     {
-        data->gViewToWorld                                  = m_Camera.state.mViewToWorld;
-        data->gViewToClip                                   = m_Camera.state.mViewToClip;
-        data->gWorldToView                                  = m_Camera.state.mWorldToView;
-        data->gWorldToViewPrev                              = m_Camera.statePrev.mWorldToView;
-        data->gWorldToClip                                  = m_Camera.state.mWorldToClip;
-        data->gWorldToClipPrev                              = m_Camera.statePrev.mWorldToClip;
-        data->gHitDistParams                                = float4(hitDistanceParameters.A, hitDistanceParameters.B, hitDistanceParameters.C, hitDistanceParameters.D);
-        data->gCameraFrustum                                = frustum;
-        data->gSunDirection_gExposure                       = float4(sunDirection.x, sunDirection.y, sunDirection.z, m_Settings.exposure);
-        data->gCameraOrigin_gMipBias                        = float4(cameraOrigin.x, cameraOrigin.y, cameraOrigin.z, mipBias);
-        data->gViewDirection_gOrthoMode                     = float4(viewDir.x, viewDir.y, viewDir.z, orthoMode);
-        data->gHairBaseColorOverride                        = m_HairBaseColorOverride;
-        data->gHairBetasOverride                            = m_HairBetasOverride;
-        data->gWindowSize                                   = windowSize;
-        data->gOutputSize                                   = outputSize;
-        data->gRenderSize                                   = renderSize;
-        data->gRectSize                                     = rectSize;
-        data->gInvWindowSize                                = float2(1.0f, 1.0f) / windowSize;
-        data->gInvOutputSize                                = float2(1.0f, 1.0f) / outputSize;
-        data->gInvRenderSize                                = float2(1.0f, 1.0f) / renderSize;
-        data->gInvRectSize                                  = float2(1.0f, 1.0f) / rectSize;
-        data->gRectSizePrev                                 = rectSizePrev;
-        data->gNearZ                                        = nearZ;
-        data->gEmissionIntensity                            = emissionIntensity;
-        data->gJitter                                       = jitter;
-        data->gSeparator                                    = m_Settings.separator;
-        data->gRoughnessOverride                            = m_Settings.roughnessOverride;
-        data->gMetalnessOverride                            = m_Settings.metalnessOverride;
-        data->gUnitToMetersMultiplier                       = 1.0f / m_Settings.meterToUnitsMultiplier;
-        data->gIndirectDiffuse                              = m_Settings.indirectDiffuse ? 1.0f : 0.0f;
-        data->gIndirectSpecular                             = m_Settings.indirectSpecular ? 1.0f : 0.0f;
-        data->gTanSunAngularRadius                          = Tan( DegToRad( m_Settings.sunAngularDiameter * 0.5f ) );
-        data->gTanPixelAngularRadius                        = Tan( 0.5f * DegToRad(m_Settings.camFov) / outputSize.x );
-        data->gDebug                                        = m_Settings.debug;
-        data->gTransparent                                  = (m_HasTransparent && NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION && ( m_Settings.onScreen == 0 || m_Settings.onScreen == 2 )) ? 1.0f : 0.0f;
-        data->gPrevFrameConfidence                          = m_Settings.usePrevFrame ? 1.0f : 0.0f; // TODO: improve?
-        data->gMinProbability                               = minProbability;
-        data->gUnproject                                    = 1.0f / (0.5f * rectH * project[1]);
-        data->gAperture                                     = m_DofAperture * 0.01f;
-        data->gFocalDistance                                = m_DofFocalDistance;
-        data->gFocalLength                                  = ( 0.5f * ( 35.0f * 0.001f ) ) / Tan( DegToRad( m_Settings.camFov * 0.5f ) ); // for 35 mm sensor size (aka old-school 35 mm film)
-        data->gTAA                                          = (m_Settings.denoiser != DENOISER_REFERENCE && m_Settings.TAA) ? taaAccumulationFactor : 0;
-        data->gHdrScale                                     = displayDesc.isHDR ? 0.9f * displayDesc.maxLuminance / 80.0f : 1.0f;
-        data->gDenoiserType                                 = (uint32_t)m_Settings.denoiser;
-        data->gDisableShadowsAndEnableImportanceSampling    = (sunDirection.z < 0.0f && m_Settings.importanceSampling) ? 1 : 0;
-        data->gOnScreen                                     = m_Settings.onScreen + ((NRD_MODE == OCCLUSION || NRD_MODE == DIRECTIONAL_OCCLUSION) ? 3 : 0); // preserve original mapping
-        data->gFrameIndex                                   = frameIndex;
-        data->gForcedMaterial                               = m_Settings.forcedMaterial;
-        data->gUseNormalMap                                 = m_Settings.normalMap ? 1 : 0;
-        data->gIsWorldSpaceMotionEnabled                    = m_Settings.mvType == MV_3D ? 1 : 0;
-        data->gTracingMode                                  = m_Settings.tracingMode;
-        data->gSampleNum                                    = m_Settings.rpp;
-        data->gBounceNum                                    = m_Settings.bounceNum;
-        data->gResolve                                      = m_Settings.denoiser == DENOISER_REFERENCE ? false : m_Resolve;
-        data->gPSR                                          = m_Settings.PSR && m_Settings.tracingMode != RESOLUTION_HALF;
-        data->gValidation                                   = m_ShowValidationOverlay && m_Settings.denoiser != DENOISER_REFERENCE && m_Settings.separator != 1.0f;
-        data->gTrimLobe                                     = m_Settings.specularLobeTrimming ? 1 : 0;
-        data->gSR                                           = m_Settings.SR ? 1 : 0;
-        data->gRR                                           = m_Settings.RR ? 1 : 0;
-        data->gIsSrgb                                       = m_IsSrgb ? 1 : 0;
-
-        // Ambient
-        data->gAmbientMaxAccumulatedFramesNum               = m_ForceHistoryReset ? 0 : float(maxAccumulatedFrameNum);
-        data->gAmbient                                      = m_Settings.ambient;
-
-        // NIS
         float sharpness = m_Settings.sharpness + Lerp( (1.0f - m_Settings.sharpness) * 0.25f, 0.0f, (m_Settings.resolutionScale - 0.5f) * 2.0f );
 
         uint4 dimsOut = uint4(GetWindowResolution().x, GetWindowResolution().y, GetWindowResolution().x, GetWindowResolution().y);
@@ -4197,7 +4174,6 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
         if (IsDlssEnabled())
             dimsIn = dimsOut;
 
-        NISConfig config = {};
         NVScalerUpdateConfig
         (
             config, sharpness,
@@ -4205,35 +4181,101 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
             0, 0, dimsOut.x, dimsOut.y, dimsOut.z, dimsOut.w,
             NISHDRMode::None
         );
-
-        data->gNisDetectRatio                               = config.kDetectRatio;
-        data->gNisDetectThres                               = config.kDetectThres;
-        data->gNisMinContrastRatio                          = config.kMinContrastRatio;
-        data->gNisRatioNorm                                 = config.kRatioNorm;
-        data->gNisContrastBoost                             = config.kContrastBoost;
-        data->gNisEps                                       = config.kEps;
-        data->gNisSharpStartY                               = config.kSharpStartY;
-        data->gNisSharpScaleY                               = config.kSharpScaleY;
-        data->gNisSharpStrengthMin                          = config.kSharpStrengthMin;
-        data->gNisSharpStrengthScale                        = config.kSharpStrengthScale;
-        data->gNisSharpLimitMin                             = config.kSharpLimitMin;
-        data->gNisSharpLimitScale                           = config.kSharpLimitScale;
-        data->gNisScaleX                                    = config.kScaleX;
-        data->gNisScaleY                                    = config.kScaleY;
-        data->gNisDstNormX                                  = config.kDstNormX;
-        data->gNisDstNormY                                  = config.kDstNormY;
-        data->gNisSrcNormX                                  = config.kSrcNormX;
-        data->gNisSrcNormY                                  = config.kSrcNormY;
-        data->gNisInputViewportOriginX                      = config.kInputViewportOriginX;
-        data->gNisInputViewportOriginY                      = config.kInputViewportOriginY;
-        data->gNisInputViewportWidth                        = config.kInputViewportWidth;
-        data->gNisInputViewportHeight                       = config.kInputViewportHeight;
-        data->gNisOutputViewportOriginX                     = config.kOutputViewportOriginX;
-        data->gNisOutputViewportOriginY                     = config.kOutputViewportOriginY;
-        data->gNisOutputViewportWidth                       = config.kOutputViewportWidth;
-        data->gNisOutputViewportHeight                      = config.kOutputViewportHeight;
     }
-    NRI.UnmapBuffer(*globalConstants);
+
+    GlobalConstants constants;
+    {
+        constants.gViewToWorld                                  = m_Camera.state.mViewToWorld;
+        constants.gViewToClip                                   = m_Camera.state.mViewToClip;
+        constants.gWorldToView                                  = m_Camera.state.mWorldToView;
+        constants.gWorldToViewPrev                              = m_Camera.statePrev.mWorldToView;
+        constants.gWorldToClip                                  = m_Camera.state.mWorldToClip;
+        constants.gWorldToClipPrev                              = m_Camera.statePrev.mWorldToClip;
+        constants.gHitDistParams                                = float4(hitDistanceParameters.A, hitDistanceParameters.B, hitDistanceParameters.C, hitDistanceParameters.D);
+        constants.gCameraFrustum                                = frustum;
+        constants.gSunDirection_gExposure                       = float4(sunDirection.x, sunDirection.y, sunDirection.z, m_Settings.exposure);
+        constants.gCameraOrigin_gMipBias                        = float4(cameraOrigin.x, cameraOrigin.y, cameraOrigin.z, mipBias);
+        constants.gViewDirection_gOrthoMode                     = float4(viewDir.x, viewDir.y, viewDir.z, orthoMode);
+        constants.gHairBaseColorOverride                        = m_HairBaseColorOverride;
+        constants.gHairBetasOverride                            = m_HairBetasOverride;
+        constants.gWindowSize                                   = windowSize;
+        constants.gOutputSize                                   = outputSize;
+        constants.gRenderSize                                   = renderSize;
+        constants.gRectSize                                     = rectSize;
+        constants.gInvWindowSize                                = float2(1.0f, 1.0f) / windowSize;
+        constants.gInvOutputSize                                = float2(1.0f, 1.0f) / outputSize;
+        constants.gInvRenderSize                                = float2(1.0f, 1.0f) / renderSize;
+        constants.gInvRectSize                                  = float2(1.0f, 1.0f) / rectSize;
+        constants.gRectSizePrev                                 = rectSizePrev;
+        constants.gNearZ                                        = nearZ;
+        constants.gEmissionIntensity                            = emissionIntensity;
+        constants.gJitter                                       = jitter;
+        constants.gSeparator                                    = m_Settings.separator;
+        constants.gRoughnessOverride                            = m_Settings.roughnessOverride;
+        constants.gMetalnessOverride                            = m_Settings.metalnessOverride;
+        constants.gUnitToMetersMultiplier                       = 1.0f / m_Settings.meterToUnitsMultiplier;
+        constants.gIndirectDiffuse                              = m_Settings.indirectDiffuse ? 1.0f : 0.0f;
+        constants.gIndirectSpecular                             = m_Settings.indirectSpecular ? 1.0f : 0.0f;
+        constants.gTanSunAngularRadius                          = Tan( DegToRad( m_Settings.sunAngularDiameter * 0.5f ) );
+        constants.gTanPixelAngularRadius                        = Tan( 0.5f * DegToRad(m_Settings.camFov) / outputSize.x );
+        constants.gDebug                                        = m_Settings.debug;
+        constants.gTransparent                                  = (m_HasTransparent && NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION && ( m_Settings.onScreen == 0 || m_Settings.onScreen == 2 )) ? 1.0f : 0.0f;
+        constants.gPrevFrameConfidence                          = m_Settings.usePrevFrame ? 1.0f : 0.0f; // TODO: improve?
+        constants.gMinProbability                               = minProbability;
+        constants.gUnproject                                    = 1.0f / (0.5f * rectH * project[1]);
+        constants.gAperture                                     = m_DofAperture * 0.01f;
+        constants.gFocalDistance                                = m_DofFocalDistance;
+        constants.gFocalLength                                  = ( 0.5f * ( 35.0f * 0.001f ) ) / Tan( DegToRad( m_Settings.camFov * 0.5f ) ); // for 35 mm sensor size (aka old-school 35 mm film)
+        constants.gTAA                                          = (m_Settings.denoiser != DENOISER_REFERENCE && m_Settings.TAA) ? taaAccumulationFactor : 0;
+        constants.gHdrScale                                     = displayDesc.isHDR ? 0.9f * displayDesc.maxLuminance / 80.0f : 1.0f;
+        constants.gDenoiserType                                 = (uint32_t)m_Settings.denoiser;
+        constants.gDisableShadowsAndEnableImportanceSampling    = (sunDirection.z < 0.0f && m_Settings.importanceSampling) ? 1 : 0;
+        constants.gOnScreen                                     = m_Settings.onScreen + ((NRD_MODE == OCCLUSION || NRD_MODE == DIRECTIONAL_OCCLUSION) ? 3 : 0); // preserve original mapping
+        constants.gFrameIndex                                   = frameIndex;
+        constants.gForcedMaterial                               = m_Settings.forcedMaterial;
+        constants.gUseNormalMap                                 = m_Settings.normalMap ? 1 : 0;
+        constants.gIsWorldSpaceMotionEnabled                    = m_Settings.mvType == MV_3D ? 1 : 0;
+        constants.gTracingMode                                  = m_Settings.tracingMode;
+        constants.gSampleNum                                    = m_Settings.rpp;
+        constants.gBounceNum                                    = m_Settings.bounceNum;
+        constants.gResolve                                      = m_Settings.denoiser == DENOISER_REFERENCE ? false : m_Resolve;
+        constants.gPSR                                          = m_Settings.PSR && m_Settings.tracingMode != RESOLUTION_HALF;
+        constants.gValidation                                   = m_ShowValidationOverlay && m_Settings.denoiser != DENOISER_REFERENCE && m_Settings.separator != 1.0f;
+        constants.gTrimLobe                                     = m_Settings.specularLobeTrimming ? 1 : 0;
+        constants.gSR                                           = m_Settings.SR ? 1 : 0;
+        constants.gRR                                           = m_Settings.RR ? 1 : 0;
+        constants.gIsSrgb                                       = m_IsSrgb ? 1 : 0;
+        constants.gAmbientMaxAccumulatedFramesNum               = m_ForceHistoryReset ? 0 : float(maxAccumulatedFrameNum);
+        constants.gAmbient                                      = m_Settings.ambient;
+        constants.gNisDetectRatio                               = config.kDetectRatio;
+        constants.gNisDetectThres                               = config.kDetectThres;
+        constants.gNisMinContrastRatio                          = config.kMinContrastRatio;
+        constants.gNisRatioNorm                                 = config.kRatioNorm;
+        constants.gNisContrastBoost                             = config.kContrastBoost;
+        constants.gNisEps                                       = config.kEps;
+        constants.gNisSharpStartY                               = config.kSharpStartY;
+        constants.gNisSharpScaleY                               = config.kSharpScaleY;
+        constants.gNisSharpStrengthMin                          = config.kSharpStrengthMin;
+        constants.gNisSharpStrengthScale                        = config.kSharpStrengthScale;
+        constants.gNisSharpLimitMin                             = config.kSharpLimitMin;
+        constants.gNisSharpLimitScale                           = config.kSharpLimitScale;
+        constants.gNisScaleX                                    = config.kScaleX;
+        constants.gNisScaleY                                    = config.kScaleY;
+        constants.gNisDstNormX                                  = config.kDstNormX;
+        constants.gNisDstNormY                                  = config.kDstNormY;
+        constants.gNisSrcNormX                                  = config.kSrcNormX;
+        constants.gNisSrcNormY                                  = config.kSrcNormY;
+        constants.gNisInputViewportOriginX                      = config.kInputViewportOriginX;
+        constants.gNisInputViewportOriginY                      = config.kInputViewportOriginY;
+        constants.gNisInputViewportWidth                        = config.kInputViewportWidth;
+        constants.gNisInputViewportHeight                       = config.kInputViewportHeight;
+        constants.gNisOutputViewportOriginX                     = config.kOutputViewportOriginX;
+        constants.gNisOutputViewportOriginY                     = config.kOutputViewportOriginY;
+        constants.gNisOutputViewportWidth                       = config.kOutputViewportWidth;
+        constants.gNisOutputViewportHeight                      = config.kOutputViewportHeight;
+    }
+
+    m_GlobalConstantBufferOffset = NRI.UpdateStreamerConstantBuffer(*m_Streamer, &constants, sizeof(constants));
 }
 
 uint16_t Sample::BuildOptimizedTransitions(const TextureState* states, uint32_t stateNum, std::array<nri::TextureBarrierDesc, MAX_TEXTURE_TRANSITIONS_NUM>& transitions)
@@ -4254,11 +4296,11 @@ uint16_t Sample::BuildOptimizedTransitions(const TextureState* states, uint32_t 
     return (uint16_t)n;
 }
 
-void Sample::RestoreBindings(nri::CommandBuffer& commandBuffer, const Frame& frame)
+void Sample::RestoreBindings(nri::CommandBuffer& commandBuffer)
 {
     NRI.CmdSetDescriptorPool(commandBuffer, *m_DescriptorPool);
     NRI.CmdSetPipelineLayout(commandBuffer, *m_PipelineLayout);
-    NRI.CmdSetDescriptorSet(commandBuffer, 0, *frame.globalConstantBufferDescriptorSet, nullptr);
+    NRI.CmdSetDescriptorSet(commandBuffer, 0, *Get(DescriptorSet::Global0), &m_GlobalConstantBufferOffset);
     NRI.CmdSetDescriptorSet(commandBuffer, 2, *Get(DescriptorSet::RayTracing2), nullptr);
 }
 
@@ -4268,32 +4310,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
     const uint32_t bufferedFrameIndex = frameIndex % BUFFERED_FRAME_MAX_NUM;
     const Frame& frame = m_Frames[bufferedFrameIndex];
-    const bool isEven = !(frameIndex & 0x1);
     nri::CommandBuffer& commandBuffer = *frame.commandBuffer;
-
-    if (frameIndex >= BUFFERED_FRAME_MAX_NUM)
-    {
-        NRI.Wait(*m_FrameFence, 1 + frameIndex - BUFFERED_FRAME_MAX_NUM);
-        NRI.ResetCommandAllocator(*frame.commandAllocator);
-    }
-
-    // Global history reset
-    float sunCurr = Smoothstep( -0.9f, 0.05f, Sin( DegToRad(m_Settings.sunElevation) ) );
-    float sunPrev = Smoothstep( -0.9f, 0.05f, Sin( DegToRad(m_SettingsPrev.sunElevation) ) );
-    float resetHistoryFactor = 1.0f - Smoothstep( 0.0f, 0.2f, Abs(sunCurr - sunPrev) );
-
-    if (m_SettingsPrev.denoiser != m_Settings.denoiser)
-        m_ForceHistoryReset = true;
-    if (m_SettingsPrev.denoiser == DENOISER_REFERENCE && m_SettingsPrev.tracingMode != m_Settings.tracingMode)
-        m_ForceHistoryReset = true;
-    if (m_SettingsPrev.ortho != m_Settings.ortho)
-        m_ForceHistoryReset = true;
-    if (m_SettingsPrev.onScreen != m_Settings.onScreen)
-        m_ForceHistoryReset = true;
-    if (m_SettingsPrev.RR != m_Settings.RR)
-        m_ForceHistoryReset = true;
-    if (frameIndex == 0)
-        m_ForceHistoryReset = true;
 
     // Sizes
     uint32_t rectW = uint32_t(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
@@ -4304,59 +4321,6 @@ void Sample::RenderFrame(uint32_t frameIndex)
     uint32_t outputGridH = (GetOutputResolution().y + 15) / 16;
     uint32_t windowGridW = (GetWindowResolution().x + 15) / 16;
     uint32_t windowGridH = (GetWindowResolution().y + 15) / 16;
-
-    // NRD common settings
-    if (m_Settings.adaptiveAccumulation)
-    {
-        bool isFastHistoryEnabled = m_Settings.maxAccumulatedFrameNum > m_Settings.maxFastAccumulatedFrameNum;
-
-        float fps = 1000.0f / m_Timer.GetSmoothedFrameTime();
-        float maxAccumulatedFrameNum = Clamp(ACCUMULATION_TIME * fps, 5.0f, float(MAX_HISTORY_FRAME_NUM));
-        float maxFastAccumulatedFrameNum = isFastHistoryEnabled ? (maxAccumulatedFrameNum / 5.0f) : float(MAX_HISTORY_FRAME_NUM);
-
-        m_Settings.maxAccumulatedFrameNum = int32_t(maxAccumulatedFrameNum + 0.5f);
-        m_Settings.maxFastAccumulatedFrameNum = int32_t(maxFastAccumulatedFrameNum + 0.5f);
-    }
-
-    uint32_t maxAccumulatedFrameNum = uint32_t(m_Settings.maxAccumulatedFrameNum * resetHistoryFactor + 0.5f);
-    uint32_t maxFastAccumulatedFrameNum = uint32_t(m_Settings.maxFastAccumulatedFrameNum * resetHistoryFactor + 0.5f);
-
-    bool wantPrintf = IsButtonPressed(Button::Middle) || IsKeyToggled(Key::P);
-
-    nrd::CommonSettings commonSettings = {};
-    memcpy(commonSettings.viewToClipMatrix, &m_Camera.state.mViewToClip, sizeof(m_Camera.state.mViewToClip));
-    memcpy(commonSettings.viewToClipMatrixPrev, &m_Camera.statePrev.mViewToClip, sizeof(m_Camera.statePrev.mViewToClip));
-    memcpy(commonSettings.worldToViewMatrix, &m_Camera.state.mWorldToView, sizeof(m_Camera.state.mWorldToView));
-    memcpy(commonSettings.worldToViewMatrixPrev, &m_Camera.statePrev.mWorldToView, sizeof(m_Camera.statePrev.mWorldToView));
-    commonSettings.motionVectorScale[0] = m_Settings.mvType == MV_3D ? 1.0f : 1.0f / float(rectW);
-    commonSettings.motionVectorScale[1] = m_Settings.mvType == MV_3D ? 1.0f : 1.0f / float(rectH);
-    commonSettings.motionVectorScale[2] = m_Settings.mvType != MV_2D ? 1.0f : 0.0f;
-    commonSettings.cameraJitter[0] = m_Settings.cameraJitter ? m_Camera.state.viewportJitter.x : 0.0f;
-    commonSettings.cameraJitter[1] = m_Settings.cameraJitter ? m_Camera.state.viewportJitter.y : 0.0f;
-    commonSettings.cameraJitterPrev[0] = m_Settings.cameraJitter ? m_Camera.statePrev.viewportJitter.x : 0.0f;
-    commonSettings.cameraJitterPrev[1] = m_Settings.cameraJitter ? m_Camera.statePrev.viewportJitter.y : 0.0f;
-    commonSettings.resourceSize[0] = (uint16_t)m_RenderResolution.x;
-    commonSettings.resourceSize[1] = (uint16_t)m_RenderResolution.y;
-    commonSettings.resourceSizePrev[0] = (uint16_t)m_RenderResolution.x;
-    commonSettings.resourceSizePrev[1] = (uint16_t)m_RenderResolution.y;
-    commonSettings.rectSize[0] = (uint16_t)(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
-    commonSettings.rectSize[1] = (uint16_t)(m_RenderResolution.y * m_Settings.resolutionScale + 0.5f);
-    commonSettings.rectSizePrev[0] = (uint16_t)(m_RenderResolution.x * m_SettingsPrev.resolutionScale + 0.5f);
-    commonSettings.rectSizePrev[1] = (uint16_t)(m_RenderResolution.y * m_SettingsPrev.resolutionScale + 0.5f);
-    commonSettings.denoisingRange = GetDenoisingRange();
-    commonSettings.disocclusionThreshold = m_Settings.disocclusionThreshold * 0.01f;
-    commonSettings.splitScreen = (m_Settings.denoiser == DENOISER_REFERENCE || m_Settings.RR) ? 1.0f : m_Settings.separator;
-    commonSettings.printfAt[0] = wantPrintf ? (uint16_t)ImGui::GetIO().MousePos.x : 9999;
-    commonSettings.printfAt[1] = wantPrintf ? (uint16_t)ImGui::GetIO().MousePos.y : 9999;
-    commonSettings.debug = m_Settings.debug;
-    commonSettings.frameIndex = frameIndex;
-    commonSettings.accumulationMode = m_ForceHistoryReset ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
-    commonSettings.isMotionVectorInWorldSpace = m_Settings.mvType == MV_3D;
-    commonSettings.isBaseColorMetalnessAvailable = true;
-    commonSettings.enableValidation = m_ShowValidationOverlay;
-
-    m_NRD.NewFrame();
-    m_NRD.SetCommonSettings(commonSettings);
 
     // NRD user pool
     NrdUserPool userPool = {};
@@ -4424,16 +4388,14 @@ void Sample::RenderFrame(uint32_t frameIndex)
         NrdIntegration_SetResource(userPool, nrd::ResourceType::OUT_SIGNAL, {&GetState(Texture::Composed_ViewZ), GetFormat(Texture::Composed_ViewZ)});
     }
 
-    UpdateConstantBuffer(frameIndex, maxAccumulatedFrameNum);
+    const uint32_t dummyDynamicConstantOffset = 0;
 
-    uint32_t kDummyDynamicConstantOffset = 0;
-
-    NRI.BeginCommandBuffer(commandBuffer, m_DescriptorPool, 0);
+    NRI.BeginCommandBuffer(commandBuffer, m_DescriptorPool);
     {
         // All-in-one pipeline layout
         NRI.CmdSetPipelineLayout(commandBuffer, *m_PipelineLayout);
 
-        NRI.CmdSetDescriptorSet(commandBuffer, 0, *frame.globalConstantBufferDescriptorSet, nullptr);
+        NRI.CmdSetDescriptorSet(commandBuffer, 0, *Get(DescriptorSet::Global0), &m_GlobalConstantBufferOffset);
 
         // Update morph animation
         if (m_Settings.activeAnimation < m_Scene.animations.size() && m_Scene.animations[m_Settings.activeAnimation].morphMeshInstances.size() && (!m_Settings.pauseAnimation || !m_SettingsPrev.pauseAnimation || frameIndex == 0))
@@ -4472,24 +4434,26 @@ void Sample::RenderFrame(uint32_t frameIndex)
                     float renormalizeScale = 1.0f / totalWeight;
 
                     MorphMeshUpdateVerticesConstants constants = {};
-                    for (uint32_t i = 0; i < numShaderMorphTargets; i++)
                     {
-                        uint32_t morphTargetIndex = weightsTrack.activeValues[i].first;
-                        uint32_t morphTargetVertexOffset = mesh.morphTargetVertexOffset + morphTargetIndex * mesh.vertexNum;
+                        for (uint32_t i = 0; i < numShaderMorphTargets; i++)
+                        {
+                            uint32_t morphTargetIndex = weightsTrack.activeValues[i].first;
+                            uint32_t morphTargetVertexOffset = mesh.morphTargetVertexOffset + morphTargetIndex * mesh.vertexNum;
 
-                        constants.gIndices[i / MORPH_ELEMENTS_PER_ROW_NUM].pv[i % MORPH_ELEMENTS_PER_ROW_NUM] = morphTargetVertexOffset;
-                        constants.gWeights[i / MORPH_ELEMENTS_PER_ROW_NUM].pv[i % MORPH_ELEMENTS_PER_ROW_NUM] = renormalizeScale * weightsTrack.activeValues[i].second;
+                            constants.gIndices[i / MORPH_ELEMENTS_PER_ROW_NUM].pv[i % MORPH_ELEMENTS_PER_ROW_NUM] = morphTargetVertexOffset;
+                            constants.gWeights[i / MORPH_ELEMENTS_PER_ROW_NUM].pv[i % MORPH_ELEMENTS_PER_ROW_NUM] = renormalizeScale * weightsTrack.activeValues[i].second;
+                        }
+                        constants.gNumWeights = numShaderMorphTargets;
+                        constants.gNumVertices = mesh.vertexNum;
+                        constants.gPositionCurrFrameOffset = m_Scene.morphedVerticesNum * animCurrBufferIndex + meshInstance.morphedVertexOffset;
+                        constants.gAttributesOutputOffset = meshInstance.morphedVertexOffset;
                     }
-                    constants.gNumWeights = numShaderMorphTargets;
-                    constants.gNumVertices = mesh.vertexNum;
-                    constants.gPositionCurrFrameOffset = m_Scene.morphedVerticesNum * animCurrBufferIndex + meshInstance.morphedVertexOffset;
-                    constants.gAttributesOutputOffset = meshInstance.morphedVertexOffset;
 
-                    uint32_t dynamicConstantBufferOffset = m_DynamicConstantBufferAllocator.Allocate(constants);
+                    uint32_t dynamicConstantBufferOffset = NRI.UpdateStreamerConstantBuffer(*m_Streamer, &constants, sizeof(constants));
                     NRI.CmdSetDescriptorSet(commandBuffer, 3, *Get(DescriptorSet::MorphTargetPose3), &dynamicConstantBufferOffset);
 
                     constexpr uint32_t kNumThreads = 256;
-                    NRI.CmdDispatch(commandBuffer, (mesh.vertexNum + kNumThreads - 1) / kNumThreads, 1, 1);
+                    NRI.CmdDispatch(commandBuffer, {(mesh.vertexNum + kNumThreads - 1) / kNumThreads, 1, 1});
                 }
 
                 {
@@ -4521,19 +4485,21 @@ void Sample::RenderFrame(uint32_t frameIndex)
                     uint32_t numPrimitives = mesh.indexNum / 3;
 
                     MorphMeshUpdatePrimitivesConstants constants = {};
-                    constants.gPositionFrameOffsets.x = m_Scene.morphedVerticesNum * animCurrBufferIndex + meshInstance.morphedVertexOffset;
-                    constants.gPositionFrameOffsets.y = m_Scene.morphedVerticesNum * animPrevBufferIndex + meshInstance.morphedVertexOffset;
-                    constants.gNumPrimitives = numPrimitives;
-                    constants.gIndexOffset = mesh.morphMeshIndexOffset;
-                    constants.gAttributesOffset = meshInstance.morphedVertexOffset;
-                    constants.gPrimitiveOffset = meshInstance.primitiveOffset;
-                    constants.gMorphedPrimitiveOffset = meshInstance.morphedPrimitiveOffset;
+                    {
+                        constants.gPositionFrameOffsets.x = m_Scene.morphedVerticesNum * animCurrBufferIndex + meshInstance.morphedVertexOffset;
+                        constants.gPositionFrameOffsets.y = m_Scene.morphedVerticesNum * animPrevBufferIndex + meshInstance.morphedVertexOffset;
+                        constants.gNumPrimitives = numPrimitives;
+                        constants.gIndexOffset = mesh.morphMeshIndexOffset;
+                        constants.gAttributesOffset = meshInstance.morphedVertexOffset;
+                        constants.gPrimitiveOffset = meshInstance.primitiveOffset;
+                        constants.gMorphedPrimitiveOffset = meshInstance.morphedPrimitiveOffset;
+                    }
 
-                    uint32_t dynamicConstantBufferOffset = m_DynamicConstantBufferAllocator.Allocate(constants);
+                    uint32_t dynamicConstantBufferOffset = NRI.UpdateStreamerConstantBuffer(*m_Streamer, &constants, sizeof(constants));
                     NRI.CmdSetDescriptorSet(commandBuffer, 3, *Get(DescriptorSet::MorphTargetUpdatePrimitives3), &dynamicConstantBufferOffset);
 
                     constexpr uint32_t kNumThreads = 256;
-                    NRI.CmdDispatch(commandBuffer, (numPrimitives + kNumThreads - 1) / kNumThreads, 1, 1);
+                    NRI.CmdDispatch(commandBuffer, {(numPrimitives + kNumThreads - 1) / kNumThreads, 1, 1});
                 }
             }
 
@@ -4579,12 +4545,33 @@ void Sample::RenderFrame(uint32_t frameIndex)
             }
         }
 
+        { // Copy upload requests to destinations
+            helper::Annotation annotation(NRI, commandBuffer, "Streamer");
+
+            // TODO: is barrier from "SHADER_RESOURCE" to "COPY_DESTINATION" needed here for "Buffer::InstanceData"?
+
+            NRI.CmdUploadStreamerUpdateRequests(commandBuffer, *m_Streamer);
+        }
+
         { // TLAS
             helper::Annotation annotation(NRI, commandBuffer, "TLAS");
 
-            BuildTopLevelAccelerationStructure(commandBuffer, bufferedFrameIndex);
+            nri::Buffer* dynamicBuffer = NRI.GetStreamerDynamicBuffer(*m_Streamer);
+            NRI.CmdBuildTopLevelAccelerationStructure(commandBuffer, (uint32_t)m_WorldTlasData.size(), *dynamicBuffer, m_WorldTlasDataOffsetInDynamicBuffer, TLAS_BUILD_BITS, *Get(AccelerationStructure::TLAS_World), *Get(Buffer::WorldScratch), 0);
+            NRI.CmdBuildTopLevelAccelerationStructure(commandBuffer, (uint32_t)m_LightTlasData.size(), *dynamicBuffer, m_LightTlasDataOffsetInDynamicBuffer, TLAS_BUILD_BITS, *Get(AccelerationStructure::TLAS_Emissive), *Get(Buffer::LightScratch), 0);
+
+            {
+                const nri::BufferBarrierDesc transition = {Get(Buffer::InstanceData), {nri::AccessBits::COPY_DESTINATION}, {nri::AccessBits::SHADER_RESOURCE}};
+
+                nri::BarrierGroupDesc barrierGroupDesc = {};
+                barrierGroupDesc.buffers = &transition;
+                barrierGroupDesc.bufferNum = 1;
+
+                NRI.CmdBarrier(commandBuffer, barrierGroupDesc);
+            }
         }
 
+        // Must be bound here, after updating "Buffer::InstanceData"
         NRI.CmdSetDescriptorSet(commandBuffer, 2, *Get(DescriptorSet::RayTracing2), nullptr);
 
         // Trace ambient // TODO: replace with a hash-grid based radiance cache
@@ -4602,9 +4589,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
             NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
             NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::TraceAmbient));
-            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::TraceAmbient1), &kDummyDynamicConstantOffset);
+            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::TraceAmbient1), &dummyDynamicConstantOffset);
 
-            NRI.CmdDispatch(commandBuffer, 2, 2, 1);
+            NRI.CmdDispatch(commandBuffer, {2, 2, 1});
         }
 
         { // Trace opaque
@@ -4637,14 +4624,14 @@ void Sample::RenderFrame(uint32_t frameIndex)
             NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
             NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::TraceOpaque));
-            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::TraceOpaque1), &kDummyDynamicConstantOffset);
+            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::TraceOpaque1), &dummyDynamicConstantOffset);
 
             uint32_t rectWmod = uint32_t(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
             uint32_t rectHmod = uint32_t(m_RenderResolution.y * m_Settings.resolutionScale + 0.5f);
             uint32_t rectGridWmod = (rectWmod + 15) / 16;
             uint32_t rectGridHmod = (rectHmod + 15) / 16;
 
-            NRI.CmdDispatch(commandBuffer, rectGridWmod, rectGridHmod, 1);
+            NRI.CmdDispatch(commandBuffer, {rectGridWmod, rectGridHmod, 1});
         }
 
     #if( NRD_MODE != OCCLUSION && NRD_MODE != DIRECTIONAL_OCCLUSION )
@@ -4669,12 +4656,6 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 nrd::HitDistanceParameters hitDistanceParameters = {};
                 hitDistanceParameters.A = m_Settings.hitDistScale * m_Settings.meterToUnitsMultiplier;
                 m_ReblurSettings.hitDistanceParameters = hitDistanceParameters;
-
-                m_ReblurSettings.maxAccumulatedFrameNum = maxAccumulatedFrameNum;
-                m_ReblurSettings.maxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
-                m_ReblurSettings.checkerboardMode = m_Settings.tracingMode == RESOLUTION_HALF ? nrd::CheckerboardMode::WHITE : nrd::CheckerboardMode::OFF;
-                m_ReblurSettings.enableMaterialTestForDiffuse = true;
-                m_ReblurSettings.enableMaterialTestForSpecular = true;
 
                 nrd::ReblurSettings settings = m_ReblurSettings;
             #if( NRD_MODE == SH || NRD_MODE == DIRECTIONAL_OCCLUSION )
@@ -4712,14 +4693,6 @@ void Sample::RenderFrame(uint32_t frameIndex)
             }
             else if (m_Settings.denoiser == DENOISER_RELAX)
             {
-                m_RelaxSettings.diffuseMaxAccumulatedFrameNum = maxAccumulatedFrameNum;
-                m_RelaxSettings.diffuseMaxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
-                m_RelaxSettings.specularMaxAccumulatedFrameNum = maxAccumulatedFrameNum;
-                m_RelaxSettings.specularMaxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
-                m_RelaxSettings.checkerboardMode = m_Settings.tracingMode == RESOLUTION_HALF ? nrd::CheckerboardMode::WHITE : nrd::CheckerboardMode::OFF;
-                m_RelaxSettings.enableMaterialTestForDiffuse = true;
-                m_RelaxSettings.enableMaterialTestForSpecular = true;
-
                 nrd::RelaxSettings settings = m_RelaxSettings;
             #if( NRD_MODE == SH || NRD_MODE == DIRECTIONAL_OCCLUSION )
                 // High quality SG resolve allows to use more relaxed normal weights
@@ -4750,7 +4723,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 m_NRD.Denoise(denoisers, helper::GetCountOf(denoisers), commandBuffer, userPool);
             }
 
-            RestoreBindings(commandBuffer, frame);
+            RestoreBindings(commandBuffer);
         }
 
         { // Composition
@@ -4781,9 +4754,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
             NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
             NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::Composition));
-            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::Composition1), &kDummyDynamicConstantOffset);
+            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::Composition1), &dummyDynamicConstantOffset);
 
-            NRI.CmdDispatch(commandBuffer, rectGridW, rectGridH, 1);
+            NRI.CmdDispatch(commandBuffer, {rectGridW, rectGridH, 1});
         }
 
         { // Trace transparent
@@ -4803,28 +4776,29 @@ void Sample::RenderFrame(uint32_t frameIndex)
             NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
             NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::TraceTransparent));
-            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::TraceTransparent1), &kDummyDynamicConstantOffset);
+            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::TraceTransparent1), &dummyDynamicConstantOffset);
 
-            NRI.CmdDispatch(commandBuffer, rectGridW, rectGridH, 1);
+            NRI.CmdDispatch(commandBuffer, {rectGridW, rectGridH, 1});
         }
 
         if (m_Settings.denoiser == DENOISER_REFERENCE)
         { // Reference
             helper::Annotation annotation(NRI, commandBuffer, "Reference denoising");
 
-            commonSettings.rectSize[0] = (uint16_t)m_RenderResolution.x;
-            commonSettings.rectSize[1] = (uint16_t)m_RenderResolution.y;
-            commonSettings.splitScreen = m_Settings.separator;
+            m_CommonSettings.rectSize[0] = (uint16_t)m_RenderResolution.x;
+            m_CommonSettings.rectSize[1] = (uint16_t)m_RenderResolution.y;
+            m_CommonSettings.splitScreen = m_Settings.separator;
 
             nrd::Identifier denoiser = NRD_ID(REFERENCE);
 
-            m_NRD.SetCommonSettings(commonSettings);
+            m_NRD.SetCommonSettings(m_CommonSettings);
             m_NRD.SetDenoiserSettings(denoiser, &m_ReferenceSettings);
             m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool);
 
-            RestoreBindings(commandBuffer, frame);
+            RestoreBindings(commandBuffer);
         }
 
+        const bool isEven = !(frameIndex & 0x1);
         const Texture taaSrc = isEven ? Texture::TaaHistoryPrev : Texture::TaaHistory;
         const Texture taaDst = isEven ? Texture::TaaHistory : Texture::TaaHistoryPrev;
 
@@ -4846,9 +4820,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
                 NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::DlssBefore));
-                NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::DlssBefore1), &kDummyDynamicConstantOffset);
+                NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::DlssBefore1), &dummyDynamicConstantOffset);
 
-                NRI.CmdDispatch(commandBuffer, rectGridW, rectGridH, 1);
+                NRI.CmdDispatch(commandBuffer, {rectGridW, rectGridH, 1});
             }
 
             { // DLSS
@@ -4880,7 +4854,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
                 m_DLSS.Evaluate(&commandBuffer, dlssDesc);
 
-                RestoreBindings(commandBuffer, frame); // TODO: is it needed?
+                RestoreBindings(commandBuffer); // TODO: is it needed?
             }
 
             { // After DLSS
@@ -4895,9 +4869,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
                 NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::DlssAfter));
-                NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::DlssAfter1), &kDummyDynamicConstantOffset);
+                NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::DlssAfter1), &dummyDynamicConstantOffset);
 
-                NRI.CmdDispatch(commandBuffer, outputGridW, outputGridH, 1);
+                NRI.CmdDispatch(commandBuffer, {outputGridW, outputGridH, 1});
             }
         }
         else
@@ -4918,9 +4892,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
             NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
             NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::Temporal));
-            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(isEven ? DescriptorSet::Temporal1a : DescriptorSet::Temporal1b), &kDummyDynamicConstantOffset);
+            NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(isEven ? DescriptorSet::Temporal1a : DescriptorSet::Temporal1b), &dummyDynamicConstantOffset);
 
-            NRI.CmdDispatch(commandBuffer, rectGridW, rectGridH, 1);
+            NRI.CmdDispatch(commandBuffer, {rectGridW, rectGridH, 1});
         }
 
         { // Upsample, NRD validation and split screen
@@ -4941,9 +4915,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
             {
                 NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::UpsampleNis));
                 if (IsDlssEnabled())
-                    NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::UpsampleNis1), &kDummyDynamicConstantOffset);
+                    NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::UpsampleNis1), &dummyDynamicConstantOffset);
                 else
-                    NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(isEven ? DescriptorSet::UpsampleNis1a : DescriptorSet::UpsampleNis1b), &kDummyDynamicConstantOffset);
+                    NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(isEven ? DescriptorSet::UpsampleNis1a : DescriptorSet::UpsampleNis1b), &dummyDynamicConstantOffset);
 
                 // See NIS_Config.h
                 windowGridW = (GetWindowResolution().x + 31) / 32;
@@ -4953,18 +4927,20 @@ void Sample::RenderFrame(uint32_t frameIndex)
             {
                 NRI.CmdSetPipeline(commandBuffer, *Get(Pipeline::Upsample));
                 if (IsDlssEnabled())
-                    NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::Upsample1), &kDummyDynamicConstantOffset);
+                    NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(DescriptorSet::Upsample1), &dummyDynamicConstantOffset);
                 else
-                    NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(isEven ? DescriptorSet::Upsample1a : DescriptorSet::Upsample1b), &kDummyDynamicConstantOffset);
+                    NRI.CmdSetDescriptorSet(commandBuffer, 1, *Get(isEven ? DescriptorSet::Upsample1a : DescriptorSet::Upsample1b), &dummyDynamicConstantOffset);
             }
 
-            NRI.CmdDispatch(commandBuffer, windowGridW, windowGridH, 1);
+            NRI.CmdDispatch(commandBuffer, {windowGridW, windowGridH, 1});
         }
 
         const uint32_t backBufferIndex = NRI.AcquireNextSwapChainTexture(*m_SwapChain);
         const BackBuffer* backBuffer = &m_SwapChainBuffers[backBufferIndex];
 
         { // Copy to back-buffer
+            helper::Annotation annotation(NRI, commandBuffer, "Copy to back buffer");
+
             const nri::TextureBarrierDesc transitions[] =
             {
                 nri::TextureBarrierFromState(GetState(Texture::Final), {nri::AccessBits::COPY_SOURCE, nri::Layout::COPY_SOURCE}),
@@ -4973,7 +4949,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
             nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, transitions, 0, 0, (uint16_t)helper::GetCountOf(transitions)};
             NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
-            NRI.CmdCopyTexture(commandBuffer, *backBuffer->texture, 0, nullptr, *Get(Texture::Final), 0, nullptr);
+            NRI.CmdCopyTexture(commandBuffer, *backBuffer->texture, nullptr, *Get(Texture::Final), nullptr);
         }
 
         { // UI
@@ -4986,7 +4962,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
             desc.colorNum = 1;
 
             NRI.CmdBeginRendering(commandBuffer, desc);
-            RenderUserInterface(*m_Device, commandBuffer, m_SdrScale, m_IsSrgb);
+            RenderUI(NRI, NRI, *m_Streamer, commandBuffer, m_SdrScale, m_IsSrgb);
             NRI.CmdEndRendering(commandBuffer);
 
             const nri::TextureBarrierDesc afterTransitions = nri::TextureBarrierFromState(beforeTransitions, {nri::AccessBits::UNKNOWN, nri::Layout::PRESENT, nri::StageBits::ALL});
@@ -4996,14 +4972,22 @@ void Sample::RenderFrame(uint32_t frameIndex)
     }
     NRI.EndCommandBuffer(commandBuffer);
 
-    nri::QueueSubmitDesc queueSubmitDesc = {};
-    queueSubmitDesc.commandBuffers = &frame.commandBuffer;
-    queueSubmitDesc.commandBufferNum = 1;
-    NRI.QueueSubmit(*m_CommandQueue, queueSubmitDesc);
+    { // Submit
+        nri::FenceSubmitDesc signalFence = {};
+        signalFence.fence = m_FrameFence;
+        signalFence.value = 1 + frameIndex;
 
-    NRI.SwapChainPresent(*m_SwapChain);
+        nri::QueueSubmitDesc queueSubmitDesc = {};
+        queueSubmitDesc.commandBuffers = &frame.commandBuffer;
+        queueSubmitDesc.commandBufferNum = 1;
+        queueSubmitDesc.signalFences = &signalFence;
+        queueSubmitDesc.signalFenceNum = 1;
 
-    NRI.QueueSignal(*m_CommandQueue, *m_FrameFence, 1 + frameIndex);
+        NRI.QueueSubmit(*m_CommandQueue, queueSubmitDesc);
+    }
+
+    // Present
+    NRI.QueuePresent(*m_SwapChain);
 
     // Cap FPS if requested
     float msLimit = m_Settings.limitFps ? 1000.0f / m_Settings.maxFps : 0.0f;

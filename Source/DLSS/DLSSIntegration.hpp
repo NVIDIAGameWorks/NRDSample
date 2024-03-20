@@ -3,6 +3,8 @@
 #include <assert.h> // assert
 #include <stdio.h> // printf
 
+static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 125, "Unsupported NRI version!");
+
 // An ugly temp workaround until DLSS fix the problem
 #ifndef _WIN32
 
@@ -101,8 +103,8 @@ void DlssIntegration::SetupDeviceExtensions(nri::DeviceCreationDesc& desc)
 
 inline NVSDK_NGX_Resource_VK DlssIntegration::SetupVulkanTexture(const DlssTexture& texture, bool isStorage)
 {
-    VkImage image = (VkImage)NRI.GetTextureNativeObject(*texture.resource, 0);
-    VkImageView view = (VkImageView)NRI.GetDescriptorNativeObject(*texture.descriptor, 0);
+    VkImage image = (VkImage)NRI.GetTextureNativeObject(*texture.resource);
+    VkImageView view = (VkImageView)NRI.GetDescriptorNativeObject(*texture.descriptor);
     VkImageSubresourceRange subresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     VkFormat format = (VkFormat)nri::nriConvertNRIFormatToVK(texture.format);
 
@@ -178,15 +180,19 @@ bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInit
 {
     const uint32_t creationNodeMask = 0x1;
     const uint32_t visibilityNodeMask = 0x1;
+    const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
 
+    // Prepare
     nri::CommandAllocator* commandAllocator;
     NRI.CreateCommandAllocator(*commandQueue, commandAllocator);
 
     nri::CommandBuffer* commandBuffer;
     NRI.CreateCommandBuffer(*commandAllocator, commandBuffer);
 
-    const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
+    nri::Fence* fence;
+    NRI.CreateFence(*m_Device, 0, fence);
 
+    // Record
     int32_t flags = NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
     flags |= desc.hasHdrContent ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR : 0;
     flags |= desc.hasInvertedDepth ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0;
@@ -197,7 +203,7 @@ bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInit
         return false;
 
     NVSDK_NGX_Result result = NVSDK_NGX_Result_Success;
-    NRI.BeginCommandBuffer(*commandBuffer, nullptr, 0);
+    NRI.BeginCommandBuffer(*commandBuffer, nullptr);
     {
         // SR
         if (NVSDK_NGX_SUCCEED(result))
@@ -236,23 +242,25 @@ bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInit
     }
     NRI.EndCommandBuffer(*commandBuffer);
 
+    // Submit & wait for completion
     if (NVSDK_NGX_SUCCEED(result))
     {
-        // Submit
+        nri::FenceSubmitDesc signalFence = {};
+        signalFence.fence = fence;
+        signalFence.value = 1;
+
         nri::QueueSubmitDesc queueSubmitDesc = {};
         queueSubmitDesc.commandBuffers = &commandBuffer;
         queueSubmitDesc.commandBufferNum = 1;
+        queueSubmitDesc.signalFences = &signalFence;
+        queueSubmitDesc.signalFenceNum = 1;
 
         NRI.QueueSubmit(*commandQueue, queueSubmitDesc);
-
-        // Wait for completion
-        nri::Fence* fence;
-        NRI.CreateFence(*m_Device, 0, fence);
-        NRI.QueueSignal(*commandQueue, *fence, 1);
         NRI.Wait(*fence, 1);
-        NRI.DestroyFence(*fence);
     }
 
+    // Cleanup
+    NRI.DestroyFence(*fence);
     NRI.DestroyCommandBuffer(*commandBuffer);
     NRI.DestroyCommandAllocator(*commandAllocator);
 
@@ -266,10 +274,10 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
     NVSDK_NGX_Result result = NVSDK_NGX_Result_Fail;
     if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D12)
     {
-        ID3D12Resource* resourceInput = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texInput.resource, 0);
-        ID3D12Resource* resourceMv = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texMv.resource, 0);
-        ID3D12Resource* resourceDepth = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texDepth.resource, 0);
-        ID3D12Resource* resourceOutput = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texOutput.resource, 0);
+        ID3D12Resource* resourceInput = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texInput.resource);
+        ID3D12Resource* resourceMv = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texMv.resource);
+        ID3D12Resource* resourceDepth = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texDepth.resource);
+        ID3D12Resource* resourceOutput = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texOutput.resource);
 
         ID3D12GraphicsCommandList* d3dCommandList = (ID3D12GraphicsCommandList*)NRI.GetCommandBufferNativeObject(*commandBuffer);
         {
@@ -316,10 +324,10 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
     }
     else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D11)
     {
-        ID3D11Resource* resourceInput = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texInput.resource, 0);
-        ID3D11Resource* resourceMv = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texMv.resource, 0);
-        ID3D11Resource* resourceDepth = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texDepth.resource, 0);
-        ID3D11Resource* resourceOutput = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texOutput.resource, 0);
+        ID3D11Resource* resourceInput = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texInput.resource);
+        ID3D11Resource* resourceMv = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texMv.resource);
+        ID3D11Resource* resourceDepth = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texDepth.resource);
+        ID3D11Resource* resourceOutput = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texOutput.resource);
 
         ID3D11DeviceContext* d3d11DeviceContext = (ID3D11DeviceContext*)NRI.GetCommandBufferNativeObject(*commandBuffer);
         {
