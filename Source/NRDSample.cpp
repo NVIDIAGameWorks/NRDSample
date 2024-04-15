@@ -77,6 +77,8 @@ const std::vector<uint32_t> RELAX_interior_improveMeTests =
     96, 114, 144, 148, 156, 159
 }};
 
+// TODO: add tests for SIGMA, active when "Shadow" visualization is on
+
 //=================================================================================
 
 #define _STRINGIFY(x) #x
@@ -457,7 +459,7 @@ public:
 
     inline float GetDenoisingRange() const
     { return 4.0f * m_Scene.aabb.GetRadius(); }
-    
+
     inline bool IsNisAllowed() const
     { return m_Settings.separator == 0.0f && !m_ShowValidationOverlay; }
 
@@ -3050,15 +3052,16 @@ void Sample::CreateResources(nri::Format swapChainFormat)
 
     const uint16_t w = (uint16_t)m_RenderResolution.x;
     const uint16_t h = (uint16_t)m_RenderResolution.y;
-    const uint64_t instanceDataSize = m_Scene.instances.size() * sizeof(InstanceData);
+    const uint64_t instanceNum = m_Scene.instances.size() + MAX_ANIMATED_INSTANCE_NUM;
+    const uint64_t instanceDataSize = instanceNum * sizeof(InstanceData);
     const uint64_t worldScratchBufferSize = NRI.GetAccelerationStructureBuildScratchBufferSize(*Get(AccelerationStructure::TLAS_World));
     const uint64_t lightScratchBufferSize = NRI.GetAccelerationStructureBuildScratchBufferSize(*Get(AccelerationStructure::TLAS_Emissive));
 
     std::vector<DescriptorDesc> descriptorDescs;
 
-    m_InstanceData.resize(m_Scene.instances.size());
-    m_WorldTlasData.resize(m_Scene.instances.size());
-    m_LightTlasData.resize(m_Scene.instances.size());
+    m_InstanceData.resize(instanceNum);
+    m_WorldTlasData.resize(instanceNum);
+    m_LightTlasData.resize(instanceNum);
 
     // Buffers (DEVICE, read-only)
     CreateBuffer(descriptorDescs, "Buffer::InstanceData", instanceDataSize / sizeof(InstanceData), sizeof(InstanceData), nri::BufferUsageBits::SHADER_RESOURCE, nri::Format::UNKNOWN);
@@ -3163,7 +3166,7 @@ void Sample::CreateResources(nri::Format swapChainFormat)
         nri::BufferViewDesc constantBufferViewDesc = {};
         constantBufferViewDesc.viewType = nri::BufferViewType::CONSTANT;
         constantBufferViewDesc.buffer = NRI.GetStreamerConstantBuffer(*m_Streamer);
-        
+
         constantBufferViewDesc.size = helper::Align(sizeof(GlobalConstants), deviceDesc.constantBufferOffsetAlignment);
         NRI_ABORT_ON_FAILURE(NRI.CreateBufferView(constantBufferViewDesc, descriptor));
         m_Descriptors.push_back(descriptor);
@@ -3229,7 +3232,7 @@ void Sample::CreateDescriptorSets()
 {
     nri::DescriptorSet* descriptorSet = nullptr;
 
-    
+
     { // Global constant buffer & samplers
         NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, 0, &descriptorSet, 1, 0));
         m_DescriptorSets.push_back(descriptorSet);
@@ -3247,7 +3250,7 @@ void Sample::CreateDescriptorSets()
         };
 
         NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
-        
+
         nri::Descriptor* constantBuffer = Get(Descriptor::Global_ConstantBuffer);
         NRI.UpdateDynamicConstantBuffers(*descriptorSet, 0, 1, &constantBuffer);
     }
@@ -3275,7 +3278,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::ComposedDiff_Texture),
             Get(Descriptor::ComposedSpec_ViewZ_Texture),
             Get(Descriptor::Ambient_Texture),
-            Get(Descriptor((uint32_t)Descriptor::MaterialTextures + utils::StaticTexture::ScramblingRanking1spp)),
+            Get(Descriptor((uint32_t)Descriptor::MaterialTextures + utils::StaticTexture::ScramblingRanking16spp)),
             Get(Descriptor((uint32_t)Descriptor::MaterialTextures + utils::StaticTexture::SobolSequence)),
         };
 
@@ -4128,7 +4131,7 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, uint32_t maxAccumulatedFr
     float3 cameraOrigin = m_Camera.state.position + m_Camera.state.mViewToWorld.GetCol3().xmm;
 
     float emissionIntensity = m_Settings.emissionIntensity * float(m_Settings.emission);
-    float baseMipBias = ((m_Settings.TAA || IsDlssEnabled()) ? -1.0f : 0.0f) + log2f(m_Settings.resolutionScale);
+    float baseMipBias = ((m_Settings.TAA || IsDlssEnabled()) ? -0.5f : 0.0f) + log2f(m_Settings.resolutionScale);
     float nearZ = (m_PositiveZ ? 1.0f : -1.0f) * NEAR_Z * m_Settings.meterToUnitsMultiplier;
     float mipBias = baseMipBias + log2f(renderSize.x / outputSize.x);
     float taaMaxAccumulatedFramesNum = Min(0.25f * 1000.0f / m_Timer.GetSmoothedFrameTime(), 30.0f);
@@ -4638,7 +4641,13 @@ void Sample::RenderFrame(uint32_t frameIndex)
         { // Shadow denoising
             helper::Annotation annotation(NRI, commandBuffer, "Shadow denoising");
 
+            float3 sunDir = GetSunDirection();
+
             nrd::SigmaSettings shadowSettings = {};
+            shadowSettings.lightDirection[0] = sunDir.x;
+            shadowSettings.lightDirection[1] = sunDir.y;
+            shadowSettings.lightDirection[2] = sunDir.z;
+
             nrd::Identifier denoiser = NRD_ID(SIGMA_SHADOW_TRANSLUCENCY);
 
             m_NRD.SetDenoiserSettings(denoiser, &shadowSettings);

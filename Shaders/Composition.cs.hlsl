@@ -65,8 +65,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
 
     // Direct sun lighting * shadow + emission
     float4 shadowData = gIn_Shadow[ pixelPos ];
-    shadowData = SIGMA_BackEnd_UnpackShadow( shadowData );
-    float3 shadow = lerp( shadowData.yzw, 1.0, shadowData.x );
+    float3 shadow = SIGMA_BackEnd_UnpackShadow( shadowData ).yzw;
 
     float3 Ldirect = gIn_DirectLighting[ pixelPos ];
     if( gOnScreen < SHOW_INSTANCE_INDEX )

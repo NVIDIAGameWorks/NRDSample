@@ -129,7 +129,7 @@ float2 GetConeAngleFromAngularRadius( float mip, float tanConeAngle )
 
 float2 GetConeAngleFromRoughness( float mip, float roughness )
 {
-    float coneAngle = tan( STL::ImportanceSampling::GetSpecularLobeHalfAngle( roughness ) ); // TODO:  * 0.33333?
+    float coneAngle = STL::ImportanceSampling::GetSpecularLobeTanHalfAngle( roughness );
 
     return GetConeAngleFromAngularRadius( mip, coneAngle );
 }

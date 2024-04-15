@@ -15,7 +15,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 NRI_RESOURCE( Texture2D<float3>, gIn_PrevComposedDiff, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_PrevComposedSpec_PrevViewZ, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 2, 1 );
-NRI_RESOURCE( Texture2D<uint3>, gIn_Scrambling_Ranking_1spp, t, 3, 1 );
+NRI_RESOURCE( Texture2D<uint3>, gIn_Scrambling_Ranking_16spp, t, 3, 1 );
 NRI_RESOURCE( Texture2D<uint4>, gIn_Sobol, t, 4, 1 );
 
 // Outputs
@@ -37,9 +37,9 @@ NRI_RESOURCE( RWTexture2D<float4>, gOut_Spec, u, 10, 1 );
 
 float2 GetBlueNoise( Texture2D<uint3> texScramblingRanking, uint2 pixelPos, bool isCheckerboard, uint seed, uint sampleIndex, uint sppVirtual = 1, uint spp = 1 )
 {
-    // Final SPP - total samples per pixel ( there is a different "gIn_Scrambling_Ranking" texture! )
-    // SPP - samples per pixel taken in a single frame ( must be POW of 2! )
-    // Virtual SPP - "Final SPP / SPP" - samples per pixel distributed in time ( across frames )
+    // spp - samples per pixel taken in a single frame ( must be POW of 2! )
+    // virtualSpp - samples per pixel distributed in time ( across frames )
+    // "Xspp" in "gIn_Scrambling_Ranking" = virtualSpp * spp, there is a dedicated texture in "_Data/Textures/"!
 
     // Based on:
     //     https://eheitzresearch.wordpress.com/772-2/
@@ -343,7 +343,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 float diffuseProbability = EstimateDiffuseProbability( geometryProps, materialProps ) * float( !geometryProps.IsHair( ) );
 
                 // Clamp probability to a sane range to guarantee a sample in 3x3 ( or 5x5 ) area
-                float rnd = STL::Rng::Hash::GetFloat( );
+                float rnd = STL::Rng::Hash::GetFloat( ); // blue noise 32spp for 1st bounce
                 if( gTracingMode == RESOLUTION_FULL_PROBABILISTIC && bounceIndex == 1 )
                 {
                     diffuseProbability = float( diffuseProbability != 0.0 ) * clamp( diffuseProbability, gMinProbability, 1.0 - gMinProbability );
@@ -805,8 +805,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     }
 
     // G-buffer
-    float diffuseProbability = EstimateDiffuseProbability( geometryProps0, materialProps0 );
-    uint materialID = geometryProps0.IsHair( ) ? MATERIAL_ID_HAIR : ( diffuseProbability != 0.0 ? MATERIAL_ID_DEFAULT : MATERIAL_ID_METAL );
+    uint materialID = geometryProps0.IsHair( ) ? MATERIAL_ID_HAIR : ( materialProps0.metalness < 0.5 ? MATERIAL_ID_DEFAULT : MATERIAL_ID_METAL );
 
     #if( USE_SIMULATED_MATERIAL_ID_TEST == 1 )
         if( gDebug == 0.0 )
@@ -850,7 +849,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     gOut_DirectEmission[ pixelPos ] = materialProps0.Lemi;
 
     // Sun shadow
-    float2 rnd = GetBlueNoise( gIn_Scrambling_Ranking_1spp, pixelPos, false, 0, 0 );
+    float2 rnd = GetBlueNoise( gIn_Scrambling_Ranking_16spp, pixelPos, false, 0, 0, 16 ); // TODO: STBN or blue noise 32rpp?
     if( gDenoiserType == DENOISER_REFERENCE )
         rnd = STL::Rng::Hash::GetFloat2( );
     rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;
@@ -868,11 +867,12 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     {
         GeometryProps geometryPropsShadow = CastRay( Xoffset, sunDirection, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_ALL, 0 );
 
+        // Update hit dist
+        shadowHitDist += geometryPropsShadow.tmin;
+
+        // Terminate on miss ( before updating translucency! )
         if( geometryPropsShadow.IsSky( ) )
-        {
-            shadowHitDist = shadowHitDist == 0.0 ? INF : shadowHitDist;
             break;
-        }
 
         // ( Biased ) Cheap approximation of shadows through glass
         float NoV = abs( dot( geometryPropsShadow.N, sunDirection ) );
@@ -880,11 +880,10 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
         // Go to the next hit
         Xoffset += sunDirection * ( geometryPropsShadow.tmin + 0.001 );
-        shadowHitDist += geometryPropsShadow.tmin;
     }
 
     float4 shadowData1;
-    float2 shadowData0 = SIGMA_FrontEnd_PackShadow( viewZ, shadowHitDist == INF ? NRD_FP16_MAX : shadowHitDist, gTanSunAngularRadius, shadowTranslucency, shadowData1 );
+    float2 shadowData0 = SIGMA_FrontEnd_PackShadow( viewZ, shadowHitDist, gTanSunAngularRadius, shadowTranslucency, shadowData1 );
 
     gOut_ShadowData[ pixelPos ] = shadowData0;
     gOut_Shadow_Translucency[ pixelPos ] = shadowData1;
