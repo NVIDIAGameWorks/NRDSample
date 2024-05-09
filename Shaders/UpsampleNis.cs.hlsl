@@ -63,7 +63,7 @@ NRI_RESOURCE( RWTexture2D<float4>, gOut_Image, u, 0, 1 );
 #define NIS_HLSL                    1
 #define NIS_VIEWPORT_SUPPORT        0
 
-#ifndef COMPILER_FXC
+#if( NRI_SHADER_MODEL >= 62 )
     #define NIS_HLSL_6_2            1
 #endif
 

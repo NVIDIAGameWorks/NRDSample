@@ -141,7 +141,7 @@ enum class Texture : uint32_t
     Shadow,
     Diff,
     Spec,
-    Unfiltered_ShadowData,
+    Unfiltered_Penumbra,
     Unfiltered_Diff,
     Unfiltered_Spec,
     Unfiltered_Shadow_Translucency,
@@ -240,8 +240,8 @@ enum class Descriptor : uint32_t
     Diff_StorageTexture,
     Spec_Texture,
     Spec_StorageTexture,
-    Unfiltered_ShadowData_Texture,
-    Unfiltered_ShadowData_StorageTexture,
+    Unfiltered_Penumbra_Texture,
+    Unfiltered_Penumbra_StorageTexture,
     Unfiltered_Diff_Texture,
     Unfiltered_Diff_StorageTexture,
     Unfiltered_Spec_Texture,
@@ -553,6 +553,7 @@ private:
     nrd::CommonSettings m_CommonSettings = {};
     nrd::RelaxSettings m_RelaxSettings = {};
     nrd::ReblurSettings m_ReblurSettings = {};
+    nrd::SigmaSettings m_SigmaSettings = {};
     nrd::ReferenceSettings m_ReferenceSettings = {};
 
     // DLSS
@@ -606,6 +607,7 @@ private:
     uint32_t m_LastSelectedTest = uint32_t(-1);
     uint32_t m_TestNum = uint32_t(-1);
     int32_t m_DlssQuality = int32_t(-1);
+    float m_SigmaTemporalStabilizationStrength = 1.0f;
     float m_UiWidth = 0.0f;
     float m_MinResolutionScale = 0.5f;
     float m_DofAperture = 0.0f;
@@ -848,15 +850,17 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
                 nrd::Denoiser denoiser = (nrd::Denoiser)i;
                 const char* methodName = nrd::GetDenoiserString(denoiser);
 
-                const nrd::DenoiserDesc denoiserDesc = {0, denoiser, w, h};
+                const nrd::DenoiserDesc denoiserDesc = {0, denoiser};
 
                 nrd::InstanceCreationDesc instanceCreationDesc = {};
                 instanceCreationDesc.denoisers = &denoiserDesc;
                 instanceCreationDesc.denoisersNum = 1;
 
-                NrdIntegration instance(2);
-                NRI_ABORT_ON_FALSE( instance.Initialize(instanceCreationDesc, *m_Device, NRI, NRI) );
+                NrdIntegration instance(BUFFERED_FRAME_MAX_NUM, NRD_ALLOW_DESCRIPTOR_CACHING, "Unused");
+                NRI_ABORT_ON_FALSE( instance.Initialize(w, h, instanceCreationDesc, *m_Device, NRI, NRI) );
+
                 printf("| %10s | %36s | %16.2f | %16.2f | %16.2f |\n", i == 0 ? resolution : "", methodName, instance.GetTotalMemoryUsageInMb(), instance.GetPersistentMemoryUsageInMb(), instance.GetAliasableMemoryUsageInMb());
+
                 instance.Destroy();
             }
 
@@ -935,13 +939,16 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     BeginUI();
     if (!IsKeyPressed(Key::LAlt) && m_ShowUi)
     {
+        const nrd::LibraryDesc& nrdLibraryDesc = nrd::GetLibraryDesc();
+
+        char buf[256];
+        snprintf(buf, sizeof(buf) - 1, "NRD v%u.%u.%u (%u.%u) [Tab]", nrdLibraryDesc.versionMajor, nrdLibraryDesc.versionMinor, nrdLibraryDesc.versionBuild, nrdLibraryDesc.normalEncoding, nrdLibraryDesc.roughnessEncoding);
+
         ImGui::SetNextWindowPos(ImVec2(m_Settings.windowAlignment ? 5.0f : GetOutputResolution().x - m_UiWidth - 5.0f, 5.0f));
         ImGui::SetNextWindowSize(ImVec2(0.0f, 0.0f));
-        ImGui::Begin("Settings [Tab]", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
+        ImGui::Begin(buf, nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
         {
             float avgFrameTime = m_Timer.GetVerySmoothedFrameTime();
-
-            char buf[256];
             snprintf(buf, sizeof(buf), "%.1f FPS (%.2f ms)", 1000.0f / avgFrameTime, avgFrameTime);
 
             ImVec4 colorFps = UI_GREEN;
@@ -968,7 +975,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
             else
             {
                 // "Camera" section
-                ImGui::NewLine();
                 ImGui::PushStyleColor(ImGuiCol_Text, UI_HEADER);
                 ImGui::PushStyleColor(ImGuiCol_Header, UI_HEADER_BACKGROUND);
                 bool isUnfolded = ImGui::CollapsingHeader("CAMERA (press RIGHT MOUSE BOTTON for free-fly mode)", ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen);
@@ -1068,7 +1074,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                 ImGui::PopID();
 
                 // "Antialiasing, upscaling & sharpening" section
-                ImGui::NewLine();
                 ImGui::PushStyleColor(ImGuiCol_Text, UI_HEADER);
                 ImGui::PushStyleColor(ImGuiCol_Header, UI_HEADER_BACKGROUND);
                 isUnfolded = ImGui::CollapsingHeader("ANTIALIASING & UPSCALING", ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen);
@@ -1109,7 +1114,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                 ImGui::PopID();
 
                 // "Materials" section
-                ImGui::NewLine();
                 ImGui::PushStyleColor(ImGuiCol_Text, UI_HEADER);
                 ImGui::PushStyleColor(ImGuiCol_Header, UI_HEADER_BACKGROUND);
                 isUnfolded = ImGui::CollapsingHeader("MATERIALS", ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen);
@@ -1141,7 +1145,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                 // "Hair" section
                 if (m_SceneFile.find("Hair") != std::string::npos)
                 {
-                    ImGui::NewLine();
                     ImGui::PushStyleColor(ImGuiCol_Text, UI_HEADER);
                     ImGui::PushStyleColor(ImGuiCol_Header, UI_HEADER_BACKGROUND);
                     isUnfolded = ImGui::CollapsingHeader("HAIR", ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen);
@@ -1164,7 +1167,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     // "World" section
                     snprintf(buf, sizeof(buf) - 1, "WORLD%s", (m_Settings.animateSun || m_Settings.animatedObjects || m_Settings.animateScene) ? (m_Settings.pauseAnimation ? " (SPACE - unpause)" : " (SPACE - pause)") : "");
 
-                    ImGui::NewLine();
                     ImGui::PushStyleColor(ImGuiCol_Text, UI_HEADER);
                     ImGui::PushStyleColor(ImGuiCol_Header, UI_HEADER_BACKGROUND);
                     isUnfolded = ImGui::CollapsingHeader(buf, ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen);
@@ -1233,7 +1235,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     ImGui::PopID();
 
                     // "Indirect rays" section
-                    ImGui::NewLine();
                     ImGui::PushStyleColor(ImGuiCol_Text, UI_HEADER);
                     ImGui::PushStyleColor(ImGuiCol_Header, UI_HEADER_BACKGROUND);
                     isUnfolded = ImGui::CollapsingHeader("INDIRECT RAYS", ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen);
@@ -1301,22 +1302,19 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                         "REBLUR_OCCLUSION",
                         "(unsupported)",
                     #elif( NRD_MODE == SH )
-                        "REBLUR_SH + SIGMA",
-                        "RELAX_SH + SIGMA",
+                        "REBLUR_SH",
+                        "RELAX_SH",
                     #elif( NRD_MODE == DIRECTIONAL_OCCLUSION )
                         "REBLUR_DIRECTIONAL_OCCLUSION",
                         "(unsupported)",
                     #else
-                        "REBLUR + SIGMA",
-                        "RELAX + SIGMA",
+                        "REBLUR",
+                        "RELAX",
                     #endif
                         "REFERENCE",
                     };
-                    const nrd::LibraryDesc& nrdLibraryDesc = nrd::GetLibraryDesc();
-                    snprintf(buf, sizeof(buf) - 1, "NRD v%u.%u.%u (%u.%u) - %s [PgDown / PgUp]", nrdLibraryDesc.versionMajor, nrdLibraryDesc.versionMinor, nrdLibraryDesc.versionBuild,
-                        nrdLibraryDesc.normalEncoding, nrdLibraryDesc.roughnessEncoding, denoiser[m_Settings.denoiser]);
+                    snprintf(buf, sizeof(buf) - 1, "NRD/%s [PgDown / PgUp]", denoiser[m_Settings.denoiser]);
 
-                    ImGui::NewLine();
                     ImGui::PushStyleColor(ImGuiCol_Text, UI_HEADER);
                     ImGui::PushStyleColor(ImGuiCol_Header, UI_HEADER_BACKGROUND);
                     isUnfolded = ImGui::CollapsingHeader(buf, ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen);
@@ -1660,8 +1658,21 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     }
                     ImGui::PopID();
 
+                    // NRD/SIGMA
+                    ImGui::PushStyleColor(ImGuiCol_Text, UI_HEADER);
+                    ImGui::PushStyleColor(ImGuiCol_Header, UI_HEADER_BACKGROUND);
+                    isUnfolded = ImGui::CollapsingHeader("NRD/SIGMA", ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen);
+                    ImGui::PopStyleColor();
+                    ImGui::PopStyleColor();
+
+                    ImGui::PushID("NRD/SIGMA");
+                    if (isUnfolded)
+                    {
+                        ImGui::SliderFloat("Stabilization (%)", &m_SigmaSettings.stabilizationStrength, 0.0f, 1.0f, "%.2f");
+                    }
+                    ImGui::PopID();
+
                     // "Other" section
-                    ImGui::NewLine();
                     ImGui::PushStyleColor(ImGuiCol_Text, UI_HEADER);
                     ImGui::PushStyleColor(ImGuiCol_Header, UI_HEADER_BACKGROUND);
                     isUnfolded = ImGui::CollapsingHeader("OTHER", ImGuiTreeNodeFlags_CollapsingHeader | ImGuiTreeNodeFlags_DefaultOpen);
@@ -1693,8 +1704,8 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 sampleShaders +=
                                     " --useAPI --binary --flatten --stripReflection --WX --colorize"
                                     " -c Shaders.cfg -o _Shaders --sourceDir Shaders"
-                                    " -I Shaders -I External -I External/NGX -I External/NRD/External -I External/NRIFramework/Shaders"
-                                    " -D COMPILER_DXC -D NRD_NORMAL_ENCODING=" STRINGIFY(NRD_NORMAL_ENCODING) " -D NRD_ROUGHNESS_ENCODING=" STRINGIFY(NRD_ROUGHNESS_ENCODING);
+                                    " -I Shaders -I External -I External/NGX -I External/NRD/External -I External/NRIFramework/External/NRI/Include"
+                                    " -D NRD_NORMAL_ENCODING=" STRINGIFY(NRD_NORMAL_ENCODING) " -D NRD_ROUGHNESS_ENCODING=" STRINGIFY(NRD_ROUGHNESS_ENCODING);
 
                                 nrdShaders +=
                                     " --useAPI --header --binary --flatten --stripReflection --WX --allResourcesBound --colorize"
@@ -1710,7 +1721,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 }
                                 else
                                 {
-                                    std::string spirv = " -p SPIRV --compiler \"" STRINGIFY(DXC_SPIRV_PATH) "\" -D VULKAN --hlsl2021 --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400";
+                                    std::string spirv = " -p SPIRV --compiler \"" STRINGIFY(DXC_SPIRV_PATH) "\" --hlsl2021 --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400";
                                     sampleShaders += spirv;
                                     nrdShaders += spirv;
                                 }
@@ -1749,7 +1760,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     ImGui::PopID();
 
                     // "Tests" section
-                    ImGui::NewLine();
                     ImGui::PushStyleColor(ImGuiCol_Text, UI_HEADER);
                     ImGui::PushStyleColor(ImGuiCol_Header, UI_HEADER_BACKGROUND);
                     isUnfolded = ImGui::CollapsingHeader("TESTS [F2]", ImGuiTreeNodeFlags_CollapsingHeader);
@@ -2222,6 +2232,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     m_CommonSettings.rectSize[1] = (uint16_t)(m_RenderResolution.y * m_Settings.resolutionScale + 0.5f);
     m_CommonSettings.rectSizePrev[0] = (uint16_t)(m_RenderResolution.x * m_SettingsPrev.resolutionScale + 0.5f);
     m_CommonSettings.rectSizePrev[1] = (uint16_t)(m_RenderResolution.y * m_SettingsPrev.resolutionScale + 0.5f);
+    m_CommonSettings.viewZScale = 1.0f;
     m_CommonSettings.denoisingRange = GetDenoisingRange();
     m_CommonSettings.disocclusionThreshold = m_Settings.disocclusionThreshold * 0.01f;
     m_CommonSettings.splitScreen = (m_Settings.denoiser == DENOISER_REFERENCE || m_Settings.RR) ? 1.0f : m_Settings.separator;
@@ -3100,7 +3111,7 @@ void Sample::CreateResources(nri::Format swapChainFormat)
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::Spec", dataFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
-    CreateTexture(descriptorDescs, "Texture::Unfiltered_ShadowData", nri::Format::RG16_SFLOAT, w, h, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::Unfiltered_Penumbra", nri::Format::R16_SFLOAT, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::Unfiltered_Diff", dataFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
@@ -3278,7 +3289,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::ComposedDiff_Texture),
             Get(Descriptor::ComposedSpec_ViewZ_Texture),
             Get(Descriptor::Ambient_Texture),
-            Get(Descriptor((uint32_t)Descriptor::MaterialTextures + utils::StaticTexture::ScramblingRanking16spp)),
+            Get(Descriptor((uint32_t)Descriptor::MaterialTextures + utils::StaticTexture::ScramblingRanking4spp)),
             Get(Descriptor((uint32_t)Descriptor::MaterialTextures + utils::StaticTexture::SobolSequence)),
         };
 
@@ -3291,7 +3302,7 @@ void Sample::CreateDescriptorSets()
             Get(Descriptor::DirectLighting_StorageTexture),
             Get(Descriptor::DirectEmission_StorageTexture),
             Get(Descriptor::PsrThroughput_StorageTexture),
-            Get(Descriptor::Unfiltered_ShadowData_StorageTexture),
+            Get(Descriptor::Unfiltered_Penumbra_StorageTexture),
             Get(Descriptor::Unfiltered_Shadow_Translucency_StorageTexture),
             Get(Descriptor::Unfiltered_Diff_StorageTexture),
             Get(Descriptor::Unfiltered_Spec_StorageTexture),
@@ -4382,8 +4393,8 @@ void Sample::RenderFrame(uint32_t frameIndex)
     #endif
 
         // SIGMA
-        NrdIntegration_SetResource(userPool, nrd::ResourceType::IN_SHADOWDATA, {&GetState(Texture::Unfiltered_ShadowData), GetFormat(Texture::Unfiltered_ShadowData)});
-        NrdIntegration_SetResource(userPool, nrd::ResourceType::IN_SHADOW_TRANSLUCENCY, {&GetState(Texture::Unfiltered_Shadow_Translucency), GetFormat(Texture::Unfiltered_Shadow_Translucency)});
+        NrdIntegration_SetResource(userPool, nrd::ResourceType::IN_PENUMBRA, {&GetState(Texture::Unfiltered_Penumbra), GetFormat(Texture::Unfiltered_Penumbra)});
+        NrdIntegration_SetResource(userPool, nrd::ResourceType::IN_TRANSLUCENCY, {&GetState(Texture::Unfiltered_Shadow_Translucency), GetFormat(Texture::Unfiltered_Shadow_Translucency)});
         NrdIntegration_SetResource(userPool, nrd::ResourceType::OUT_SHADOW_TRANSLUCENCY, {&GetState(Texture::Shadow), GetFormat(Texture::Shadow)});
 
         // REFERENCE
@@ -4614,7 +4625,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 {Texture::DirectLighting, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
                 {Texture::DirectEmission, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
                 {Texture::PsrThroughput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
-                {Texture::Unfiltered_ShadowData, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::Unfiltered_Penumbra, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
                 {Texture::Unfiltered_Shadow_Translucency, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
                 {Texture::Unfiltered_Diff, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
                 {Texture::Unfiltered_Spec, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
@@ -4643,14 +4654,13 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
             float3 sunDir = GetSunDirection();
 
-            nrd::SigmaSettings shadowSettings = {};
-            shadowSettings.lightDirection[0] = sunDir.x;
-            shadowSettings.lightDirection[1] = sunDir.y;
-            shadowSettings.lightDirection[2] = sunDir.z;
+            m_SigmaSettings.lightDirection[0] = sunDir.x;
+            m_SigmaSettings.lightDirection[1] = sunDir.y;
+            m_SigmaSettings.lightDirection[2] = sunDir.z;
 
             nrd::Identifier denoiser = NRD_ID(SIGMA_SHADOW_TRANSLUCENCY);
 
-            m_NRD.SetDenoiserSettings(denoiser, &shadowSettings);
+            m_NRD.SetDenoiserSettings(denoiser, &m_SigmaSettings);
             m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool);
 
             //RestoreBindings(commandBuffer, frame); // Bindings will be restored in the next section

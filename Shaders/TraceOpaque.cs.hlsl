@@ -15,7 +15,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 NRI_RESOURCE( Texture2D<float3>, gIn_PrevComposedDiff, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_PrevComposedSpec_PrevViewZ, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 2, 1 );
-NRI_RESOURCE( Texture2D<uint3>, gIn_Scrambling_Ranking_16spp, t, 3, 1 );
+NRI_RESOURCE( Texture2D<uint3>, gIn_ScramblingRanking4spp, t, 3, 1 );
 NRI_RESOURCE( Texture2D<uint4>, gIn_Sobol, t, 4, 1 );
 
 // Outputs
@@ -794,7 +794,6 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     // Early out - sky
     if( geometryProps0.IsSky( ) )
     {
-        gOut_ShadowData[ pixelPos ] = SIGMA_FrontEnd_PackShadow( viewZ, 0.0, 0.0 );
         gOut_DirectEmission[ pixelPos ] = materialProps0.Lemi;
 
         #if( USE_INF_STRESS_TEST == 1 )
@@ -849,7 +848,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     gOut_DirectEmission[ pixelPos ] = materialProps0.Lemi;
 
     // Sun shadow
-    float2 rnd = GetBlueNoise( gIn_Scrambling_Ranking_16spp, pixelPos, false, 0, 0, 16 ); // TODO: STBN or blue noise 32rpp?
+    float2 rnd = GetBlueNoise( gIn_ScramblingRanking4spp, pixelPos, false, 0, 0, 4 );
     if( gDenoiserType == DENOISER_REFERENCE )
         rnd = STL::Rng::Hash::GetFloat2( );
     rnd = STL::ImportanceSampling::Cosine::GetRay( rnd ).xy;
@@ -882,11 +881,11 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         Xoffset += sunDirection * ( geometryPropsShadow.tmin + 0.001 );
     }
 
-    float4 shadowData1;
-    float2 shadowData0 = SIGMA_FrontEnd_PackShadow( viewZ, shadowHitDist, gTanSunAngularRadius, shadowTranslucency, shadowData1 );
+    float penumbra = SIGMA_FrontEnd_PackPenumbra( shadowHitDist, gTanSunAngularRadius );
+    float4 translucency = SIGMA_FrontEnd_PackTranslucency( shadowHitDist, shadowTranslucency );
 
-    gOut_ShadowData[ pixelPos ] = shadowData0;
-    gOut_Shadow_Translucency[ pixelPos ] = shadowData1;
+    gOut_ShadowData[ pixelPos ] = penumbra;
+    gOut_Shadow_Translucency[ pixelPos ] = translucency;
 
     // This code is needed to avoid self-intersections if tracing starts from crunched g-buffer coming from textures
     #if 0

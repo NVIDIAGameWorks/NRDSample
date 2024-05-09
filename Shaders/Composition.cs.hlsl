@@ -55,7 +55,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     z *= STL::Math::Sign( dot( N, gSunDirection_gExposure.xyz ) );
 
     // Early out - sky
-    if( abs( viewZ ) == INF )
+    if( abs( viewZ ) >= INF )
     {
         gOut_ComposedDiff[ pixelPos ] = Lemi * float( gOnScreen == SHOW_FINAL );
         gOut_ComposedSpec_ViewZ[ pixelPos ] = float4( 0, 0, 0, z );
@@ -153,10 +153,10 @@ void main( int2 pixelPos : SV_DispatchThreadId )
             float3 Nn = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos + int2( 0, 1 ) ] ).xyz;
             float3 Ns = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos + int2( 0, -1 ) ] ).xyz;
 
-            float Ze = gIn_ViewZ[ pixelPos + int2( 1, 0 ) ];
-            float Zw = gIn_ViewZ[ pixelPos + int2( -1, 0 ) ];
-            float Zn = gIn_ViewZ[ pixelPos + int2( 0, 1 ) ];
-            float Zs = gIn_ViewZ[ pixelPos + int2( 0, -1 ) ];
+            float Ze = gIn_ViewZ[ pixelPos + int2(  1,  0 ) ];
+            float Zw = gIn_ViewZ[ pixelPos + int2( -1,  0 ) ];
+            float Zn = gIn_ViewZ[ pixelPos + int2(  0,  1 ) ];
+            float Zs = gIn_ViewZ[ pixelPos + int2(  0, -1 ) ];
 
             float scale = NRD_SG_ReJitter( sg, sg, 0.0, V, 0.0, viewZ, Ze, Zw, Zn, Zs, N, Ne, Nw, Nn, Ns ).x;
 

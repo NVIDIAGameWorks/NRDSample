@@ -142,7 +142,7 @@ if (WIN32)
 else ()
     find_library (NGX_D_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
     find_library (NGX_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
-    find_file (DLSS_SR_DLL NAMES libnvidia-ngx-dlss.so.3.5.10 PATHS "External/NGX/lib/Linux_x86_64/rel")
+    find_file (DLSS_SR_DLL NAMES libnvidia-ngx-dlss.so.3.7.0 PATHS "External/NGX/lib/Linux_x86_64/rel")
 endif ()
 
 if (NGX_D_LIB AND NGX_LIB AND DLSS_SR_DLL)
@@ -172,8 +172,7 @@ set (SHADERMAKE_GENERAL_ARGS
     -I "External"
     -I "External/NGX"
     -I "External/NRD/External"
-    -I "External/NRIFramework/Shaders"
-    -D COMPILER_DXC
+    -I "External/NRIFramework/External/NRI/Include"
     -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
     -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}
 )
@@ -181,7 +180,7 @@ set (SHADERMAKE_GENERAL_ARGS
 if (WIN32)
     add_custom_target (${PROJECT_NAME}_Shaders ALL
         COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p DXIL --compiler "${DXC_PATH}"
-        COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p SPIRV --compiler "${DXC_SPIRV_PATH}" -D VULKAN --hlsl2021 --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400
+        COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p SPIRV --compiler "${DXC_SPIRV_PATH}" --hlsl2021 --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400
         DEPENDS ShaderMake
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         VERBATIM
@@ -189,7 +188,7 @@ if (WIN32)
     )
 else ()
     add_custom_target (${PROJECT_NAME}_Shaders ALL
-        COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p SPIRV --compiler "${DXC_SPIRV_PATH}" -D VULKAN --hlsl2021 --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400
+        COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p SPIRV --compiler "${DXC_SPIRV_PATH}" --hlsl2021 --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400
         DEPENDS ShaderMake
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         VERBATIM

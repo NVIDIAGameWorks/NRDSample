@@ -199,7 +199,7 @@ struct InstanceData
 // RESOURCES
 //===============================================================
 
-#include "Include/BindingBridge.hlsli"
+#include "NRICompatibility.hlsli"
 
 NRI_RESOURCE( cbuffer, GlobalConstants, b, 0, 0 )
 {
