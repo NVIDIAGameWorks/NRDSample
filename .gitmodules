@@ -13,3 +13,8 @@
 	url = https://github.com/NVIDIA/DLSS.git
 	branch = main
 	update = merge
+[submodule "External/SHARC"]
+	path = External/SHARC
+	url = https://github.com/NVIDIAGameWorks/SHARC.git
+	branch = main
+	update = merge

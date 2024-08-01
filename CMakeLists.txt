@@ -28,8 +28,6 @@ endif ()
 # Download dependencies using Packman
 if (WIN32)
     set (PACKMAN_EXT ".cmd")
-else()
-    set (PACKMAN_EXT ".sh")
 endif ()
 
 if ((CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64") OR(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64"))
@@ -168,6 +166,7 @@ set_source_files_properties(${SHADERS} PROPERTIES VS_TOOL_OVERRIDE "None")
 set (SHADERMAKE_GENERAL_ARGS
     --useAPI --binary --flatten --stripReflection --WX
     --sourceDir "Shaders"
+    --shaderModel 6_6
     -c Shaders.cfg
     -o "${SHADER_OUTPUT_PATH}"
     -I "Shaders"
@@ -175,14 +174,16 @@ set (SHADERMAKE_GENERAL_ARGS
     -I "External/NGX"
     -I "External/NRD/External"
     -I "External/NRIFramework/External/NRI/Include"
+    -I "External/SHARC/Include"
     -D NRD_NORMAL_ENCODING=${NRD_NORMAL_ENCODING}
     -D NRD_ROUGHNESS_ENCODING=${NRD_ROUGHNESS_ENCODING}
+    --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400
 )
 
 if (WIN32)
     add_custom_target (${PROJECT_NAME}_Shaders ALL
         COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p DXIL --compiler "${DXC_PATH}"
-        COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p SPIRV --compiler "${DXC_SPIRV_PATH}" --hlsl2021 --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400
+        COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p SPIRV --compiler "${DXC_SPIRV_PATH}" --hlsl2021
         DEPENDS ShaderMake
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         VERBATIM
@@ -190,7 +191,7 @@ if (WIN32)
     )
 else ()
     add_custom_target (${PROJECT_NAME}_Shaders ALL
-        COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p SPIRV --compiler "${DXC_SPIRV_PATH}" --hlsl2021 --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400
+        COMMAND ShaderMake ${SHADERMAKE_GENERAL_ARGS} -p SPIRV --compiler "${DXC_SPIRV_PATH}" --hlsl2021
         DEPENDS ShaderMake
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         VERBATIM

@@ -1,10 +1,15 @@
 
-NRI_RESOURCE( RaytracingAccelerationStructure, gWorldTlas, t, 0, 2 );
-NRI_RESOURCE( RaytracingAccelerationStructure, gLightTlas, t, 1, 2 );
-NRI_RESOURCE( StructuredBuffer<InstanceData>, gIn_InstanceData, t, 2, 2 );
-NRI_RESOURCE( StructuredBuffer<PrimitiveData>, gIn_PrimitiveData, t, 3, 2 );
-NRI_RESOURCE( StructuredBuffer<MorphedPrimitivePrevData>, gIn_MorphedPrimitivePrevPositions, t, 4, 2 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Textures[], t, 5, 2 );
+NRI_RESOURCE( RaytracingAccelerationStructure, gWorldTlas, t, 0, SET_RAY_TRACING );
+NRI_RESOURCE( RaytracingAccelerationStructure, gLightTlas, t, 1, SET_RAY_TRACING );
+NRI_RESOURCE( StructuredBuffer<InstanceData>, gIn_InstanceData, t, 2, SET_RAY_TRACING );
+NRI_RESOURCE( StructuredBuffer<PrimitiveData>, gIn_PrimitiveData, t, 3, SET_RAY_TRACING );
+NRI_RESOURCE( StructuredBuffer<MorphedPrimitivePrevPositions>, gIn_MorphedPrimitivePrevPositions, t, 4, SET_RAY_TRACING );
+NRI_RESOURCE( Texture2D<float4>, gIn_Textures[], t, 5, SET_RAY_TRACING );
+
+NRI_RESOURCE( RWStructuredBuffer<uint64_t>, gInOut_SharcHashEntriesBuffer, u, 0, SET_SHARC );
+NRI_RESOURCE( RWStructuredBuffer<uint>, gInOut_SharcHashCopyOffsetBuffer, u, 1, SET_SHARC );
+NRI_RESOURCE( RWStructuredBuffer<uint4>, gInOut_SharcVoxelDataBuffer, u, 2, SET_SHARC );
+NRI_RESOURCE( RWStructuredBuffer<uint4>, gInOut_SharcVoxelDataBufferPrev, u, 3, SET_SHARC );
 
 #define TEX_SAMPLER gLinearMipmapLinearSampler
 
@@ -15,55 +20,6 @@ NRI_RESOURCE( Texture2D<float4>, gIn_Textures[], t, 5, 2 );
 #endif
 
 #include "HairBRDF.hlsli"
-
-//====================================================================================================================================
-// GEOMETRY & MATERIAL PROPERTIES
-//====================================================================================================================================
-
-#ifndef VULKAN
-    // TODO: This code is not needed if HLSL 2021 is enabled. But currently
-    // it works only for latest DXC from VK SDK. DXC from Win SDK crashes!
-    // Keep an eye on "--hlsl2021" used in Cmake and C++.
-    int3 select( bool3 cmp, int3 a, int3 b )
-    {
-        int3 r;
-        r.x = cmp.x ? a.x : b.x;
-        r.y = cmp.y ? a.y : b.y;
-        r.z = cmp.z ? a.z : b.z;
-
-        return r;
-    }
-
-    float3 select( bool3 cmp, float3 a, float3 b )
-    {
-        float3 r;
-        r.x = cmp.x ? a.x : b.x;
-        r.y = cmp.y ? a.y : b.y;
-        r.z = cmp.z ? a.z : b.z;
-
-        return r;
-    }
-#endif
-
-float3 _GetXoffset( float3 X, float3 N )
-{
-    // TODO: try out: https://developer.nvidia.com/blog/solving-self-intersection-artifacts-in-directx-raytracing/
-
-    // RT Gems "A Fast and Robust Method for Avoiding Self-Intersection" ( updated version taken from Falcor )
-    // Moves the ray origin further from surface to prevent self-intersections, minimizes the distance.
-    const float origin = 1.0 / 16.0;
-    const float fScale = 3.0 / 65536.0;
-    const float iScale = 3.0 * 256.0;
-
-    // Per-component integer offset to bit representation of FP32 position
-    int3 iOff = int3( N * iScale );
-
-    // Select per-component between small fixed offset or variable offset depending on distance to origin
-    float3 iPos = asfloat( asint( X ) + select( X < 0.0, -iOff, iOff ) );
-    float3 fOff = N * fScale;
-
-    return select( abs( X ) < origin, X + fOff, iPos );
-}
 
 struct GeometryProps
 {
@@ -79,23 +35,16 @@ struct GeometryProps
     uint textureOffsetAndFlags;
     uint instanceIndex;
 
-    float3 GetXoffset( )
-    { return _GetXoffset( X, N ); }
+    float3 GetXoffset( float3 offsetDir, float amount = BOUNCE_RAY_OFFSET )
+    {
+        float viewZ = Geometry::AffineTransform( gWorldToView, X ).z;
+        amount *= gUnproject * lerp( abs( viewZ ), 1.0, abs( gOrthoMode ) );
 
-    bool IsStatic( )
-    { return ( textureOffsetAndFlags & ( FLAG_STATIC << FLAG_FIRST_BIT ) ) != 0; }
+        return X + offsetDir * amount;
+    }
 
-    bool IsDeformable( )
-    { return ( textureOffsetAndFlags & ( FLAG_DEFORMABLE << FLAG_FIRST_BIT ) ) != 0; }
-
-    bool IsTransparent( )
-    { return ( textureOffsetAndFlags & ( FLAG_TRANSPARENT << FLAG_FIRST_BIT ) ) != 0; }
-
-    bool IsForcedEmission( )
-    { return ( textureOffsetAndFlags & ( FLAG_FORCED_EMISSION << FLAG_FIRST_BIT ) ) != 0; }
-
-    bool IsHair( )
-    { return ( textureOffsetAndFlags & ( FLAG_HAIR << FLAG_FIRST_BIT ) ) != 0; }
+    bool Has( uint flag )
+    { return ( textureOffsetAndFlags & ( flag << FLAG_FIRST_BIT ) ) != 0; }
 
     uint GetBaseTexture( )
     { return textureOffsetAndFlags & NON_FLAG_MASK; }
@@ -105,18 +54,6 @@ struct GeometryProps
 
     bool IsSky( )
     { return tmin == INF; }
-};
-
-struct MaterialProps
-{
-    float3 Ldirect; // unshadowed
-    float3 Lemi;
-    float3 N;
-    float3 T;
-    float3 baseColor;
-    float roughness;
-    float metalness;
-    float curvature;
 };
 
 float2 GetConeAngleFromAngularRadius( float mip, float tanConeAngle )
@@ -129,7 +66,7 @@ float2 GetConeAngleFromAngularRadius( float mip, float tanConeAngle )
 
 float2 GetConeAngleFromRoughness( float mip, float roughness )
 {
-    float coneAngle = STL::ImportanceSampling::GetSpecularLobeTanHalfAngle( roughness );
+    float coneAngle = ImportanceSampling::GetSpecularLobeTanHalfAngle( roughness );
 
     return GetConeAngleFromAngularRadius( mip, coneAngle );
 }
@@ -148,7 +85,7 @@ float3 GetSamplingCoords( uint textureIndex, float2 uv, float mip, int mode )
         mip = min( mip, mipNum - 7.0 );
     }
     else
-        mip += gCameraOrigin_gMipBias.w * ( mode == MIP_LESS_SHARP ? 0.5 : 1.0 );
+        mip += gMipBias * ( mode == MIP_LESS_SHARP ? 0.5 : 1.0 );
     mip = clamp( mip, 0.0, mipNum - 1.0 );
 
     #if( USE_LOAD == 1 )
@@ -163,309 +100,6 @@ float3 GetSamplingCoords( uint textureIndex, float2 uv, float mip, int mode )
     #endif
 
     return float3( uv, mip );
-}
-
-MaterialProps GetMaterialProps( GeometryProps geometryProps )
-{
-    MaterialProps props = ( MaterialProps )0;
-
-    float3 Csky = GetSkyIntensity( -geometryProps.V, gSunDirection_gExposure.xyz, gTanSunAngularRadius );
-
-    [branch]
-    if( geometryProps.IsSky( ) )
-    {
-        props.Lemi = Csky;
-
-        return props;
-    }
-
-    uint baseTexture = geometryProps.GetBaseTexture( );
-    InstanceData instanceData = gIn_InstanceData[ geometryProps.instanceIndex ];
-
-    // Base color
-    float3 coords = GetSamplingCoords( baseTexture, geometryProps.uv, geometryProps.mip, MIP_SHARP );
-    float4 color = gIn_Textures[ NonUniformResourceIndex( baseTexture ) ].SAMPLE( coords );
-    color.xyz *= instanceData.baseColorAndMetalnessScale.xyz;
-    color.xyz *= geometryProps.IsTransparent( ) ? 1.0 : STL::Math::PositiveRcp( color.w ); // Correct handling of BC1 with pre-multiplied alpha
-    float3 baseColor = saturate( color.xyz );
-
-    // Roughness and metalness
-    coords = GetSamplingCoords( baseTexture + 1, geometryProps.uv, geometryProps.mip, MIP_SHARP );
-    float3 materialProps = gIn_Textures[ NonUniformResourceIndex( baseTexture + 1 ) ].SAMPLE( coords ).xyz;
-    float roughness = saturate( materialProps.y * instanceData.emissionAndRoughnessScale.w );
-    float metalness = saturate( materialProps.z * instanceData.baseColorAndMetalnessScale.w );
-
-    // Normal
-    coords = GetSamplingCoords( baseTexture + 2, geometryProps.uv, geometryProps.mip, MIP_LESS_SHARP );
-    float2 packedNormal = gIn_Textures[ NonUniformResourceIndex( baseTexture + 2 ) ].SAMPLE( coords ).xy;
-    float3 N = gUseNormalMap ? STL::Geometry::TransformLocalNormal( packedNormal, geometryProps.T, geometryProps.N ) : geometryProps.N;
-    float3 T = geometryProps.T.xyz;
-
-    // Estimate curvature
-    float curvature = length( STL::Geometry::UnpackLocalNormal( packedNormal ).xy ) * float( gUseNormalMap );
-
-    // Emission
-    coords = GetSamplingCoords( baseTexture + 3, geometryProps.uv, geometryProps.mip, MIP_VISIBILITY );
-    float3 Lemi = gIn_Textures[ NonUniformResourceIndex( baseTexture + 3 ) ].SAMPLE( coords ).xyz;
-    Lemi *= instanceData.emissionAndRoughnessScale.xyz;
-    Lemi *= ( baseColor + 0.01 ) / ( max( baseColor, max( baseColor, baseColor ) ) + 0.01 );
-
-    [flatten]
-    if( geometryProps.IsForcedEmission( ) )
-    {
-        Lemi = geometryProps.GetForcedEmissionColor( );
-        baseColor = 0.0;
-    }
-
-    Lemi *= gEmissionIntensity;
-
-    // Material overrides
-    [flatten]
-    if( gForcedMaterial == MATERIAL_GYPSUM )
-    {
-        roughness = 1.0;
-        baseColor = 0.5;
-        metalness = 0.0;
-    }
-    else if( gForcedMaterial == MATERIAL_COBALT )
-    {
-        roughness = pow( saturate( baseColor.x * baseColor.y * baseColor.z ), 0.33333 );
-        baseColor = float3( 0.672411, 0.637331, 0.585456 );
-        metalness = 1.0;
-
-        #if( USE_ANOTHER_COBALT == 1 )
-            roughness = pow( saturate( roughness - 0.1 ), 0.25 ) * 0.3 + 0.07;
-        #endif
-    }
-
-    if( geometryProps.IsHair( ) )
-    {
-        roughness = gHairBetasOverride.x;
-        metalness = gHairBetasOverride.y;
-        baseColor = gHairBaseColorOverride.xyz;
-    }
-    else
-    {
-        metalness = gMetalnessOverride == 0.0 ? metalness : gMetalnessOverride;
-        roughness = gRoughnessOverride == 0.0 ? roughness : gRoughnessOverride;
-    }
-
-    #if( USE_PUDDLES == 1 )
-        roughness *= STL::Math::SmoothStep( 0.6, 0.8, length( frac( geometryProps.uv ) * 2.0 - 1.0 ) );
-    #endif
-
-    #if( USE_RANDOMIZED_ROUGHNESS == 1 )
-        float2 noise = ( frac( sin( dot( geometryProps.uv, float2( 12.9898, 78.233 ) * 2.0 ) ) * 43758.5453 ) );
-        float noise01 = abs( noise.x + noise.y ) * 0.5;
-        roughness *= 1.0 + ( noise01 * 2.0 - 1.0 ) * 0.25;
-    #endif
-
-    roughness = saturate( roughness );
-    metalness = saturate( metalness );
-
-    // Transform to diffuse material if emission is here
-    float emissionLevel = STL::Color::Luminance( Lemi );
-    emissionLevel = saturate( emissionLevel * 50.0 );
-
-    metalness = lerp( metalness, 0.0, emissionLevel );
-    roughness = lerp( roughness, 1.0, emissionLevel );
-
-    // Direct lighting ( no shadow )
-    float3 Ldirect = 0;
-    float NoL = saturate( dot( geometryProps.N, gSunDirection_gExposure.xyz ) );
-    float shadow = STL::Math::SmoothStep( 0.03, 0.1, NoL );
-
-    [branch]
-    if( shadow != 0.0 )
-    {
-        float3 Csun = GetSunIntensity( gSunDirection_gExposure.xyz, gSunDirection_gExposure.xyz, gTanSunAngularRadius );
-
-        // Pseudo sky importance sampling
-        float3 Cimp = lerp( Csky, Csun, STL::Math::SmoothStep( 0.0, 0.2, roughness ) );
-        Cimp *= STL::Math::SmoothStep( -0.01, 0.05, gSunDirection_gExposure.z );
-
-        if( geometryProps.IsHair( ) )
-        {
-            float3x3 mLocalBasis = HairGetBasis( N, T );
-            float3 vLocal = STL::Geometry::RotateVector( mLocalBasis, geometryProps.V );
-
-            HairSurfaceData hairSd = ( HairSurfaceData )0;
-            hairSd.N = float3( 0, 0, 1 );
-            hairSd.T = float3( 1, 0, 0 );
-            hairSd.V = vLocal;
-
-            HairData hairData = ( HairData )0;
-            hairData.baseColor = baseColor;
-            hairData.betaM = roughness;
-            hairData.betaN = metalness;
-
-            HairContext hairBrdf = HairContextInit( hairSd, hairData );
-
-            float3 sunLocal = STL::Geometry::RotateVector( mLocalBasis, gSunDirection_gExposure.xyz );
-
-            // There isn't an easy separation for hair model, we could factor out
-            // Ap[0] as specular, then Ap[1...k] as diffuse (TT, TRT paths)
-            // Try using the pseudo sky color bit here.
-
-            float3 throughput = HairEval( hairBrdf, vLocal, sunLocal );
-
-            // sun only
-            Ldirect = Cimp * throughput;
-        }
-        else
-        {
-            float3 albedo, Rf0;
-            STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( baseColor.xyz, metalness, albedo, Rf0 );
-
-        #if( USE_SIMPLEX_LIGHTING_MODEL == 1 )
-            // Very simple "diffuse-like" model
-            float m = roughness * roughness;
-            float3 C = albedo * Csun + Rf0 * m * Cimp;
-            float NoL = dot( geometryProps.N, gSunDirection_gExposure.xyz );
-            float Kdiff = NoL / STL::Math::Pi( 1.0 );
-
-            Ldirect = Kdiff * C;
-        #else
-            float3 Cdiff, Cspec;
-            STL::BRDF::DirectLighting( N, gSunDirection_gExposure.xyz, geometryProps.V, Rf0, roughness, Cdiff, Cspec );
-
-            Ldirect = Cdiff * albedo * Csun + Cspec * Cimp;
-        #endif
-        }
-
-        Ldirect *= shadow;
-    }
-
-    // Output
-    props.Ldirect = Ldirect;
-    props.Lemi = Lemi;
-    props.N = N;
-    props.T = T;
-    props.baseColor = baseColor;
-    props.roughness = roughness;
-    props.metalness = metalness;
-    props.curvature = geometryProps.curvature + curvature;
-
-    return props;
-}
-
-//====================================================================================================================================
-// MISC
-//====================================================================================================================================
-
-float3 GetAmbientBRDF( GeometryProps geometryProps, MaterialProps materialProps, bool approximate = false )
-{
-    float3 albedo, Rf0;
-    STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
-
-    float3 Fenv = Rf0;
-    if( !approximate )
-    {
-        float NoV = abs( dot( materialProps.N, geometryProps.V ) );
-        Fenv = STL::BRDF::EnvironmentTerm_Rtg( Rf0, NoV, materialProps.roughness );
-    }
-
-    float3 ambBRDF = albedo * ( 1.0 - Fenv ) + Fenv;
-    ambBRDF *= float( !geometryProps.IsSky( ) );
-
-    return ambBRDF;
-}
-
-float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps materialProps, bool useMagicBoost = false )
-{
-    // IMPORTANT: can't be used for hair tracing, but applicable in other hair related calculations
-
-    float3 albedo, Rf0;
-    STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
-
-    float NoV = abs( dot( materialProps.N, geometryProps.V ) );
-    float3 Fenv = STL::BRDF::EnvironmentTerm_Rtg( Rf0, NoV, materialProps.roughness );
-
-    float lumSpec = STL::Color::Luminance( Fenv );
-    float lumDiff = STL::Color::Luminance( albedo * ( 1.0 - Fenv ) );
-
-    float diffProb = lumDiff / ( lumDiff + lumSpec + 1e-6 );
-
-    // Boost diffuse if roughness is high
-    if( useMagicBoost )
-        diffProb = lerp( diffProb, 1.0, GetSpecMagicCurve( materialProps.roughness ) );
-
-    return diffProb < 0.005 ? 0.0 : diffProb;
-}
-
-float ReprojectIrradiance(
-    bool isPrevFrame, bool isRefraction,
-    Texture2D<float3> texDiff, Texture2D<float4> texSpecViewZ,
-    GeometryProps geometryProps, uint2 pixelPos,
-    out float3 prevLdiff, out float3 prevLspec
-)
-{
-    // Get UV and ignore back projection
-    float2 uv = STL::Geometry::GetScreenUv( isPrevFrame ? gWorldToClipPrev : gWorldToClip, geometryProps.X, true ) - gJitter;
-
-    float2 rescale = ( isPrevFrame ? gRectSizePrev : gRectSize ) * gInvRenderSize;
-    float4 data = texSpecViewZ.SampleLevel( gNearestSampler, uv * rescale, 0 );
-    float prevViewZ = abs( data.w ) / NRD_FP16_VIEWZ_SCALE;
-
-    prevLdiff = texDiff.SampleLevel( gNearestSampler, uv * rescale, 0 );
-    prevLspec = data.xyz;
-
-    // Initial state
-    float weight = 1.0;
-    float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
-
-    // Ignore undenoised regions ( split screen mode is active )
-    weight *= float( pixelUv.x > gSeparator );
-    weight *= float( uv.x > gSeparator );
-
-    // Relaxed checks for refractions
-    float viewZ = abs( STL::Geometry::AffineTransform( isPrevFrame ? gWorldToViewPrev : gWorldToView, geometryProps.X ).z );
-    float err = ( viewZ - prevViewZ ) * STL::Math::PositiveRcp( max( viewZ, prevViewZ ) );
-
-    if( isRefraction )
-    {
-        // Confidence - viewZ ( PSR makes prevViewZ further than the original primary surface )
-        weight *= STL::Math::LinearStep( 0.03, 0.01, saturate( err ) );
-
-        // Fade-out on screen edges ( hard )
-        weight *= all( saturate( uv ) == uv );
-    }
-    else
-    {
-        // Confidence - viewZ
-        weight *= STL::Math::LinearStep( 0.03, 0.01, abs( err ) );
-
-        // Fade-out on screen edges ( soft )
-        float2 f = STL::Math::LinearStep( 0.0, 0.1, uv ) * STL::Math::LinearStep( 1.0, 0.9, uv );
-        weight *= f.x * f.y;
-
-        // Confidence - ignore back-facing
-        // Instead of storing previous normal we can store previous NoL, if signs do not match we hit the surface from the opposite side
-        float NoL = dot( geometryProps.N, gSunDirection_gExposure.xyz );
-        weight *= float( NoL * STL::Math::Sign( data.w ) > 0.0 );
-
-        // Confidence - ignore too short rays
-        float2 uv = STL::Geometry::GetScreenUv( gWorldToClip, geometryProps.X, true ) - gJitter;
-        float d = length( ( uv - pixelUv ) * gRectSize );
-        weight *= STL::Math::LinearStep( 1.0, 3.0, d );
-    }
-
-    // Ignore sky
-    weight *= float( !geometryProps.IsSky( ) );
-
-    // Clear out bad values
-    [flatten]
-    if( any( isnan( prevLdiff ) | isinf( prevLdiff ) | isnan( prevLspec ) | isinf( prevLspec ) ) )
-    {
-        prevLdiff = 0;
-        prevLspec = 0;
-        weight = 0;
-    }
-
-    // Use only if radiance is on the screen
-    weight *= float( gOnScreen < SHOW_AMBIENT_OCCLUSION );
-
-    return weight;
 }
 
 //====================================================================================================================================
@@ -484,7 +118,7 @@ float ReprojectIrradiance(
         if( instanceData.textureOffsetAndFlags & ( FLAG_STATIC << FLAG_FIRST_BIT ) ) \
             mObjectToWorld = ( float3x3 )mOverloaded; \
         \
-        float flip = STL::Math::Sign( instanceData.invScale ) * ( rayQuery.CandidateTriangleFrontFace( ) ? -1.0 : 1.0 ); \
+        float flip = Math::Sign( instanceData.invScale ) * ( rayQuery.CandidateTriangleFrontFace( ) ? -1.0 : 1.0 ); \
         \
         /* Primitive */ \
         uint primitiveIndex = instanceData.primitiveOffset + rayQuery.CandidatePrimitiveIndex( ); \
@@ -499,19 +133,19 @@ float ReprojectIrradiance(
         float2 uv = barycentrics.x * primitiveData.uv0 + barycentrics.y * primitiveData.uv1 + barycentrics.z * primitiveData.uv2; \
         \
         /* Normal */ \
-        float3 n0 = STL::Packing::DecodeUnitVector( primitiveData.n0, true ); \
-        float3 n1 = STL::Packing::DecodeUnitVector( primitiveData.n1, true ); \
-        float3 n2 = STL::Packing::DecodeUnitVector( primitiveData.n2, true ); \
+        float3 n0 = Packing::DecodeUnitVector( primitiveData.n0, true ); \
+        float3 n1 = Packing::DecodeUnitVector( primitiveData.n1, true ); \
+        float3 n2 = Packing::DecodeUnitVector( primitiveData.n2, true ); \
         \
         float3 N = barycentrics.x * n0 + barycentrics.y * n1 + barycentrics.z * n2; \
-        N = STL::Geometry::RotateVector( mObjectToWorld, N ); \
+        N = Geometry::RotateVector( mObjectToWorld, N ); \
         N = normalize( N * flip ); \
         \
         /* Mip level ( TODO: doesn't take into account integrated AO / SO - i.e. diffuse = lowest mip, but what if we see the sky through a tiny hole? ) */ \
         float NoR = abs( dot( rayQuery.WorldRayDirection( ), N ) ); \
         float a = rayQuery.CandidateTriangleRayT( ); \
         a *= mipAndCone.y; \
-        a *= STL::Math::PositiveRcp( NoR ); \
+        a *= Math::PositiveRcp( NoR ); \
         a *= primitiveData.worldToUvUnits * abs( instanceData.invScale ); \
         \
         float mip = log2( a ); \
@@ -603,10 +237,10 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
         float3x3 mObjectToWorld = ( float3x3 )rayQuery.CommittedObjectToWorld3x4( );
         float3x4 mOverloaded = float3x4( instanceData.mOverloadedMatrix0, instanceData.mOverloadedMatrix1, instanceData.mOverloadedMatrix2 ); \
 
-        if( props.IsStatic( ) )
+        if( props.Has( FLAG_STATIC ) )
             mObjectToWorld = ( float3x3 )mOverloaded;
 
-        float flip = STL::Math::Sign( instanceData.invScale ) * ( rayQuery.CommittedTriangleFrontFace( ) ? -1.0 : 1.0 );
+        float flip = Math::Sign( instanceData.invScale ) * ( rayQuery.CommittedTriangleFrontFace( ) ? -1.0 : 1.0 );
 
         // Primitive
         uint primitiveIndex = instanceData.primitiveOffset + rayQuery.CommittedPrimitiveIndex( );
@@ -618,12 +252,12 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
         barycentrics.x = 1.0 - barycentrics.y - barycentrics.z;
 
         // Normal
-        float3 n0 = STL::Packing::DecodeUnitVector( primitiveData.n0, true );
-        float3 n1 = STL::Packing::DecodeUnitVector( primitiveData.n1, true );
-        float3 n2 = STL::Packing::DecodeUnitVector( primitiveData.n2, true );
+        float3 n0 = Packing::DecodeUnitVector( primitiveData.n0, true );
+        float3 n1 = Packing::DecodeUnitVector( primitiveData.n1, true );
+        float3 n2 = Packing::DecodeUnitVector( primitiveData.n2, true );
 
         float3 N = barycentrics.x * n0 + barycentrics.y * n1 + barycentrics.z * n2;
-        N = STL::Geometry::RotateVector( mObjectToWorld, N );
+        N = Geometry::RotateVector( mObjectToWorld, N );
         N = normalize( N * flip );
         props.N = -N; // TODO: why negated?
 
@@ -634,7 +268,7 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
         // Mip level (TODO: doesn't take into account integrated AO / SO - i.e. diffuse = lowest mip, but what if we see the sky through a tiny hole?)
         float NoR = abs( dot( direction, props.N ) );
         float a = props.tmin * mipAndCone.y;
-        a *= STL::Math::PositiveRcp( NoR );
+        a *= Math::PositiveRcp( NoR );
         a *= primitiveData.worldToUvUnits * abs( instanceData.invScale );
 
         float mip = log2( a );
@@ -646,25 +280,25 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
         props.uv = barycentrics.x * primitiveData.uv0 + barycentrics.y * primitiveData.uv1 + barycentrics.z * primitiveData.uv2;
 
         // Tangent
-        float3 t0 = STL::Packing::DecodeUnitVector( primitiveData.t0, true );
-        float3 t1 = STL::Packing::DecodeUnitVector( primitiveData.t1, true );
-        float3 t2 = STL::Packing::DecodeUnitVector( primitiveData.t2, true );
+        float3 t0 = Packing::DecodeUnitVector( primitiveData.t0, true );
+        float3 t1 = Packing::DecodeUnitVector( primitiveData.t1, true );
+        float3 t2 = Packing::DecodeUnitVector( primitiveData.t2, true );
 
         float3 T = barycentrics.x * t0 + barycentrics.y * t1 + barycentrics.z * t2;
-        T = STL::Geometry::RotateVector( mObjectToWorld, T );
+        T = Geometry::RotateVector( mObjectToWorld, T );
         T = normalize( T );
         props.T = float4( T, primitiveData.curvature2_bitangentSign.y );
 
         props.X = origin + direction * props.tmin;
-        if( props.IsDeformable( ) )
+        if( props.Has( FLAG_DEFORMABLE ) )
         {
-            MorphedPrimitivePrevData prevData = gIn_MorphedPrimitivePrevPositions[ instanceData.morphedPrimitiveOffset + rayQuery.CommittedPrimitiveIndex( ) ];
+            MorphedPrimitivePrevPositions prev = gIn_MorphedPrimitivePrevPositions[ instanceData.morphedPrimitiveOffset + rayQuery.CommittedPrimitiveIndex( ) ];
 
-            float3 XprevLocal = barycentrics.x * prevData.position0.xyz + barycentrics.y * prevData.position1.xyz + barycentrics.z * prevData.position2.xyz;
-            props.Xprev = STL::Geometry::AffineTransform( mOverloaded, XprevLocal );
+            float3 XprevLocal = barycentrics.x * prev.pos0.xyz + barycentrics.y * prev.pos1.xyz + barycentrics.z * prev.pos2.xyz;
+            props.Xprev = Geometry::AffineTransform( mOverloaded, XprevLocal );
         }
-        else if( !props.IsStatic( ) )
-            props.Xprev = STL::Geometry::AffineTransform( mOverloaded, props.X );
+        else if( !props.Has( FLAG_STATIC ) )
+            props.Xprev = Geometry::AffineTransform( mOverloaded, props.X );
         else
             props.Xprev = props.X;
     }
@@ -672,4 +306,329 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
     props.V = -direction;
 
     return props;
+}
+
+//====================================================================================================================================
+// MATERIAL PROPERTIES
+//====================================================================================================================================
+
+struct MaterialProps
+{
+    float3 Ldirect; // unshadowed
+    float3 Lemi;
+    float3 N;
+    float3 T;
+    float3 baseColor;
+    float roughness;
+    float metalness;
+    float curvature;
+};
+
+MaterialProps GetMaterialProps( GeometryProps geometryProps, bool viewIndependentLightingModel = false )
+{
+    MaterialProps props = ( MaterialProps )0;
+
+    float3 Csky = GetSkyIntensity( -geometryProps.V );
+
+    [branch]
+    if( geometryProps.IsSky( ) )
+    {
+        props.Lemi = Csky;
+
+        return props;
+    }
+
+    uint baseTexture = geometryProps.GetBaseTexture( );
+    InstanceData instanceData = gIn_InstanceData[ geometryProps.instanceIndex ];
+
+    // Base color
+    float3 coords = GetSamplingCoords( baseTexture, geometryProps.uv, geometryProps.mip, MIP_SHARP );
+    float4 color = gIn_Textures[ NonUniformResourceIndex( baseTexture ) ].SAMPLE( coords );
+    color.xyz *= instanceData.baseColorAndMetalnessScale.xyz;
+    color.xyz *= geometryProps.Has( FLAG_TRANSPARENT ) ? 1.0 : Math::PositiveRcp( color.w ); // Correct handling of BC1 with pre-multiplied alpha
+    float3 baseColor = saturate( color.xyz );
+
+    // Roughness and metalness
+    coords = GetSamplingCoords( baseTexture + 1, geometryProps.uv, geometryProps.mip, MIP_SHARP );
+    float3 materialProps = gIn_Textures[ NonUniformResourceIndex( baseTexture + 1 ) ].SAMPLE( coords ).xyz;
+    float roughness = saturate( materialProps.y * instanceData.emissionAndRoughnessScale.w );
+    float metalness = saturate( materialProps.z * instanceData.baseColorAndMetalnessScale.w );
+
+    // Normal
+    coords = GetSamplingCoords( baseTexture + 2, geometryProps.uv, geometryProps.mip, MIP_LESS_SHARP );
+    float2 packedNormal = gIn_Textures[ NonUniformResourceIndex( baseTexture + 2 ) ].SAMPLE( coords ).xy;
+    float3 N = ( gUseNormalMap && !viewIndependentLightingModel ) ? Geometry::TransformLocalNormal( packedNormal, geometryProps.T, geometryProps.N ) : geometryProps.N;
+    float3 T = geometryProps.T.xyz;
+
+    // Estimate curvature
+    float curvature = length( Geometry::UnpackLocalNormal( packedNormal ).xy ) * float( gUseNormalMap );
+
+    // Emission
+    coords = GetSamplingCoords( baseTexture + 3, geometryProps.uv, geometryProps.mip, MIP_VISIBILITY );
+    float3 Lemi = gIn_Textures[ NonUniformResourceIndex( baseTexture + 3 ) ].SAMPLE( coords ).xyz;
+    Lemi *= instanceData.emissionAndRoughnessScale.xyz;
+    Lemi *= ( baseColor + 0.01 ) / ( max( baseColor, max( baseColor, baseColor ) ) + 0.01 );
+
+    [flatten]
+    if( geometryProps.Has( FLAG_FORCED_EMISSION ) )
+    {
+        Lemi = geometryProps.GetForcedEmissionColor( );
+        baseColor = 0.0;
+    }
+
+    Lemi *= gEmissionIntensity;
+
+    // Material overrides
+    [flatten]
+    if( gForcedMaterial == MATERIAL_GYPSUM )
+    {
+        roughness = 1.0;
+        baseColor = 0.5;
+        metalness = 0.0;
+    }
+    else if( gForcedMaterial == MATERIAL_COBALT )
+    {
+        roughness = pow( saturate( baseColor.x * baseColor.y * baseColor.z ), 0.33333 );
+        baseColor = float3( 0.672411, 0.637331, 0.585456 );
+        metalness = 1.0;
+
+        #if( USE_ANOTHER_COBALT == 1 )
+            roughness = pow( saturate( roughness - 0.1 ), 0.25 ) * 0.3 + 0.07;
+        #endif
+    }
+
+    if( geometryProps.Has( FLAG_HAIR ) )
+    {
+        roughness = gHairBetas.x;
+        metalness = gHairBetas.y;
+        baseColor = gHairBaseColor.xyz;
+    }
+    else
+    {
+        metalness = gMetalnessOverride == 0.0 ? metalness : gMetalnessOverride;
+        roughness = gRoughnessOverride == 0.0 ? roughness : gRoughnessOverride;
+    }
+
+    #if( USE_PUDDLES == 1 )
+        roughness *= Math::SmoothStep( 0.6, 0.8, length( frac( geometryProps.uv ) * 2.0 - 1.0 ) );
+    #endif
+
+    #if( USE_RANDOMIZED_ROUGHNESS == 1 )
+        float2 noise = ( frac( sin( dot( geometryProps.uv, float2( 12.9898, 78.233 ) * 2.0 ) ) * 43758.5453 ) );
+        float noise01 = abs( noise.x + noise.y ) * 0.5;
+        roughness *= 1.0 + ( noise01 * 2.0 - 1.0 ) * 0.25;
+    #endif
+
+    roughness = saturate( roughness );
+    metalness = saturate( metalness );
+
+    // Transform to diffuse material if emission is here
+    float emissionLevel = Color::Luminance( Lemi );
+    emissionLevel = saturate( emissionLevel * 50.0 );
+
+    metalness = lerp( metalness, 0.0, emissionLevel );
+    roughness = lerp( roughness, 1.0, emissionLevel );
+
+    // Direct lighting ( no shadow )
+    float3 Ldirect = 0;
+    float NoL = saturate( dot( geometryProps.N, gSunDirection.xyz ) );
+    float shadow = geometryProps.Has( FLAG_HAIR ) ? float( NoL > 0.0 ) : Math::SmoothStep( 0.03, 0.1, NoL );
+
+    [branch]
+    if( shadow != 0.0 )
+    {
+        float3 Csun = GetSunIntensity( gSunDirection.xyz );
+
+        if( geometryProps.Has( FLAG_HAIR ) )
+        {
+            float3x3 mLocalBasis = HairGetBasis( N, T );
+            float3 vLocal = Geometry::RotateVector( mLocalBasis, geometryProps.V );
+
+            HairSurfaceData hairSd = ( HairSurfaceData )0;
+            hairSd.N = float3( 0, 0, 1 );
+            hairSd.T = float3( 1, 0, 0 );
+            hairSd.V = vLocal;
+
+            HairData hairData = ( HairData )0;
+            hairData.baseColor = baseColor;
+            hairData.betaM = roughness;
+            hairData.betaN = metalness;
+
+            HairContext hairBrdf = HairContextInit( hairSd, hairData );
+
+            float3 sunLocal = Geometry::RotateVector( mLocalBasis, gSunDirection.xyz );
+            float3 throughput = HairEval( hairBrdf, vLocal, sunLocal );
+
+            Ldirect = Csun * throughput;
+        }
+        else
+        {
+            // Pseudo sky importance sampling
+            float3 Cimp = lerp( Csky, Csun, Math::SmoothStep( 0.0, 0.2, roughness ) );
+            Cimp *= Math::SmoothStep( -0.01, 0.05, gSunDirection.z );
+
+            // Extract materials
+            float3 albedo, Rf0;
+            BRDF::ConvertBaseColorMetalnessToAlbedoRf0( baseColor.xyz, metalness, albedo, Rf0 );
+
+            // Apply lighting
+            if( viewIndependentLightingModel )
+            {
+                // Very simple "diffuse-like" model
+                float m = roughness * roughness;
+                float3 C = albedo * Csun + Rf0 * m * Cimp;
+                float Kdiff = NoL / Math::Pi( 1.0 );
+
+                Ldirect = Kdiff * C;
+            }
+            else
+            {
+                float3 Cdiff, Cspec;
+                BRDF::DirectLighting( N, gSunDirection.xyz, geometryProps.V, Rf0, roughness, Cdiff, Cspec );
+
+                Ldirect = Cdiff * albedo * Csun + Cspec * Cimp;
+            }
+        }
+
+        Ldirect *= shadow;
+    }
+
+    // Output
+    props.Ldirect = Ldirect;
+    props.Lemi = Lemi;
+    props.N = N;
+    props.T = T;
+    props.baseColor = baseColor;
+    props.roughness = roughness;
+    props.metalness = metalness;
+    props.curvature = geometryProps.curvature + curvature;
+
+    return props;
+}
+
+//====================================================================================================================================
+// MISC
+//====================================================================================================================================
+
+float3 GetShadowedLighting( GeometryProps geometryProps, MaterialProps materialProps, bool softShadows = true )
+{
+    const uint instanceInclusionMask = GEOMETRY_IGNORE_TRANSPARENT; // Default shadow rays must ignore transparency // TODO: what about translucency?
+    const uint rayFlags = 0;
+
+    float3 L = materialProps.Ldirect;
+
+    if( Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
+    {
+        float2 rnd = Rng::Hash::GetFloat2( );
+        rnd = ImportanceSampling::Cosine::GetRay( rnd ).xy;
+        rnd *= gTanSunAngularRadius;
+        rnd *= float( softShadows );
+
+        float3 sunDirection = normalize( gSunBasisX.xyz * rnd.x + gSunBasisY.xyz * rnd.y + gSunDirection.xyz );
+
+        float2 mipAndCone = GetConeAngleFromAngularRadius( geometryProps.mip, gTanSunAngularRadius );
+        float3 Xoffset = geometryProps.GetXoffset( sunDirection, SHADOW_RAY_OFFSET );
+        L *= CastVisibilityRay_AnyHit( Xoffset, sunDirection, 0.0, INF, mipAndCone, gWorldTlas, instanceInclusionMask, rayFlags );
+    }
+
+    L += materialProps.Lemi;
+
+    return L;
+}
+
+float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps materialProps, bool useMagicBoost = false )
+{
+    // IMPORTANT: can't be used for hair tracing, but applicable in other hair related calculations
+
+    float3 albedo, Rf0;
+    BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
+
+    float NoV = abs( dot( materialProps.N, geometryProps.V ) );
+    float3 Fenv = BRDF::EnvironmentTerm_Rtg( Rf0, NoV, materialProps.roughness );
+
+    float lumSpec = Color::Luminance( Fenv );
+    float lumDiff = Color::Luminance( albedo * ( 1.0 - Fenv ) );
+
+    float diffProb = lumDiff / ( lumDiff + lumSpec + 1e-6 );
+
+    // Boost diffuse if roughness is high
+    if( useMagicBoost )
+        diffProb = lerp( diffProb, 1.0, GetSpecMagicCurve( materialProps.roughness ) );
+
+    return diffProb < 0.005 ? 0.0 : diffProb;
+}
+
+float ReprojectIrradiance(
+    bool isPrevFrame, bool isRefraction,
+    Texture2D<float3> texDiff, Texture2D<float4> texSpecViewZ,
+    GeometryProps geometryProps, uint2 pixelPos,
+    out float3 prevLdiff, out float3 prevLspec
+)
+{
+    // Get UV and ignore back projection
+    float2 uv = Geometry::GetScreenUv( isPrevFrame ? gWorldToClipPrev : gWorldToClip, geometryProps.X, true ) - gJitter;
+
+    float2 rescale = ( isPrevFrame ? gRectSizePrev : gRectSize ) * gInvRenderSize;
+    float4 data = texSpecViewZ.SampleLevel( gNearestSampler, uv * rescale, 0 );
+    float prevViewZ = abs( data.w ) / FP16_VIEWZ_SCALE;
+
+    prevLdiff = texDiff.SampleLevel( gNearestSampler, uv * rescale, 0 );
+    prevLspec = data.xyz;
+
+    // Initial state
+    float weight = 1.0;
+    float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
+
+    // Ignore undenoised regions ( split screen mode is active )
+    weight *= float( pixelUv.x > gSeparator );
+    weight *= float( uv.x > gSeparator );
+
+    // Relaxed checks for refractions
+    float viewZ = abs( Geometry::AffineTransform( isPrevFrame ? gWorldToViewPrev : gWorldToView, geometryProps.X ).z );
+    float err = ( viewZ - prevViewZ ) * Math::PositiveRcp( max( viewZ, prevViewZ ) );
+
+    if( isRefraction )
+    {
+        // Confidence - viewZ ( PSR makes prevViewZ further than the original primary surface )
+        weight *= Math::LinearStep( 0.03, 0.01, saturate( err ) );
+
+        // Fade-out on screen edges ( hard )
+        weight *= all( saturate( uv ) == uv );
+    }
+    else
+    {
+        // Confidence - viewZ
+        weight *= Math::LinearStep( 0.03, 0.01, abs( err ) );
+
+        // Fade-out on screen edges ( soft )
+        float2 f = Math::LinearStep( 0.0, 0.1, uv ) * Math::LinearStep( 1.0, 0.9, uv );
+        weight *= f.x * f.y;
+
+        // Confidence - ignore back-facing
+        // Instead of storing previous normal we can store previous NoL, if signs do not match we hit the surface from the opposite side
+        float NoL = dot( geometryProps.N, gSunDirection.xyz );
+        weight *= float( NoL * Math::Sign( data.w ) > 0.0 );
+
+        // Confidence - ignore too short rays
+        float2 uv = Geometry::GetScreenUv( gWorldToClip, geometryProps.X, true ) - gJitter;
+        float d = length( ( uv - pixelUv ) * gRectSize );
+        weight *= Math::LinearStep( 1.0, 3.0, d );
+    }
+
+    // Ignore sky
+    weight *= float( !geometryProps.IsSky( ) );
+
+    // Clear out bad values
+    [flatten]
+    if( any( isnan( prevLdiff ) | isinf( prevLdiff ) | isnan( prevLspec ) | isinf( prevLspec ) ) )
+    {
+        prevLdiff = 0;
+        prevLspec = 0;
+        weight = 0;
+    }
+
+    // Use only if radiance is on the screen
+    weight *= float( gOnScreen < SHOW_AMBIENT_OCCLUSION );
+
+    return weight;
 }

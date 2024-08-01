@@ -9,6 +9,10 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 */
 
 #include "Include/Shared.hlsli"
+#include "Include/RaytracingShared.hlsli"
+
+#define SHARC_QUERY 1
+#include "SharcCommon.h"
 
 // Inputs
 NRI_RESOURCE( Texture2D<float>, gIn_ViewZ, t, 0, 1 );
@@ -17,20 +21,19 @@ NRI_RESOURCE( Texture2D<float4>, gIn_BaseColor_Metalness, t, 2, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_DirectLighting, t, 3, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_DirectEmission, t, 4, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_PsrThroughput, t, 5, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 6, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Shadow, t, 7, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 8, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 9, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Shadow, t, 6, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Diff, t, 7, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Spec, t, 8, 1 );
 #if( NRD_MODE == SH )
-    NRI_RESOURCE( Texture2D<float4>, gIn_DiffSh, t, 10, 1 );
-    NRI_RESOURCE( Texture2D<float4>, gIn_SpecSh, t, 11, 1 );
+    NRI_RESOURCE( Texture2D<float4>, gIn_DiffSh, t, 9, 1 );
+    NRI_RESOURCE( Texture2D<float4>, gIn_SpecSh, t, 10, 1 );
 #endif
 
 // Outputs
 NRI_RESOURCE( RWTexture2D<float3>, gOut_ComposedDiff, u, 0, 1 );
 NRI_RESOURCE( RWTexture2D<float4>, gOut_ComposedSpec_ViewZ, u, 1, 1 );
 
-[numthreads( 16, 16, 1)]
+[numthreads( 16, 16, 1 )]
 void main( int2 pixelPos : SV_DispatchThreadId )
 {
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
@@ -51,8 +54,8 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float roughness = normalAndRoughness.w;
 
     // ( Trick ) Needed only to avoid back facing in "ReprojectIrradiance"
-    float z = abs( viewZ ) * NRD_FP16_VIEWZ_SCALE;
-    z *= STL::Math::Sign( dot( N, gSunDirection_gExposure.xyz ) );
+    float z = abs( viewZ ) * FP16_VIEWZ_SCALE;
+    z *= Math::Sign( dot( N, gSunDirection.xyz ) );
 
     // Early out - sky
     if( abs( viewZ ) >= INF )
@@ -65,7 +68,12 @@ void main( int2 pixelPos : SV_DispatchThreadId )
 
     // Direct sun lighting * shadow + emission
     float4 shadowData = gIn_Shadow[ pixelPos ];
-    float3 shadow = SIGMA_BackEnd_UnpackShadow( shadowData ).yzw;
+
+    #if( SIGMA_TRANSLUCENT == 1 )
+        float3 shadow = SIGMA_BackEnd_UnpackShadow( shadowData ).yzw;
+    #else
+        float shadow = SIGMA_BackEnd_UnpackShadow( shadowData ).x;
+    #endif
 
     float3 Ldirect = gIn_DirectLighting[ pixelPos ];
     if( gOnScreen < SHOW_INSTANCE_INDEX )
@@ -74,11 +82,11 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     // G-buffer
     float3 albedo, Rf0;
     float4 baseColorMetalness = gIn_BaseColor_Metalness[ pixelPos ];
-    STL::BRDF::ConvertBaseColorMetalnessToAlbedoRf0( baseColorMetalness.xyz, baseColorMetalness.w, albedo, Rf0 );
+    BRDF::ConvertBaseColorMetalnessToAlbedoRf0( baseColorMetalness.xyz, baseColorMetalness.w, albedo, Rf0 );
 
-    float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gViewDirection_gOrthoMode.w );
-    float3 X = STL::Geometry::AffineTransform( gViewToWorld, Xv );
-    float3 V = gViewDirection_gOrthoMode.w == 0 ? normalize( gCameraOrigin_gMipBias.xyz - X ) : gViewDirection_gOrthoMode.xyz;
+    float3 Xv = Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
+    float3 X = Geometry::AffineTransform( gViewToWorld, Xv );
+    float3 V = gOrthoMode == 0 ? normalize( Geometry::RotateVector( gViewToWorld, 0 - Xv ) ) : gViewDirection.xyz;
 
     // Sample NRD outputs
     float4 diff = gIn_Diff[ pixelPos ];
@@ -181,38 +189,28 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     // ( Optional ) RELAX doesn't support AO / SO
     if( gDenoiserType == DENOISER_RELAX )
     {
-        diff.w = 1.0 / STL::Math::Pi( 1.0 );
-        spec.w = 1.0 / STL::Math::Pi( 1.0 );
+        diff.w = 1.0 / Math::Pi( 1.0 );
+        spec.w = 1.0 / Math::Pi( 1.0 );
     }
 
     diff.xyz *= gIndirectDiffuse;
     spec.xyz *= gIndirectSpecular;
 
-    // Environment ( pre-integrated ) specular term
+    // Material modulation ( convert radiance back into irradiance )
     float NoV = abs( dot( N, V ) );
-    float3 Fenv = STL::BRDF::EnvironmentTerm_Rtg( Rf0, NoV, roughness );
-
-    // Composition
+    float3 Fenv = BRDF::EnvironmentTerm_Rtg( Rf0, NoV, roughness );
     float3 diffDemod = ( 1.0 - Fenv ) * albedo * 0.99 + 0.01;
     float3 specDemod = Fenv * 0.99 + 0.01;
 
-    if( NRD_NORMAL_ENCODING == 2 && normMaterialID == MATERIAL_ID_HAIR / 3.0 )
+    if( normMaterialID == MATERIAL_ID_HAIR / 3.0 && NRD_NORMAL_ENCODING == NRD_NORMAL_ENCODING_R10G10B10A2_UNORM )
+    {
+        diffDemod = 1.0;
         specDemod = 1.0;
+    }
 
+    // Composition
     float3 Ldiff = diff.xyz * diffDemod;
     float3 Lspec = spec.xyz * specDemod;
-
-    // Ambient
-    // TODO: drop ambient in the future and use a radiance cache instead, at least because in case of many RPP hit distance
-    // is not averaged for specular, it's "min" across paths. It's needed for proper specular motion, but makes SO biased!
-    float3 ambient = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
-    ambient *= exp2( AMBIENT_FADE * STL::Math::LengthSquared( Xv ) );
-    ambient *= gAmbient;
-
-    float specAmbientAmount = gDenoiserType == DENOISER_RELAX ? roughness : GetSpecMagicCurve( roughness );
-
-    Ldiff += ambient * diff.w * ( 1.0 - Fenv ) * albedo;
-    Lspec += ambient * spec.w * Fenv * specAmbientAmount;
 
     // Apply PSR throughput ( primary surface material before replacement )
     #if( USE_PSR == 1 )
@@ -254,6 +252,51 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         Ldiff = frac( X * gUnitToMetersMultiplier );
     else if( gOnScreen != SHOW_FINAL )
         Ldiff = gOnScreen == SHOW_MIP_SPECULAR ? spec.xyz : Ldirect.xyz;
+
+    // SHARC debug
+    #if( NRD_MODE < OCCLUSION )
+        GridParameters gridParameters = ( GridParameters )0;
+        gridParameters.cameraPosition = gCameraGlobalPos.xyz;
+        gridParameters.cameraPositionPrev = gCameraGlobalPosPrev.xyz;
+        gridParameters.sceneScale = SHARC_SCENE_SCALE;
+        gridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+
+        #if( USE_SHARC_DEBUG == 1 )
+            SharcState sharcState;
+            sharcState.gridParameters = gridParameters;
+            sharcState.hashMapData.capacity = SHARC_CAPACITY;
+            sharcState.hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
+            sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
+
+            float3 Xglobal = GetGlobalPos( X );
+
+            // Dithered output
+            #if 0
+                Rng::Hash::Initialize( pixelPos, gFrameIndex );
+
+                uint level = GetGridLevel( Xglobal, gridParameters );
+                float voxelSize = GetVoxelSize( level, gridParameters );
+                float3x3 mBasis = Geometry::GetBasis( N );
+                float2 rnd = ( Rng::Hash::GetFloat2( ) - 0.5 ) * voxelSize * USE_SHARC_DITHERING;
+                Xglobal += mBasis[ 0 ] * rnd.x + mBasis[ 1 ] * rnd.y;
+            #endif
+
+            SharcHitData sharcHitData = ( SharcHitData )0;
+            sharcHitData.positionWorld = Xglobal;
+            sharcHitData.normalWorld = N;
+
+            bool isValid = SharcGetCachedRadiance( sharcState, sharcHitData, Ldiff, true );
+
+            // Highlight invalid cells
+            #if 0
+                Ldiff = isValid ? Ldiff : float3( 1.0, 0.0, 0.0 );
+            #endif
+        #elif( USE_SHARC_DEBUG == 2 )
+            Ldiff = HashGridDebugColoredHash( GetGlobalPos( X ), gridParameters );
+        #endif
+
+        Lspec *= float( USE_SHARC_DEBUG == 0 );
+    #endif
 
     // Output
     gOut_ComposedDiff[ pixelPos ] = Ldiff;

@@ -117,6 +117,8 @@ bool DlssIntegration::InitializeLibrary(nri::Device& device, const char* appData
     m_Device = &device;
 
     uint32_t nriResult = (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&NRI);
+    nriResult |= (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::HelperInterface), (nri::HelperInterface*)&NRI);
+
     if (NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::VULKAN)
         nriResult |= (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::WrapperVKInterface), (nri::WrapperVKInterface*)&NRI);
 
@@ -217,7 +219,7 @@ bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInit
             srCreateParams.InFeatureCreateFlags = flags;
 
             nri::VideoMemoryInfo videoMemoryInfo1 = {};
-            nri::nriQueryVideoMemoryInfo(*m_Device, nri::MemoryLocation::DEVICE, videoMemoryInfo1);
+            NRI.QueryVideoMemoryInfo(*m_Device, nri::MemoryLocation::DEVICE, videoMemoryInfo1);
 
             if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D12)
             {
@@ -236,8 +238,9 @@ bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInit
             }
 
             nri::VideoMemoryInfo videoMemoryInfo2 = {};
-            nri::nriQueryVideoMemoryInfo(*m_Device, nri::MemoryLocation::DEVICE, videoMemoryInfo2);
-            printf("DLSS-SR: allocated %.2f Mb\n", (videoMemoryInfo2.currentUsage - videoMemoryInfo1.currentUsage) / (1024.0f * 1024.0f));
+            NRI.QueryVideoMemoryInfo(*m_Device, nri::MemoryLocation::DEVICE, videoMemoryInfo2);
+
+            printf("DLSS-SR: allocated %.2f Mb\n", (videoMemoryInfo2.usageSize - videoMemoryInfo1.usageSize) / (1024.0f * 1024.0f));
         }
     }
     NRI.EndCommandBuffer(*commandBuffer);

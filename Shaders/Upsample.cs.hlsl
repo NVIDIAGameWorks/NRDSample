@@ -10,7 +10,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 #include "Include/Shared.hlsli"
 
-NRI_RESOURCE( Texture2D<float3>, gIn_Image, t, 0, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Image, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_Validation, t, 1, 1 );
 
 NRI_RESOURCE( RWTexture2D<float3>, gOut_Image, u, 0, 1 );

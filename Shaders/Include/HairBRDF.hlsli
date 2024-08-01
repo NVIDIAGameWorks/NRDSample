@@ -3,7 +3,6 @@
 // See https://benedikt-bitterli.me/pchfm/
 // See https://www.pbrt.org/hair.pdf
 
-
 struct HairData
 {
     float3 baseColor;
@@ -14,9 +13,9 @@ struct HairData
 static const uint kMaxScatterEvents = 3;
 static const float kSqrtPiOver8 = 0.626657069f;
 
-static const float k1_2Pi = 1.0 / STL::Math::Pi(2.0);
-static const float k2Pi = STL::Math::Pi(2.0);
-static const float kPi = STL::Math::Pi(1.0);
+static const float k1_2Pi = 1.0 / Math::Pi(2.0);
+static const float k2Pi = Math::Pi(2.0);
+static const float kPi = Math::Pi(1.0);
 
 static const float kHairAlpha = 2.0f; // hair scale angle 2 degrees
 static const float kHairIoR = 1.55f; // hair IoR
@@ -116,8 +115,22 @@ float sampleTrimmedLogistic(float u, float s, float a, float b)
     return clamp(x, a, b);
 }
 
-/** Mapping from color to sigmaA
-*/
+float sqrt01(float x)
+{
+    return max(sqrt(saturate(x)), 1e-7f);
+}
+
+float sqrt0(float x)
+{
+    return sqrt(max(x, 1e-7f));
+}
+
+float atan2safe(float x, float y)
+{
+    return (abs(x) + abs(y)) < 1e-7 ? 0.0f : atan2(x, y);
+}
+
+// Mapping from color to sigmaA
 float3 sigmaAFromColor(float3 color, float betaN)
 {
     float tmp = 5.969f - 0.215f * betaN + 2.532f * betaN * betaN - 10.73f * pow(betaN, 3) + 5.574f * pow(betaN, 4) + 0.245f * pow(betaN, 5);
@@ -126,16 +139,16 @@ float3 sigmaAFromColor(float3 color, float betaN)
     return sqrtSigmaA * sqrtSigmaA;
 }
 
-/** Attenuation function Ap
-*/
-void Ap(const HairContext c, float cosThetaI, float3 T, out float3 ap[kMaxScatterEvents + 1])
+// Attenuation function Ap
+void Ap(HairContext c, float cosThetaI, float3 T, out float3 ap[kMaxScatterEvents + 1])
 {
-    float cosGammaI = sqrt(saturate(1.f - c.h * c.h));
+    float cosGammaI = sqrt01(1.f - c.h * c.h);
     float cosTheta = cosThetaI * cosGammaI;
-    float f = STL::BRDF::FresnelTerm_Dielectric(c.eta, cosTheta);
+    float f = BRDF::FresnelTerm_Dielectric(c.eta, cosTheta);
 
     ap[0] = f;
     ap[1] = T * (1 - f) * (1 - f);
+
     [unroll]
     for (uint p = 2; p < kMaxScatterEvents; p++)
         ap[p] = ap[p - 1] * T * f;
@@ -144,19 +157,18 @@ void Ap(const HairContext c, float cosThetaI, float3 T, out float3 ap[kMaxScatte
     ap[kMaxScatterEvents] = ap[kMaxScatterEvents - 1] * T * f / (1.f - T * f);
 }
 
-/** Compute a discrete pdf for sampling Ap (which BCSDF lobe)
-*/
-void computeApPdf(const HairContext c, float cosThetaI, out float apPdf[kMaxScatterEvents + 1])
+// Compute a discrete pdf for sampling Ap (which BCSDF lobe)
+void computeApPdf(HairContext c, float cosThetaI, out float apPdf[kMaxScatterEvents + 1])
 {
-    float sinThetaI = sqrt(saturate(1.f - cosThetaI * cosThetaI));
+    float sinThetaI = sqrt01(1.f - cosThetaI * cosThetaI);
 
     // Compute refracted ray.
     float sinThetaT = sinThetaI / c.IoR;
-    float cosThetaT = sqrt(saturate(1.f - sinThetaT * sinThetaT));
+    float cosThetaT = sqrt01(1.f - sinThetaT * sinThetaT);
 
-    float etap = sqrt(saturate(c.IoR * c.IoR - sinThetaI * sinThetaI)) / cosThetaI;
+    float etap = sqrt0(c.IoR * c.IoR - sinThetaI * sinThetaI) / cosThetaI;
     float sinGammaT = c.h / etap;
-    float cosGammaT = sqrt(saturate(1.f - sinGammaT * sinGammaT));
+    float cosGammaT = sqrt01(1.f - sinGammaT * sinGammaT);
 
     // Compute the transmittance T of a single path through the cylinder
     float tmp = -2.f * cosGammaT / cosThetaT;
@@ -171,7 +183,7 @@ void computeApPdf(const HairContext c, float cosThetaI, out float apPdf[kMaxScat
         [unroll]
         for (uint p = 0; p <= kMaxScatterEvents; p++)
         {
-            apPdf[p] = STL::Color::Luminance(ap[p]);
+            apPdf[p] = Color::Luminance(ap[p]);
             sumY += apPdf[p];
         }
     }
@@ -185,8 +197,7 @@ void computeApPdf(const HairContext c, float cosThetaI, out float apPdf[kMaxScat
 
 }
 
-/** Longitudinal scattering function Mp
-*/
+// Longitudinal scattering function Mp
 float Mp(float cosThetaI, float cosThetaO, float sinThetaI, float sinThetaO, float v)
 {
     float a = cosThetaI * cosThetaO / v;
@@ -197,8 +208,7 @@ float Mp(float cosThetaI, float cosThetaO, float sinThetaI, float sinThetaO, flo
 }
 
 
-/** Azimuthal scattering function Np
-*/
+// Azimuthal scattering function Np
 float Np(float phi, int p, float s, float gammaI, float gammaT)
 {
     float dphi = phi - phiFunction(p, gammaI, gammaT);
@@ -213,7 +223,7 @@ float Np(float phi, int p, float s, float gammaI, float gammaT)
     return trimmedLogistic(dphi, s, -kPi, kPi);
 }
 
-HairContext HairContextInit(const HairSurfaceData sd, const HairData data)
+HairContext HairContextInit(HairSurfaceData sd, HairData data)
 {
     HairContext context = (HairContext)0;
     context.sigmaA = sigmaAFromColor(data.baseColor, data.betaN);
@@ -225,7 +235,7 @@ HairContext HairContextInit(const HairSurfaceData sd, const HairData data)
     // so eta = 1.0 / IoR
     context.eta = 1.0 / context.IoR;
 
-    // Compute offset h azimuthally with the unit circle cross section.
+    // Compute offset h azimuthally with the unit circle cross section
     float3 wiProj = normalize(sd.V - dot(sd.V, sd.T) * sd.T);   // Project wi to the (B, N) plane
     float3 wiProjPerp = cross(wiProj, sd.T);
     context.h = dot(sd.N, wiProjPerp);
@@ -246,7 +256,7 @@ HairContext HairContextInit(const HairSurfaceData sd, const HairData data)
 
     // Compute alpha terms for hair scales
     context.sin2kAlpha[0] = sin(context.alpha / 180.f * kPi);
-    context.cos2kAlpha[0] = sqrt(saturate(1.f - context.sin2kAlpha[0] * context.sin2kAlpha[0]));
+    context.cos2kAlpha[0] = sqrt01(1.f - context.sin2kAlpha[0] * context.sin2kAlpha[0]);
     [unroll]
     for (uint i = 1; i < 3; i++)
     {
@@ -257,23 +267,23 @@ HairContext HairContextInit(const HairSurfaceData sd, const HairData data)
     return context;
 }
 
-float3 HairEval(HairContext c, const float3 wi, const float3 wo)
+float3 HairEval(HairContext c, float3 wi, float3 wo)
 {
     float sinThetaI = wi.x;
-    float cosThetaI = sqrt(saturate(1.f - sinThetaI * sinThetaI));
-    float phiI = atan2(wi.z, wi.y);
+    float cosThetaI = sqrt01(1.f - sinThetaI * sinThetaI);
+    float phiI = atan2safe(wi.z, wi.y);
 
     float sinThetaO = wo.x;
-    float cosThetaO = sqrt(saturate(1.f - sinThetaO * sinThetaO));
-    float phiO = atan2(wo.z, wo.y);
+    float cosThetaO = sqrt01(1.f - sinThetaO * sinThetaO);
+    float phiO = atan2safe(wo.z, wo.y);
 
-    // Compute refracted ray.
+    // Compute refracted ray
     float sinThetaT = sinThetaI / c.IoR;
-    float cosThetaT = sqrt(saturate(1.f - sinThetaT * sinThetaT));
+    float cosThetaT = sqrt01(1.f - sinThetaT * sinThetaT);
 
-    float etap = sqrt(c.IoR * c.IoR - sinThetaI * sinThetaI) / cosThetaI;
+    float etap = sqrt0(c.IoR * c.IoR - sinThetaI * sinThetaI) / cosThetaI;
     float sinGammaT = c.h / etap;
-    float cosGammaT = sqrt(saturate(1.f - sinGammaT * sinGammaT));
+    float cosGammaT = sqrt01(1.f - sinGammaT * sinGammaT);
     float gammaT = asin(clamp(sinGammaT, -1.f, 1.f));
 
     // Compute the transmittance T of a single path through the cylinder
@@ -321,24 +331,22 @@ float3 HairEval(HairContext c, const float3 wi, const float3 wo)
     return saturate( result );
 }
 
-bool HairSampleRay(const HairContext c, const float3 wi, out float3 wo, out float pdf, out float3 weight, float2 u[2])
+float HairSampleRay(HairContext c, float3 wi, float4 rnd, out float3 wo)
 {
     float sinThetaI = wi.x;
-    float cosThetaI = sqrt(saturate(1.f - sinThetaI * sinThetaI));
-    float phiI = atan2(wi.z, wi.y);
+    float cosThetaI = sqrt01(1.f - sinThetaI * sinThetaI);
+    float phiI = atan2safe(wi.z, wi.y);
 
-    //float2 u[2] = { sampleNext2D(sg), sampleNext2D(sg) };
-
-    // Determine which term p to sample for hair scattering.
+    // Determine which term p to sample for hair scattering
     float apPdf[kMaxScatterEvents + 1];
     computeApPdf(c, cosThetaI, apPdf);
 
     uint p = 0;
     float vp = c.v[0];
     // Use compile-time for to avoid stack allocation
-    // while (p < kMaxScatterEvents && u[0].x >= apPdf[p])
+    // while (p < kMaxScatterEvents && rnd.x >= apPdf[p])
     // {
-    //     u[0].x -= apPdf[p];
+    //     rnd.x -= apPdf[p];
     //     p++;
     //     vp = v[p];
     // }
@@ -347,9 +355,9 @@ bool HairSampleRay(const HairContext c, const float3 wi, out float3 wo, out floa
         [unroll]
         for (uint i = 0; i < kMaxScatterEvents; i++)
         {
-            if (!done && u[0].x >= apPdf[i])
+            if (!done && rnd.x >= apPdf[i])
             {
-                u[0].x -= apPdf[i];
+                rnd.x -= apPdf[i];
                 p = i + 1;
                 vp = c.v[i + 1];
             }
@@ -358,7 +366,8 @@ bool HairSampleRay(const HairContext c, const float3 wi, out float3 wo, out floa
         }
     }
 
-    float sinThetaIp, cosThetaIp;
+    float sinThetaIp = sinThetaI;
+    float cosThetaIp = cosThetaI;
     if (p == 0)
     {
         sinThetaIp = sinThetaI * c.cos2kAlpha[1] - cosThetaI * c.sin2kAlpha[1];
@@ -374,35 +383,30 @@ bool HairSampleRay(const HairContext c, const float3 wi, out float3 wo, out floa
         sinThetaIp = sinThetaI * c.cos2kAlpha[2] + cosThetaI * c.sin2kAlpha[2];
         cosThetaIp = cosThetaI * c.cos2kAlpha[2] - sinThetaI * c.sin2kAlpha[2];
     }
-    else
-    {
-        sinThetaIp = sinThetaI;
-        cosThetaIp = cosThetaI;
-    }
 
     // Sample Mp to compute thetaO
-    u[1].x = max(u[1].x, 1e-5f);
-    float cosTheta = 1.f + vp * log(u[1].x + (1.f - u[1].x) * exp(-2.f / vp));
-    float sinTheta = sqrt(saturate(1.f - cosTheta * cosTheta));
-    float cosPhi = cos(u[1].y * k2Pi);
+    //rnd.z = max(rnd.z, 1e-5f);
+    float cosTheta = clamp(1.f + vp * log(rnd.z + (1.f - rnd.z) * exp(-2.f / vp)), -1.0, 1.0);
+    float sinTheta = sqrt01(1.f - cosTheta * cosTheta);
+    float cosPhi = cos(rnd.w * k2Pi);
     float sinThetaO = -cosTheta * sinThetaIp + sinTheta * cosPhi * cosThetaIp;
-    float cosThetaO = sqrt(saturate(1.f - sinThetaO * sinThetaO));
+    float cosThetaO = sqrt01(1.f - sinThetaO * sinThetaO);
 
     // Sample Np to compute dphi
-    float etap = sqrt(saturate(c.IoR * c.IoR - sinThetaI * sinThetaI)) / cosThetaI;
+    float etap = sqrt0(c.IoR * c.IoR - sinThetaI * sinThetaI) / cosThetaI;
     float sinGammaT = c.h / etap;
     float gammaT = asin(clamp(sinGammaT, -1.f, 1.f));
     float dphi;
     if (p < kMaxScatterEvents)
-        dphi = phiFunction(p, c.gammaI, gammaT) + sampleTrimmedLogistic(u[0].y, c.s, -kPi, kPi);
+        dphi = phiFunction(p, c.gammaI, gammaT) + sampleTrimmedLogistic(rnd.y, c.s, -kPi, kPi);
     else
-        dphi = u[0].y * k2Pi;
+        dphi = rnd.y * k2Pi;
 
     float phiO = phiI + dphi;
     wo = float3(sinThetaO, cosThetaO * cos(phiO), cosThetaO * sin(phiO));
 
     // Compute pdf.
-    pdf = 0;
+    float pdf = 0;
 
     [unroll]
     for (uint i = 0; i < kMaxScatterEvents; i++)
@@ -435,10 +439,5 @@ bool HairSampleRay(const HairContext c, const float3 wi, out float3 wo, out floa
 
     pdf += Mp(cosThetaI, cosThetaO, sinThetaI, sinThetaO, c.v[kMaxScatterEvents]) * apPdf[kMaxScatterEvents] * k1_2Pi;
 
-    if( pdf < 0.001 )
-        pdf = 0;
-
-    weight = pdf == 0.0 ? 0.0 : HairEval(c, wi, wo) / pdf;
-
-    return pdf != 0.0;
+    return pdf;
 }

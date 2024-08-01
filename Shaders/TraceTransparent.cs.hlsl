@@ -11,11 +11,13 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #include "Include/Shared.hlsli"
 #include "Include/RaytracingShared.hlsli"
 
+#define SHARC_QUERY 1
+#include "SharcCommon.h"
+
 // Inputs
 NRI_RESOURCE( Texture2D<float>, gIn_ViewZ, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float3>, gIn_ComposedDiff, t, 1, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_ComposedSpec_ViewZ, t, 2, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_Ambient, t, 3, 1 );
 
 // Outputs
 NRI_RESOURCE( RWTexture2D<float4>, gOut_Composed, u, 0, 1 );
@@ -48,7 +50,7 @@ struct TraceTransparentDesc
 //      - add missing component (reflection or refraction) from neighboring pixels
 float3 TraceTransparent( TraceTransparentDesc desc )
 {
-    float eta = STL::BRDF::IOR::Air / STL::BRDF::IOR::Glass;
+    float eta = BRDF::IOR::Air / BRDF::IOR::Glass;
 
     GeometryProps geometryProps = desc.geometryProps;
     float pathThroughput = 1.0;
@@ -59,12 +61,12 @@ float3 TraceTransparent( TraceTransparentDesc desc )
     {
         // Reflection or refraction?
         float NoV = abs( dot( geometryProps.N, geometryProps.V ) );
-        float F = STL::BRDF::FresnelTerm_Dielectric( eta, NoV );
+        float F = BRDF::FresnelTerm_Dielectric( eta, NoV );
 
         if( bounce == 1 )
             pathThroughput *= isReflection ? F : 1.0 - F;
         else
-            isReflection = STL::Rng::Hash::GetFloat( ) < F;
+            isReflection = Rng::Hash::GetFloat( ) < F;
 
         // Compute ray
         float3 ray = reflect( -geometryProps.V, geometryProps.N );
@@ -83,10 +85,10 @@ float3 TraceTransparent( TraceTransparentDesc desc )
         }
 
         // Trace
-        float3 origin = _GetXoffset( geometryProps.X, geometryProps.N * STL::Math::Sign( dot( ray, geometryProps.N ) ) );
+        float3 Xoffset = geometryProps.GetXoffset( geometryProps.N * Math::Sign( dot( ray, geometryProps.N ) ) );
         uint flags = bounce == desc.bounceNum ? GEOMETRY_IGNORE_TRANSPARENT : GEOMETRY_ALL;
 
-        geometryProps = CastRay( origin, ray, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, 0.0 ), gWorldTlas, flags, 0 );
+        geometryProps = CastRay( Xoffset, ray, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, 0.0 ), gWorldTlas, flags, 0 );
 
         // TODO: glass internal extinction?
         // ideally each "medium" should have "eta" and "extinction" parameters in "TraceTransparentDesc" and "TraceOpaqueDesc"
@@ -94,35 +96,64 @@ float3 TraceTransparent( TraceTransparentDesc desc )
             pathThroughput *= 0.96;
 
         // Is opaque hit found?
-        if( !geometryProps.IsTransparent( ) )
+        if( !geometryProps.Has( FLAG_TRANSPARENT ) )
         {
             MaterialProps materialProps = GetMaterialProps( geometryProps );
 
-            // L1 cache - reproject previous frame, carefully treating specular
-            float3 prevLdiff, prevLspec;
-            float reprojectionWeight = ReprojectIrradiance( false, !isReflection, gIn_ComposedDiff, gIn_ComposedSpec_ViewZ, geometryProps, desc.pixelPos, prevLdiff, prevLspec );
-            float4 Lcached = float4( prevLdiff + prevLspec, reprojectionWeight );
-
-            // Compute lighting at hit point
-            if( Lcached.w != 1.0 )
+            // Lighting
+            float4 Lcached = float4( materialProps.Lemi, 1.0 );
+            if( !geometryProps.IsSky( ) && NRD_MODE < OCCLUSION )
             {
-                float3 L = materialProps.Ldirect;
-                if( STL::Color::Luminance( L ) != 0 && !gDisableShadowsAndEnableImportanceSampling )
-                    L *= CastVisibilityRay_AnyHit( geometryProps.GetXoffset( ), gSunDirection_gExposure.xyz, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness ), gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
+                // L1 cache - reproject previous frame, carefully treating specular
+                float3 prevLdiff, prevLspec;
+                float reprojectionWeight = ReprojectIrradiance( false, !isReflection, gIn_ComposedDiff, gIn_ComposedSpec_ViewZ, geometryProps, desc.pixelPos, prevLdiff, prevLspec );
+                Lcached = float4( prevLdiff + prevLspec, reprojectionWeight );
 
-                L += materialProps.Lemi;
+                // L2 cache - SHARC
+                if( gSHARC )
+                {
+                    GridParameters gridParameters = ( GridParameters )0;
+                    gridParameters.cameraPosition = gCameraGlobalPos.xyz;
+                    gridParameters.cameraPositionPrev = gCameraGlobalPosPrev.xyz;
+                    gridParameters.sceneScale = SHARC_SCENE_SCALE;
+                    gridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
 
-                // Ambient estimation at the end of the path
-                float3 BRDF = GetAmbientBRDF( geometryProps, materialProps );
-                BRDF *= 1.0 + EstimateDiffuseProbability( geometryProps, materialProps, true );
+                    float3 Xglobal = GetGlobalPos( geometryProps.X );
+                    uint level = GetGridLevel( Xglobal, gridParameters );
+                    float voxelSize = GetVoxelSize( level, gridParameters );
+                    float smc = GetSpecMagicCurve( materialProps.roughness );
 
-                float3 Lamb = gIn_Ambient.SampleLevel( gLinearSampler, float2( 0.5, 0.5 ), 0 );
-                Lamb *= gAmbient;
+                    float3x3 mBasis = Geometry::GetBasis( geometryProps.N );
+                    float2 rndScaled = ( Rng::Hash::GetFloat2( ) - 0.5 ) * voxelSize * USE_SHARC_DITHERING;
+                    Xglobal += mBasis[ 0 ] * rndScaled.x + mBasis[ 1 ] * rndScaled.y;
 
-                L += Lamb * BRDF;
+                    SharcHitData sharcHitData = ( SharcHitData )0;
+                    sharcHitData.positionWorld = Xglobal;
+                    sharcHitData.normalWorld = geometryProps.N;
 
-                // Mix
-                Lcached.xyz = lerp( L, Lcached.xyz, Lcached.w );
+                    SharcState sharcState;
+                    sharcState.gridParameters = gridParameters;
+                    sharcState.hashMapData.capacity = SHARC_CAPACITY;
+                    sharcState.hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
+                    sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
+
+                    bool isSharcAllowed = geometryProps.tmin > voxelSize; // voxel angular size is acceptable
+                    isSharcAllowed = isSharcAllowed && Rng::Hash::GetFloat( ) > Lcached.w; // propabilistically estimate the need
+
+                    float3 sharcRadiance = 0;
+                    if( isSharcAllowed && SharcGetCachedRadiance( sharcState, sharcHitData, sharcRadiance, false ) )
+                    {
+                        Lcached.xyz = max( sharcRadiance, materialProps.Lemi );
+                        Lcached.w = 1.0;
+                    }
+                }
+
+                // Cache miss - compute lighting, if not found in caches
+                if( Lcached.w != 1.0 )
+                {
+                    float3 L = GetShadowedLighting( geometryProps, materialProps, false );
+                    Lcached.xyz = lerp( L, Lcached.xyz, Lcached.w );
+                }
             }
 
             // Output
@@ -138,7 +169,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
 // MAIN
 //========================================================================================
 
-[numthreads( 16, 16, 1)]
+[numthreads( 16, 16, 1 )]
 void main( int2 pixelPos : SV_DispatchThreadId )
 {
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
@@ -149,7 +180,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         return;
 
     // Initialize RNG
-    STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
+    Rng::Hash::Initialize( pixelPos, gFrameIndex );
 
     // Composed without glass
     float3 diff = gIn_ComposedDiff[ pixelPos ];
@@ -162,8 +193,8 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     GetCameraRay( cameraRayOrigin, cameraRayDirection, sampleUv );
 
     float viewZ = gIn_ViewZ[ pixelPos ];
-    float3 Xv = STL::Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gViewDirection_gOrthoMode.w );
-    float tmin0 = gViewDirection_gOrthoMode.w == 0 ? length( Xv ) : abs( Xv.z );
+    float3 Xv = Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
+    float tmin0 = gOrthoMode == 0 ? length( Xv ) : abs( Xv.z );
 
     GeometryProps geometryPropsT = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, tmin0, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, gTransparent == 0.0 ? 0 : GEOMETRY_ONLY_TRANSPARENT, 0 );
 

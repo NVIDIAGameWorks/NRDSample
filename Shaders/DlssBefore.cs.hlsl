@@ -26,12 +26,12 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         return;
 
     float viewZ = gOut_ViewZ[ pixelPos ];
-    float3 Xv = STL::Geometry::ReconstructViewPosition( pixelUv, gCameraFrustum, viewZ, gViewDirection_gOrthoMode.w );
+    float3 Xv = Geometry::ReconstructViewPosition( pixelUv, gCameraFrustum, viewZ, gOrthoMode );
 
     // Recalculate viewZ to depth ( needed for SR )
     if( gSR )
     {
-        float4 clipPos = STL::Geometry::ProjectiveTransform( gViewToClip, Xv );
+        float4 clipPos = Geometry::ProjectiveTransform( gViewToClip, Xv );
         gOut_ViewZ[ pixelPos ] = clipPos.z / clipPos.w;
     }
 
@@ -39,8 +39,8 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     float3 mv = gInOut_Mv[ pixelPos ];
     if( gIsWorldSpaceMotionEnabled )
     {
-        float3 Xprev = STL::Geometry::AffineTransform( gViewToWorld, Xv ) + mv;
-        float2 pixelUvPrev = STL::Geometry::GetScreenUv( gWorldToClipPrev, Xprev );
+        float3 Xprev = Geometry::AffineTransform( gViewToWorld, Xv ) + mv;
+        float2 pixelUvPrev = Geometry::GetScreenUv( gWorldToClipPrev, Xprev );
         mv.xy = ( pixelUvPrev - pixelUv ) * gRenderSize;
         gInOut_Mv[ pixelPos ] = mv;
     }

@@ -12,11 +12,11 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 NRI_RESOURCE( Texture2D<float3>, gIn_Mv, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_ComposedLighting_ViewZ, t, 1, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_History, t, 2, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_History, t, 2, 1 );
 
-NRI_RESOURCE( RWTexture2D<float3>, gOut_Result, u, 0, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_Result, u, 0, 1 );
 
-#define BORDER          1
+#define BORDER          2
 #define GROUP_X         16
 #define GROUP_Y         16
 #define BUFFER_X        ( GROUP_X + BORDER * 2 )
@@ -44,12 +44,25 @@ void Preload( uint2 sharedPos, int2 globalPos )
     float4 color_viewZ = gIn_ComposedLighting_ViewZ[ globalPos ];
     color_viewZ.xyz = ApplyExposure( color_viewZ.xyz );
     color_viewZ.xyz = ApplyTonemap( color_viewZ.xyz );
-    color_viewZ.w = abs( color_viewZ.w ) * STL::Math::Sign( gNearZ ) / NRD_FP16_VIEWZ_SCALE;
+    color_viewZ.w = abs( color_viewZ.w ) * Math::Sign( gNearZ ) / FP16_VIEWZ_SCALE;
 
     s_Data[ sharedPos.y ][ sharedPos.x ] = color_viewZ;
 }
 
-#define TAA_HISTORY_SHARPNESS 0.66
+// TODO: move to ml?
+// https://www.cs.rit.edu/~ncs/color/t_convert.html
+// http://www.brucelindbloom.com/index.html?Eqn_RGB_XYZ_Matrix.html
+float3 XyzToLab( float3 x )
+{
+    x /= float3( 95.0489, 100.0, 108.8840 );
+    x = lerp( 7.787 * x + 16.0 / 116.0, pow( x, 0.333333 ), x > 0.008856 );
+
+    float l = lerp( 903.3 * x.y, 116.0 * pow( x.y, 0.333333 ) - 16.0, x.y > 0.008856 );
+    float a = 500.0 * ( x.x - x.y );
+    float b = 200.0 * ( x.y - x.z );
+
+    return float3( l, a, b );
+}
 
 [numthreads( GROUP_X, GROUP_Y, 1 )]
 void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadId, uint threadIndex : SV_GroupIndex )
@@ -98,40 +111,52 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     m1 *= invSum;
     m2 *= invSum;
 
-    float3 sigma = sqrt( abs( m2 - m1 * m1 ) );
+    float3 sigma = sqrt( abs( m2 - m1 * m1 ) ); // TODO: increase sigma for hair and glass?
 
     // Previous pixel position
-    float3 Xv = STL::Geometry::ReconstructViewPosition( pixelUv, gCameraFrustum, viewZnearest, gViewDirection_gOrthoMode.w );
-    float3 X = STL::Geometry::AffineTransform( gViewToWorld, Xv );
+    float3 Xv = Geometry::ReconstructViewPosition( pixelUv, gCameraFrustum, viewZnearest, gOrthoMode );
+    float3 X = Geometry::AffineTransform( gViewToWorld, Xv );
     float3 mv = gIn_Mv[ pixelPos + offseti - BORDER ] * ( gIsWorldSpaceMotionEnabled ? 1.0 : gInvRectSize.xyy );
     float2 pixelUvPrev = pixelUv + mv.xy;
 
     if( gIsWorldSpaceMotionEnabled )
-        pixelUvPrev = STL::Geometry::GetScreenUv( gWorldToClipPrev, X + mv );
+        pixelUvPrev = Geometry::GetScreenUv( gWorldToClipPrev, X + mv );
 
     // History
     float2 pixelPosPrev = saturate( pixelUvPrev ) * gRectSizePrev;
-    float3 history = BicubicFilterNoCorners( gIn_History, gLinearSampler, pixelPosPrev, gInvRenderSize, TAA_HISTORY_SHARPNESS ).xyz;
+    float4 history = BicubicFilterNoCorners( gIn_History, gLinearSampler, pixelPosPrev, gInvRenderSize, TAA_HISTORY_SHARPNESS );
+
+    history.xyz = max( history.xyz, 0.0 ); // yes, not "saturate"
 
     bool isSrgb = gIsSrgb && ( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR );
     if( isSrgb )
-        history = STL::Color::FromSrgb( history );
+        history.xyz = Color::FromSrgb( history.xyz );
 
-    // History clamping
-    // IMPORTANT: must be done in linear space
-    float3 historyClamped = STL::Color::ClampAabb( m1, sigma, history );
+    // Update mix rate
+    float mixRate = saturate( history.w );
+    mixRate /= 1.0 + mixRate;
 
-    // History weight
-    bool isInScreen = float( all( saturate( pixelUvPrev ) == pixelUvPrev ) );
-    float historyWeight = gTAA;
-    historyWeight *= float( gTAA != 0 );
-    historyWeight *= float( isInScreen );
+    // Disocclusion #1
+    bool isInScreen = all( saturate( pixelUvPrev ) == pixelUvPrev );
+    mixRate = ( !isInScreen || pixelUv.x < gSeparator ) ? 1.0 : mixRate;
+
+    // Disocclusion #2
+    float3 clampedHistory = Color::ClampAabb( m1, sigma, history.xyz );
+    #if 1 // good enough
+        mixRate += length( clampedHistory - history.xyz ) * 0.75;
+    #else
+        float3 a = XyzToLab( Color::RgbToXyz( clampedHistory ) );
+        float3 b = XyzToLab( Color::RgbToXyz( history.xyz ) );
+
+        const float JND = 2.3; // just noticable difference
+        mixRate += length( a - b ) / ( JND * 3.0 );
+    #endif
+
+    // Clamp mix rate
+    mixRate = clamp( mixRate, gTAA, 1.0 );
 
     // Final mix
-    float3 result = lerp( input, historyClamped, historyWeight );
-
-    // Split screen - noisy input / denoised output
-    result = pixelUv.x < gSeparator ? input : result;
+    float3 result = lerp( clampedHistory, input, mixRate );
 
     // Split screen - vertical line
     float verticalLine = saturate( 1.0 - abs( pixelUv.x - gSeparator ) * gRectSize.x / 3.5 );
@@ -143,14 +168,14 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     result = lerp( result, nvColor * verticalLine, verticalLine );
 
     // Dithering
-    STL::Rng::Hash::Initialize( pixelPos, gFrameIndex );
+    Rng::Hash::Initialize( pixelPos, gFrameIndex );
 
-    float rnd = STL::Rng::Hash::GetFloat( );
+    float rnd = Rng::Hash::GetFloat( );
     result += ( rnd * 2.0 - 1.0 ) / 1023.0;
 
     // Output
     if( isSrgb )
-        result = STL::Color::ToSrgb( result );
+        result = Color::ToSrgb( result );
 
-    gOut_Result[ pixelPos ] = result;
+    gOut_Result[ pixelPos ] = float4( result, mixRate );
 }

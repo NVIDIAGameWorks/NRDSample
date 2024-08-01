@@ -12,13 +12,13 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #include "Include/RaytracingShared.hlsli"
 
 // Inputs
-NRI_RESOURCE( StructuredBuffer<uint>, gIn_MorphMeshIndices, t, 0, 3 );
-NRI_RESOURCE( StructuredBuffer<float4>, gIn_MorphedPositions, t, 1, 3 );
-NRI_RESOURCE( StructuredBuffer<MorphedAttributes>, gIn_MorphedAttributes, t, 2, 3 );
+NRI_RESOURCE( StructuredBuffer<uint>, gIn_MorphMeshIndices, t, 0, SET_MORPH );
+NRI_RESOURCE( StructuredBuffer<float16_t4>, gIn_MorphedPositions, t, 1, SET_MORPH );
+NRI_RESOURCE( StructuredBuffer<MorphedAttributes>, gIn_MorphedAttributes, t, 2, SET_MORPH );
 
 // Outputs
-NRI_RESOURCE( RWStructuredBuffer<PrimitiveData>, gInOut_PrimitiveData, u, 0, 3 );
-NRI_RESOURCE( RWStructuredBuffer<MorphedPrimitivePrevData>, gOut_PrimitivePrevData, u, 1, 3 );
+NRI_RESOURCE( RWStructuredBuffer<PrimitiveData>, gInOut_PrimitiveData, u, 0, SET_MORPH );
+NRI_RESOURCE( RWStructuredBuffer<MorphedPrimitivePrevPositions>, gOut_PrimitivePrevPositions, u, 1, SET_MORPH );
 
 float ComputeWorldArea( float3 p0, float3 p1, float3 p2 )
 {
@@ -30,17 +30,17 @@ float ComputeWorldArea( float3 p0, float3 p1, float3 p2 )
 
 float ComputeCurvature( float3 p0, float3 p1, float3 p2, float3 n0, float3 n1, float3 n2, float worldArea )
 {
-    float curvature10 = abs( dot( n1 - n0, p1 - p0 ) ) / STL::Math::LengthSquared( p1 - p0 );
-    float curvature21 = abs( dot( n2 - n1, p2 - p1 ) ) / STL::Math::LengthSquared( p2 - p1 );
-    float curvature02 = abs( dot( n0 - n2, p0 - p2 ) ) / STL::Math::LengthSquared( p0 - p2 );
+    float curvature10 = abs( dot( n1 - n0, p1 - p0 ) ) / Math::LengthSquared( p1 - p0 );
+    float curvature21 = abs( dot( n2 - n1, p2 - p1 ) ) / Math::LengthSquared( p2 - p1 );
+    float curvature02 = abs( dot( n0 - n2, p0 - p2 ) ) / Math::LengthSquared( p0 - p2 );
 
     float curvature = max( max( curvature10, curvature21 ), curvature02 );
 
     // Stage 2
     float invTriArea = 1.0f / ( worldArea * 0.5f );
-    curvature10 = STL::Math::Sqrt( STL::Math::LengthSquared( n1 - n0 ) * invTriArea );
-    curvature21 = STL::Math::Sqrt( STL::Math::LengthSquared( n2 - n1 ) * invTriArea );
-    curvature02 = STL::Math::Sqrt( STL::Math::LengthSquared( n0 - n2 ) * invTriArea );
+    curvature10 = Math::Sqrt( Math::LengthSquared( n1 - n0 ) * invTriArea );
+    curvature21 = Math::Sqrt( Math::LengthSquared( n2 - n1 ) * invTriArea );
+    curvature02 = Math::Sqrt( Math::LengthSquared( n0 - n2 ) * invTriArea );
 
     curvature = max( curvature, curvature10 );
     curvature = max( curvature, curvature21 );
@@ -55,12 +55,15 @@ float ComputeWorldToUvUnits( float2 uv0, float2 uv1, float2 uv2, float worldArea
     float3 uvEdge10 = float3( uv1 - uv0, 0.0f );
     float uvArea = length( cross( uvEdge20, uvEdge10 ) );
 
-    return uvArea == 0 ? 1.0f : STL::Math::Sqrt( uvArea / worldArea );
+    return uvArea == 0 ? 1.0f : Math::Sqrt( uvArea / worldArea );
 }
 
-[numthreads( 256, 1, 1 )]
+[numthreads( LINEAR_BLOCK_SIZE, 1, 1 )]
 void main( uint primitiveIndex : SV_DispatchThreadId )
 {
+    if( primitiveIndex >= gNumPrimitives )
+        return;
+
     uint i0 = gIn_MorphMeshIndices[ gIndexOffset + primitiveIndex * 3 + 0 ];
     uint i1 = gIn_MorphMeshIndices[ gIndexOffset + primitiveIndex * 3 + 1 ];
     uint i2 = gIn_MorphMeshIndices[ gIndexOffset + primitiveIndex * 3 + 2 ];
@@ -71,8 +74,7 @@ void main( uint primitiveIndex : SV_DispatchThreadId )
 
     PrimitiveData result = gInOut_PrimitiveData[ gPrimitiveOffset + primitiveIndex ];
 
-    // TODO: not needed for hair because in any case curvature defined ONLY by hair thickness will be found
-    // We need macro-curvature computed based on tangents (or macro normals, computed based on tangents!)
+    // TODO: not needed for hair because in any case the curvature defined ONLY by hair thickness will be found (not very useful)
     #if 0
         float3 p0 = gIn_MorphedPositions[ gPositionFrameOffsets.x + i0 ].xyz;
         float3 p1 = gIn_MorphedPositions[ gPositionFrameOffsets.x + i1 ].xyz;
@@ -82,9 +84,9 @@ void main( uint primitiveIndex : SV_DispatchThreadId )
         float2 uv1 = ( float2 )result.uv1;
         float2 uv2 = ( float2 )result.uv2;
 
-        float3 n0 = STL::Packing::DecodeUnitVector( ( float2 )result.n0, true, true );
-        float3 n1 = STL::Packing::DecodeUnitVector( ( float2 )result.n1, true, true );
-        float3 n2 = STL::Packing::DecodeUnitVector( ( float2 )result.n2, true, true );
+        float3 n0 = Packing::DecodeUnitVector( ( float2 )result.n0, true, true );
+        float3 n1 = Packing::DecodeUnitVector( ( float2 )result.n1, true, true );
+        float3 n2 = Packing::DecodeUnitVector( ( float2 )result.n2, true, true );
 
         float worldArea = ComputeWorldArea( p0, p1, p2 );
         result.worldToUvUnits = ComputeWorldToUvUnits( uv0, uv1, uv2, worldArea );
@@ -105,7 +107,7 @@ void main( uint primitiveIndex : SV_DispatchThreadId )
     gInOut_PrimitiveData[ gPrimitiveOffset + primitiveIndex ] = result;
 
     uint index = gMorphedPrimitiveOffset + primitiveIndex;
-    gOut_PrimitivePrevData[ index ].position0 = gIn_MorphedPositions[ gPositionFrameOffsets.y + i0 ];
-    gOut_PrimitivePrevData[ index ].position1 = gIn_MorphedPositions[ gPositionFrameOffsets.y + i1 ];
-    gOut_PrimitivePrevData[ index ].position2 = gIn_MorphedPositions[ gPositionFrameOffsets.y + i2 ];
+    gOut_PrimitivePrevPositions[ index ].pos0 = gIn_MorphedPositions[ gPositionFrameOffsets.y + i0 ];
+    gOut_PrimitivePrevPositions[ index ].pos1 = gIn_MorphedPositions[ gPositionFrameOffsets.y + i1 ];
+    gOut_PrimitivePrevPositions[ index ].pos2 = gIn_MorphedPositions[ gPositionFrameOffsets.y + i2 ];
 }

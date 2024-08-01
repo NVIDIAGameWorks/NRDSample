@@ -104,6 +104,7 @@ private:
     struct NRIInterface
         : public nri::CoreInterface
         , public nri::WrapperVKInterface
+        , public nri::HelperInterface
     {};
 
     NRIInterface NRI = {};
