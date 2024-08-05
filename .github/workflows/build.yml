@@ -1,5 +1,8 @@
 name: Build NRD sample
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
@@ -7,18 +10,17 @@ jobs:
   Build-Windows:
     runs-on: windows-latest
     steps:
-      -
-        name : Checkout
-        uses: actions/checkout@v3
+      - name : Checkout
+        uses: actions/checkout@v4
         with:
           submodules: true
-      -
-        name: Install dependencies
-        uses: crazy-max/ghaction-chocolatey@v1
+
+      - name: Install dependencies
+        uses: crazy-max/ghaction-chocolatey@v3
         with:
           args: install windows-sdk-10.0 cmake -y
-      -
-        name: Install Vulkan
+
+      - name: Install Vulkan
         run: |
           $ver = (Invoke-WebRequest -Uri "https://vulkan.lunarg.com/sdk/latest.json" | ConvertFrom-Json).windows
           echo Vulkan SDK version $ver
@@ -26,21 +28,21 @@ jobs:
           Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanSDK-$ver-Installer.exe" -OutFile VulkanSDK.exe
           echo Downloaded
           .\VulkanSDK.exe --root C:\VulkanSDK --accept-licenses --default-answer --confirm-command install
-      -
-        name: Deploy NRD Sample
+
+      - name: Deploy NRD Sample
         run: |
           $Env:VULKAN_SDK = "C:/VulkanSDK/"
           $Env:Path += ";C:/VulkanSDK/Bin"
           .\1-Deploy.bat
-      -
-        name: Build NRD Sample
+
+      - name: Build NRD Sample
         run: |
           $Env:VULKAN_SDK = "C:/VulkanSDK/"
           $Env:Path += ";C:/VulkanSDK/Bin"
           .\2-Build.bat
-      -
-        name: Upload NRD Sample as artefact
-        uses: actions/upload-artifact@v3
+
+      - name: Upload NRD Sample as artefact
+        uses: actions/upload-artifact@v4
         with:
           name: NRD Sample
           path: |
