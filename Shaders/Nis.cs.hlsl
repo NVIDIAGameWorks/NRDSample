@@ -54,23 +54,26 @@ NRI_RESOURCE( RWTexture2D<float4>, gOut_Image, u, 0, 1 );
 #pragma warning( disable : 3203 )
 
 // Main
-#define NIS_SCALER                  1
-#define NIS_HDR_MODE                0
-#define NIS_BLOCK_WIDTH             32
-#define NIS_BLOCK_HEIGHT            32
-#define NIS_THREAD_GROUP_SIZE       128
-#define NIS_USE_HALF_PRECISION      1
-#define NIS_HLSL                    1
-#define NIS_VIEWPORT_SUPPORT        0
-
 #if( NRI_SHADER_MODEL >= 62 )
     #define NIS_HLSL_6_2            1
 #endif
 
 #include "NVIDIAImageScaling/NIS/NIS_Scaler.h"
 
+#if( USE_NIS == 1 )
+
 [numthreads( NIS_THREAD_GROUP_SIZE, 1, 1 )]
 void main( uint2 blockId : SV_GroupID, uint threadId : SV_GroupThreadID )
 {
     NVScaler( blockId, threadId );
 }
+
+#else
+
+[numthreads( NIS_BLOCK_WIDTH, NIS_BLOCK_HEIGHT, 1 )]
+void main( int2 pixelPos : SV_DispatchThreadId )
+{
+    gOut_Image[ pixelPos ] = gIn_Image[ pixelPos ];
+}
+
+#endif

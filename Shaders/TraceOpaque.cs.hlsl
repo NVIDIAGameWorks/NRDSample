@@ -17,7 +17,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 // Inputs
 NRI_RESOURCE( Texture2D<float3>, gIn_PrevComposedDiff, t, 0, 1 );
 NRI_RESOURCE( Texture2D<float4>, gIn_PrevComposedSpec_PrevViewZ, t, 1, 1 );
-NRI_RESOURCE( Texture2D<uint3>, gIn_ScramblingRanking4spp, t, 2, 1 );
+NRI_RESOURCE( Texture2D<uint3>, gIn_ScramblingRanking, t, 2, 1 );
 NRI_RESOURCE( Texture2D<uint4>, gIn_Sobol, t, 3, 1 );
 
 // Outputs
@@ -37,30 +37,22 @@ NRI_RESOURCE( RWTexture2D<float4>, gOut_Spec, u, 10, 1 );
     NRI_RESOURCE( RWTexture2D<float4>, gOut_SpecSh, u, 12, 1 );
 #endif
 
-float2 GetBlueNoise( Texture2D<uint3> texScramblingRanking, uint2 pixelPos, bool isCheckerboard, uint seed, uint sampleIndex, uint sppVirtual = 1, uint spp = 1 )
+float2 GetBlueNoise( uint2 pixelPos, bool isCheckerboard, uint seed = 0 )
 {
-    // spp - samples per pixel taken in a single frame ( must be POW of 2! )
-    // virtualSpp - samples per pixel distributed in time ( across frames )
-    // "Xspp" in "gIn_Scrambling_Ranking" = virtualSpp * spp, there is a dedicated texture in "_Data/Textures/"!
-
-    // Based on:
-    //     https://eheitzresearch.wordpress.com/772-2/
-    // Source code and textures can be found here:
-    //     https://belcour.github.io/blog/research/publication/2019/06/17/sampling-bluenoise.html (but 2D only)
+    // https://eheitzresearch.wordpress.com/772-2/
+    // https://belcour.github.io/blog/research/publication/2019/06/17/sampling-bluenoise.html
 
     // Sample index
     uint frameIndex = isCheckerboard ? ( gFrameIndex >> 1 ) : gFrameIndex;
-    uint virtualSampleIndex = ( frameIndex + seed ) & ( sppVirtual - 1 );
-    sampleIndex &= spp - 1;
-    sampleIndex += virtualSampleIndex * spp;
+    uint sampleIndex = ( frameIndex + seed ) & ( BLUE_NOISE_TEMPORAL_DIM - 1 );
 
     // The algorithm
-    uint3 A = texScramblingRanking[ pixelPos & 127 ];
+    uint3 A = gIn_ScramblingRanking[ pixelPos & ( BLUE_NOISE_SPATIAL_DIM - 1 ) ];
     uint rankedSampleIndex = sampleIndex ^ A.z;
     uint4 B = gIn_Sobol[ uint2( rankedSampleIndex & 255, 0 ) ];
     float4 blue = ( float4( B ^ A.xyxy ) + 0.5 ) * ( 1.0 / 256.0 );
 
-    // Randomize in [ 0; 1 / 256 ] area to get rid of possible banding
+    // ( Optional ) Randomize in [ 0; 1 / 256 ] area to get rid of possible banding
     uint d = Sequence::Bayer4x4ui( pixelPos, gFrameIndex );
     float2 dither = ( float2( d & 3, d >> 2 ) + 0.5 ) * ( 1.0 / 4.0 );
     blue += ( dither.xyxy - 0.5 ) * ( 1.0 / 256.0 );
@@ -280,7 +272,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                     sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
 
                     bool isSharcAllowed = geometryProps.tmin > voxelSize; // voxel angular size is acceptable
-                    isSharcAllowed = isSharcAllowed && Rng::Hash::GetFloat( ) > Lcached.w; // propabilistically estimate the need
+                    isSharcAllowed = isSharcAllowed && Rng::Hash::GetFloat( ) > Lcached.w; // probabilistically estimate the need
                     isSharcAllowed = isSharcAllowed && desc.bounceNum == 0; // for PSR allowed only for the last bounce
 
                     float3 sharcRadiance = 0;
@@ -368,6 +360,8 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
         bool isDiffusePath = gTracingMode == RESOLUTION_HALF ? desc.checkerboard : ( i & 0x1 );
 
+        uint2 blueNoisePos = desc.pixelPos + uint2( Sequence::Weyl2D( 0.0, i ) * ( BLUE_NOISE_SPATIAL_DIM - 1 ) );
+
         [loop]
         for( uint bounceIndex = 1; bounceIndex <= desc.bounceNum && !geometryProps.IsSky( ); bounceIndex++ )
         {
@@ -382,7 +376,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 float diffuseProbability = EstimateDiffuseProbability( geometryProps, materialProps ) * float( !geometryProps.Has( FLAG_HAIR ) );
 
                 // Clamp probability to a sane range to guarantee a sample in 3x3 ( or 5x5 ) area
-                float rnd = Rng::Hash::GetFloat( ); // blue noise 32spp for 1st bounce
+                float rnd = Rng::Hash::GetFloat( );
                 if( gTracingMode == RESOLUTION_FULL_PROBABILISTIC && bounceIndex == 1 )
                 {
                     diffuseProbability = float( diffuseProbability != 0.0 ) * clamp( diffuseProbability, gMinProbability, 1.0 - gMinProbability );
@@ -411,11 +405,11 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 // If IS is enabled, generate up to IMPORTANCE_SAMPLES_NUM rays depending on roughness
                 // If IS is disabled, there is no need to generate up to IMPORTANCE_SAMPLES_NUM rays for specular because VNDF v3 doesn't produce rays pointing inside the surface
                 uint maxSamplesNum = 0;
-                if( bounceIndex == 1 && gDisableShadowsAndEnableImportanceSampling ) // TODO: use IS in each bounce?
+                if( bounceIndex == 1 && gDisableShadowsAndEnableImportanceSampling && NRD_MODE < OCCLUSION ) // TODO: use IS in each bounce?
                     maxSamplesNum = IMPORTANCE_SAMPLES_NUM * ( isDiffuse ? 1.0 : materialProps.roughness );
                 maxSamplesNum = max( maxSamplesNum, 1 );
 
-                if( geometryProps.Has( FLAG_HAIR ) )
+                if( geometryProps.Has( FLAG_HAIR ) && NRD_MODE < OCCLUSION )
                 {
                     if( isDiffuse )
                         break;
@@ -444,7 +438,11 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 {
                     for( uint sampleIndex = 0; sampleIndex < maxSamplesNum; sampleIndex++ )
                     {
-                        float2 rnd = Rng::Hash::GetFloat2( );
+                        #if( NRD_MODE < OCCLUSION )
+                            float2 rnd = Rng::Hash::GetFloat2( );
+                        #else
+                            float2 rnd = GetBlueNoise( blueNoisePos, gTracingMode == RESOLUTION_HALF );
+                        #endif
 
                         // Generate a ray in local space
                         float3 r;
@@ -642,7 +640,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                         sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
 
                         bool isSharcAllowed = geometryProps.tmin > voxelSize; // voxel angular size is acceptable
-                        isSharcAllowed = isSharcAllowed && Rng::Hash::GetFloat( ) > Lcached.w; // propabilistically estimate the need
+                        isSharcAllowed = isSharcAllowed && Rng::Hash::GetFloat( ) > Lcached.w; // probabilistically estimate the need
                         isSharcAllowed = isSharcAllowed && ( isDiffuse || Rng::Hash::GetFloat( ) < smc || bounceIndex == desc.bounceNum ); // allowed for diffuse-like events or last bounce
 
                         float3 sharcRadiance = 0;
@@ -934,7 +932,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     gOut_DirectEmission[ pixelPos ] = materialProps0.Lemi;
 
     // Sun shadow
-    float2 rnd = GetBlueNoise( gIn_ScramblingRanking4spp, pixelPos, false, 0, 0, 4 );
+    float2 rnd = GetBlueNoise( pixelPos, false );
     if( gDenoiserType == DENOISER_REFERENCE )
         rnd = Rng::Hash::GetFloat2( );
     rnd = ImportanceSampling::Cosine::GetRay( rnd ).xy;

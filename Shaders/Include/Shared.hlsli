@@ -21,7 +21,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 // SH - SH (spherical harmonics or spherical gaussian) denoisers
 // OCCLUSION - OCCLUSION (ambient or specular occlusion only) denoisers
 // DIRECTIONAL_OCCLUSION - DIRECTIONAL_OCCLUSION (ambient occlusion in SH mode) denoisers
-#define NRD_MODE                            NORMAL // NORMAL, SH, OCCLUSION, DIRECTIONAL_OCCLUSION
+#define NRD_MODE                            OCCLUSION // NORMAL, SH, OCCLUSION, DIRECTIONAL_OCCLUSION
 #define SIGMA_TRANSLUCENT                   1
 
 // Default = 1
@@ -29,6 +29,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define USE_PSR                             1 // allow primary surface replacement
 #define USE_SHARC_DITHERING                 1 // must be in [0; 1] range
 #define USE_TRANSLUCENCY                    1 // translucent foliage
+#define USE_NIS                             1 // NIS filter (debug only)
 
 // Default = 0
 #define USE_SANITIZATION                    0 // NRD sample is NAN/INF free
@@ -129,9 +130,21 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define SHARC_NORMAL_DITHER                 0.003
 #define SHARC_POS_DITHER                    0.001
 
+#define BLUE_NOISE_SPATIAL_DIM              128 // see StaticTexture::ScramblingRanking
+#define BLUE_NOISE_TEMPORAL_DIM             4 // good values: 4-8 for shadows, 8-16 for occlusion, 8-32 for lighting
+
 #define MORPH_MAX_ACTIVE_TARGETS_NUM        8u
 #define MORPH_ELEMENTS_PER_ROW_NUM          4
 #define MORPH_ROWS_NUM                      ( MORPH_MAX_ACTIVE_TARGETS_NUM / MORPH_ELEMENTS_PER_ROW_NUM )
+
+#define NIS_SCALER                          1
+#define NIS_HDR_MODE                        0
+#define NIS_BLOCK_WIDTH                     32
+#define NIS_BLOCK_HEIGHT                    32
+#define NIS_THREAD_GROUP_SIZE               128
+#define NIS_USE_HALF_PRECISION              1
+#define NIS_HLSL                            1
+#define NIS_VIEWPORT_SUPPORT                0
 
 // Instance flags
 #define FLAG_FIRST_BIT                      25 // this + number of flags must be <= 32
@@ -492,6 +505,8 @@ float GetCircleOfConfusion( float distance ) // diameter
 
 #define SKY_INTENSITY 1.0
 #define SUN_INTENSITY 10.0
+
+// TODO: add dither, use USE_FP11 = true
 
 float3 GetSunIntensity( float3 v )
 {

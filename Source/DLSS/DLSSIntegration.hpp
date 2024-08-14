@@ -3,7 +3,7 @@
 #include <assert.h> // assert
 #include <stdio.h> // printf
 
-static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 125, "Unsupported NRI version!");
+static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 140, "Unsupported NRI version!");
 
 // An ugly temp workaround until DLSS fix the problem
 #ifndef _WIN32
@@ -97,8 +97,8 @@ void DlssIntegration::SetupDeviceExtensions(nri::DeviceCreationDesc& desc)
         "VK_KHR_push_descriptor"
     };
 
-    desc.vulkanExtensions.deviceExtensions = vulkanExts;
-    desc.vulkanExtensions.deviceExtensionNum = 3;
+    desc.vkExtensions.deviceExtensions = vulkanExts;
+    desc.vkExtensions.deviceExtensionNum = 3;
 }
 
 inline NVSDK_NGX_Resource_VK DlssIntegration::SetupVulkanTexture(const DlssTexture& texture, bool isStorage)
@@ -119,7 +119,7 @@ bool DlssIntegration::InitializeLibrary(nri::Device& device, const char* appData
     uint32_t nriResult = (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::CoreInterface), (nri::CoreInterface*)&NRI);
     nriResult |= (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::HelperInterface), (nri::HelperInterface*)&NRI);
 
-    if (NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::VULKAN)
+    if (NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::VK)
         nriResult |= (uint32_t)nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::WrapperVKInterface), (nri::WrapperVKInterface*)&NRI);
 
     if ((nri::Result)nriResult != nri::Result::SUCCESS)
@@ -138,7 +138,7 @@ bool DlssIntegration::InitializeLibrary(nri::Device& device, const char* appData
         if (NVSDK_NGX_SUCCEED(result))
             result = NVSDK_NGX_D3D12_GetCapabilityParameters(&m_NgxParameters);
     }
-    else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VULKAN)
+    else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VK)
     {
         VkDevice vkDevice = (VkDevice)NRI.GetDeviceNativeObject(*m_Device);
         VkPhysicalDevice vkPhysicalDevice = (VkPhysicalDevice)NRI.GetVkPhysicalDevice(*m_Device);
@@ -226,7 +226,7 @@ bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInit
                 ID3D12GraphicsCommandList* d3d12CommandList = (ID3D12GraphicsCommandList*)NRI.GetCommandBufferNativeObject(*commandBuffer);
                 result = NGX_D3D12_CREATE_DLSS_EXT(d3d12CommandList, creationNodeMask, visibilityNodeMask, &m_SR, m_NgxParameters, &srCreateParams);
             }
-            else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VULKAN)
+            else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VK)
             {
                 VkCommandBuffer vkCommandBuffer = (VkCommandBuffer)NRI.GetCommandBufferNativeObject(*commandBuffer);
                 result = NGX_VULKAN_CREATE_DLSS_EXT(vkCommandBuffer, creationNodeMask, visibilityNodeMask, &m_SR, m_NgxParameters, &srCreateParams);
@@ -300,7 +300,7 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
             result = NGX_D3D12_EVALUATE_DLSS_EXT(d3dCommandList, m_SR, m_NgxParameters, &srParams);
         }
     }
-    else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VULKAN)
+    else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VK)
     {
         NVSDK_NGX_Resource_VK resourceOutput = SetupVulkanTexture(desc.texOutput, true);
         NVSDK_NGX_Resource_VK resourceInput = SetupVulkanTexture(desc.texInput);
@@ -373,7 +373,7 @@ void DlssIntegration::Shutdown()
 
         NVSDK_NGX_D3D12_Shutdown1(nullptr);
     }
-    else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VULKAN)
+    else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VK)
     {
         if (m_NgxParameters)
             NVSDK_NGX_VULKAN_DestroyParameters(m_NgxParameters);

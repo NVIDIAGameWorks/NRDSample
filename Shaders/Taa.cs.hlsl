@@ -42,7 +42,6 @@ void Preload( uint2 sharedPos, int2 globalPos )
     globalPos = clamp( globalPos, 0, gRectSize - 1.0 );
 
     float4 color_viewZ = gIn_ComposedLighting_ViewZ[ globalPos ];
-    color_viewZ.xyz = ApplyExposure( color_viewZ.xyz );
     color_viewZ.xyz = ApplyTonemap( color_viewZ.xyz );
     color_viewZ.w = abs( color_viewZ.w ) * Math::Sign( gNearZ ) / FP16_VIEWZ_SCALE;
 
@@ -128,6 +127,7 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
 
     history.xyz = max( history.xyz, 0.0 ); // yes, not "saturate"
 
+    // Remove transfer
     bool isSrgb = gIsSrgb && ( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR );
     if( isSrgb )
         history.xyz = Color::FromSrgb( history.xyz );
@@ -138,7 +138,7 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
 
     // Disocclusion #1
     bool isInScreen = all( saturate( pixelUvPrev ) == pixelUvPrev );
-    mixRate = ( !isInScreen || pixelUv.x < gSeparator ) ? 1.0 : mixRate;
+    mixRate = !isInScreen ? 1.0 : mixRate;
 
     // Disocclusion #2
     float3 clampedHistory = Color::ClampAabb( m1, sigma, history.xyz );
@@ -158,24 +158,10 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     // Final mix
     float3 result = lerp( clampedHistory, input, mixRate );
 
-    // Split screen - vertical line
-    float verticalLine = saturate( 1.0 - abs( pixelUv.x - gSeparator ) * gRectSize.x / 3.5 );
-    verticalLine = saturate( verticalLine / 0.5 );
-    verticalLine *= float( gSeparator != 0.0 );
-    verticalLine *= float( gRenderSize.x == gRectSize.x );
-
-    const float3 nvColor = float3( 118.0, 185.0, 0.0 ) / 255.0;
-    result = lerp( result, nvColor * verticalLine, verticalLine );
-
-    // Dithering
-    Rng::Hash::Initialize( pixelPos, gFrameIndex );
-
-    float rnd = Rng::Hash::GetFloat( );
-    result += ( rnd * 2.0 - 1.0 ) / 1023.0;
-
-    // Output
+    // Apply transfer
     if( isSrgb )
         result = Color::ToSrgb( result );
 
+    // Output
     gOut_Result[ pixelPos ] = float4( result, mixRate );
 }

@@ -138,7 +138,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
                     sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
 
                     bool isSharcAllowed = geometryProps.tmin > voxelSize; // voxel angular size is acceptable
-                    isSharcAllowed = isSharcAllowed && Rng::Hash::GetFloat( ) > Lcached.w; // propabilistically estimate the need
+                    isSharcAllowed = isSharcAllowed && Rng::Hash::GetFloat( ) > Lcached.w; // probabilistically estimate the need
 
                     float3 sharcRadiance = 0;
                     if( isSharcAllowed && SharcGetCachedRadiance( sharcState, sharcHitData, sharcRadiance, false ) )
@@ -218,13 +218,16 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         desc.bounceNum = 10;
 
         // IMPORTANT: use 1 reflection path and 1 refraction path at the primary glass hit to significantly reduce noise
-        // TODO: use probabilistic split at the primary glass hit when denoising is available
+        // TODO: use probabilistic split at the primary glass hit when denoising becomes available
         desc.isReflection = true;
         Lsum = TraceTransparent( desc );
 
         desc.isReflection = false;
         Lsum += TraceTransparent( desc );
     }
+
+    // Apply exposure
+    Lsum = ApplyExposure( Lsum );
 
     // Output
     float z = spec.w;

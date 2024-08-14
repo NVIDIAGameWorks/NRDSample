@@ -23,18 +23,10 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     float3 color = gOut_Image[ pixelPos ];
 
-    // Tonemap
+    bool isSrgb = gIsSrgb && ( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR );
     color = ApplyTonemap( color );
-
-    // Dithering
-    Rng::Hash::Initialize( pixelPos, gFrameIndex );
-
-    float rnd = Rng::Hash::GetFloat( );
-    color += ( rnd * 2.0 - 1.0 ) / 127.0;
-
-    // Conversion
-    if( gIsSrgb && ( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR ) )
-        color = Color::ToSrgb( color );
+    if( isSrgb )
+        color = Color::ToSrgb( saturate( color ) );
 
     // Output
     gOut_Image[ pixelPos ] = color;

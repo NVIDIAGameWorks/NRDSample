@@ -10,11 +10,8 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 #include "Include/Shared.hlsli"
 
-NRI_RESOURCE( Texture2D<float4>, gIn_ComposedLighting_ViewZ, t, 0, 1 );
-
 NRI_RESOURCE( RWTexture2D<float>, gOut_ViewZ, u, 0, 1 );
 NRI_RESOURCE( RWTexture2D<float3>, gInOut_Mv, u, 1, 1 );
-NRI_RESOURCE( RWTexture2D<float3>, gOut_FinalImage, u, 2, 1 );
 
 [numthreads( 16, 16, 1 )]
 void main( uint2 pixelPos : SV_DispatchThreadId )
@@ -36,19 +33,12 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     }
 
     // Patch MV, because 2D MVs needed
-    float3 mv = gInOut_Mv[ pixelPos ];
     if( gIsWorldSpaceMotionEnabled )
     {
+        float3 mv = gInOut_Mv[ pixelPos ];
         float3 Xprev = Geometry::AffineTransform( gViewToWorld, Xv ) + mv;
         float2 pixelUvPrev = Geometry::GetScreenUv( gWorldToClipPrev, Xprev );
         mv.xy = ( pixelUvPrev - pixelUv ) * gRenderSize;
         gInOut_Mv[ pixelPos ] = mv;
     }
-
-    // Apply exposure
-    float3 Lsum = gIn_ComposedLighting_ViewZ[ pixelPos ].xyz;
-    Lsum = ApplyExposure( Lsum );
-
-    // Output
-    gOut_FinalImage[ pixelPos ] = Lsum;
 }

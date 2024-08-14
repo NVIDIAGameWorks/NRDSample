@@ -10,10 +10,11 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 #include "Include/Shared.hlsli"
 
-NRI_RESOURCE( Texture2D<float4>, gIn_Image, t, 0, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Validation, t, 1, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_PostAA, t, 0, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_PreAA, t, 1, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Validation, t, 2, 1 );
 
-NRI_RESOURCE( RWTexture2D<float3>, gOut_Image, u, 0, 1 );
+NRI_RESOURCE( RWTexture2D<float3>, gOut_Final, u, 0, 1 );
 
 [numthreads( 16, 16, 1 )]
 void main( uint2 pixelPos : SV_DispatchThreadId )
@@ -24,22 +25,25 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     if( pixelUv.x > 1.0 || pixelUv.y > 1.0 )
         return;
 
-    // DLSS upscales render resolution to output resolution
-    float2 rectSize = gRectSize;
-    float2 invRenderSize = gInvRenderSize;
-    if( gSR || gRR )
-    {
-        rectSize = gOutputSize;
-        invRenderSize = gInvOutputSize;
-    }
-
     // Upsampling
-    float2 pixelPosScaled = pixelUv * rectSize;
-    float3 upsampled = BicubicFilterNoCorners( gIn_Image, gLinearSampler, pixelPosScaled, invRenderSize, 0.66 ).xyz;
+    float3 upsampled = BicubicFilterNoCorners( gIn_PostAA, gLinearSampler, pixelUv * gOutputSize, gInvOutputSize, 0.66 ).xyz;
+
+    // Noisy input
+    float3 input = gIn_PreAA.SampleLevel( gNearestSampler, pixelUv * gRectSize * gInvRenderSize, 0 ).xyz;
+
+    bool isSrgb = gIsSrgb && ( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR );
+    input = ApplyTonemap( input );
+    if( isSrgb )
+        input = Color::ToSrgb( saturate( input ) );
 
     // Split screen - noisy input / denoised output
-    float3 input = gIn_Image.SampleLevel( gNearestSampler, pixelPosScaled * invRenderSize, 0 ).xyz;
     float3 result = pixelUv.x < gSeparator ? input : upsampled;
+
+    // Dithering
+    Rng::Hash::Initialize( pixelPos, gFrameIndex );
+
+    float rnd = Rng::Hash::GetFloat( );
+    result += ( rnd - 0.5 ) / ( isSrgb ? 256.0 : 1024.0 );
 
     // Split screen - vertical line
     float verticalLine = saturate( 1.0 - abs( pixelUv.x - gSeparator ) * gWindowSize.x / 3.5 );
@@ -52,10 +56,10 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     // Validation layer
     if( gValidation )
     {
-        float4 validation = gIn_Validation.SampleLevel( gLinearSampler, pixelUv, 0 );
+        float4 validation = gIn_Validation.SampleLevel( gNearestSampler, pixelUv, 0 );
         result = lerp( result, validation.xyz, validation.w );
     }
 
     // Output
-    gOut_Image[ pixelPos ] = result;
+    gOut_Final[ pixelPos ] = result;
 }

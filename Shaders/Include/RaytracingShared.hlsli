@@ -579,10 +579,6 @@ float ReprojectIrradiance(
     float weight = 1.0;
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
 
-    // Ignore undenoised regions ( split screen mode is active )
-    weight *= float( pixelUv.x > gSeparator );
-    weight *= float( uv.x > gSeparator );
-
     // Relaxed checks for refractions
     float viewZ = abs( Geometry::AffineTransform( isPrevFrame ? gWorldToViewPrev : gWorldToView, geometryProps.X ).z );
     float err = ( viewZ - prevViewZ ) * Math::PositiveRcp( max( viewZ, prevViewZ ) );
