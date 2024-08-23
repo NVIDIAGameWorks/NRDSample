@@ -57,6 +57,10 @@ float2 GetBlueNoise( uint2 pixelPos, bool isCheckerboard, uint seed = 0 )
     float2 dither = ( float2( d & 3, d >> 2 ) + 0.5 ) * ( 1.0 / 4.0 );
     blue += ( dither.xyxy - 0.5 ) * ( 1.0 / 256.0 );
 
+    // Don't use blue noise in these cases
+    if( gDenoiserType == DENOISER_REFERENCE || gRR )
+        blue.xy = Rng::Hash::GetFloat2( );
+
     return saturate( blue.xy );
 }
 
@@ -273,7 +277,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                     bool isSharcAllowed = geometryProps.tmin > voxelSize; // voxel angular size is acceptable
                     isSharcAllowed = isSharcAllowed && Rng::Hash::GetFloat( ) > Lcached.w; // probabilistically estimate the need
-                    isSharcAllowed = isSharcAllowed && desc.bounceNum == 0; // for PSR allowed only for the last bounce
+                    isSharcAllowed = isSharcAllowed && desc.bounceNum == 0; // allow only for the last bounce for PSR
 
                     float3 sharcRadiance = 0;
                     if( isSharcAllowed && SharcGetCachedRadiance( sharcState, sharcHitData, sharcRadiance, false ) )
@@ -299,20 +303,21 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
             psrLsum = Lcached.xyz;
 
             // Update materials and INF emission
+            float3 psrNormal = float3( 0, 0, 1 );
             if( !geometryProps.IsSky( ) )
             {
-                float3 psrNormal = Geometry::RotateVectorInverse( mirrorMatrix, materialProps.N );
+                psrNormal = Geometry::RotateVectorInverse( mirrorMatrix, materialProps.N );
 
                 gOut_BaseColor_Metalness[ desc.pixelPos ] = float4( Color::ToSrgb( materialProps.baseColor ), materialProps.metalness );
-
-                // IMPORTANT: use another set of materialID to avoid potential leaking, because PSR uses own de-modulation scheme
-                gOut_Normal_Roughness[ desc.pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( psrNormal, materialProps.roughness, MATERIAL_ID_PSR );
             }
             else
             {
                 // Composition pass doesn't apply "psrThroughput" to INF pixels
                 gOut_DirectEmission[ desc.pixelPos ] = psrLsum * psrThroughput;
             }
+
+            // IMPORTANT: use another materialID to avoid potential leaking, because PSR uses own de-modulation scheme. Also needed for tracing of transparent stuff
+            gOut_Normal_Roughness[ desc.pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( psrNormal, materialProps.roughness, MATERIAL_ID_PSR );
 
             // Update viewZ
             float3 Xvirtual = desc.geometryProps.X - desc.geometryProps.V * accumulatedHitDist;
@@ -377,7 +382,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                 // Clamp probability to a sane range to guarantee a sample in 3x3 ( or 5x5 ) area
                 float rnd = Rng::Hash::GetFloat( );
-                if( gTracingMode == RESOLUTION_FULL_PROBABILISTIC && bounceIndex == 1 )
+                if( gTracingMode == RESOLUTION_FULL_PROBABILISTIC && bounceIndex == 1 && !gRR )
                 {
                     diffuseProbability = float( diffuseProbability != 0.0 ) * clamp( diffuseProbability, gMinProbability, 1.0 - gMinProbability );
                     rnd = Sequence::Bayer4x4( desc.pixelPos, gFrameIndex ) + rnd / 16.0;
@@ -623,7 +628,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                         float3 Xglobal = GetGlobalPos( geometryProps.X );
                         uint level = GetGridLevel( Xglobal, gridParameters );
                         float voxelSize = GetVoxelSize( level, gridParameters );
-                        float smc = GetSpecMagicCurve( accumulatedDiffuseLikeMotion ); // better than "materialProps.roughness"
+                        float smc = GetSpecMagicCurve( materialProps.roughness );
 
                         float3x3 mBasis = Geometry::GetBasis( geometryProps.N );
                         float2 rndScaled = ( Rng::Hash::GetFloat2( ) - 0.5 ) * voxelSize * USE_SHARC_DITHERING;
@@ -933,8 +938,6 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     // Sun shadow
     float2 rnd = GetBlueNoise( pixelPos, false );
-    if( gDenoiserType == DENOISER_REFERENCE )
-        rnd = Rng::Hash::GetFloat2( );
     rnd = ImportanceSampling::Cosine::GetRay( rnd ).xy;
     rnd *= gTanSunAngularRadius;
 

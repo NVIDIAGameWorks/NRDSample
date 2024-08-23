@@ -10,7 +10,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 #include "Include/Shared.hlsli"
 
-NRI_RESOURCE( RWTexture2D<float>, gOut_ViewZ, u, 0, 1 );
+NRI_RESOURCE( RWTexture2D<float>, gInOut_ViewZ, u, 0, 1 );
 NRI_RESOURCE( RWTexture2D<float3>, gInOut_Mv, u, 1, 1 );
 
 [numthreads( 16, 16, 1 )]
@@ -22,14 +22,14 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     if( pixelUv.x > 1.0 || pixelUv.y > 1.0 )
         return;
 
-    float viewZ = gOut_ViewZ[ pixelPos ];
+    float viewZ = gInOut_ViewZ[ pixelPos ];
     float3 Xv = Geometry::ReconstructViewPosition( pixelUv, gCameraFrustum, viewZ, gOrthoMode );
 
     // Recalculate viewZ to depth ( needed for SR )
     if( gSR )
     {
         float4 clipPos = Geometry::ProjectiveTransform( gViewToClip, Xv );
-        gOut_ViewZ[ pixelPos ] = clipPos.z / clipPos.w;
+        gInOut_ViewZ[ pixelPos ] = clipPos.z / clipPos.w;
     }
 
     // Patch MV, because 2D MVs needed

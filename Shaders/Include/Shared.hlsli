@@ -21,7 +21,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 // SH - SH (spherical harmonics or spherical gaussian) denoisers
 // OCCLUSION - OCCLUSION (ambient or specular occlusion only) denoisers
 // DIRECTIONAL_OCCLUSION - DIRECTIONAL_OCCLUSION (ambient occlusion in SH mode) denoisers
-#define NRD_MODE                            OCCLUSION // NORMAL, SH, OCCLUSION, DIRECTIONAL_OCCLUSION
+#define NRD_MODE                            NORMAL // NORMAL, SH, OCCLUSION, DIRECTIONAL_OCCLUSION
 #define SIGMA_TRANSLUCENT                   1
 
 // Default = 1
@@ -94,6 +94,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define MATERIAL_ID_METAL                   1
 #define MATERIAL_ID_PSR                     2
 #define MATERIAL_ID_HAIR                    3
+#define MATERIAL_NORM                       3.0
 
 // Mip mode
 #define MIP_VISIBILITY                      0 // for visibility: emission, shadow and alpha mask
@@ -505,8 +506,6 @@ float GetCircleOfConfusion( float distance ) // diameter
 
 #define SKY_INTENSITY 1.0
 #define SUN_INTENSITY 10.0
-
-// TODO: add dither, use USE_FP11 = true
 
 float3 GetSunIntensity( float3 v )
 {

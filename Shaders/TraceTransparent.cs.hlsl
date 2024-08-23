@@ -16,11 +16,12 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 // Inputs
 NRI_RESOURCE( Texture2D<float>, gIn_ViewZ, t, 0, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_ComposedDiff, t, 1, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_ComposedSpec_ViewZ, t, 2, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Normal_Roughness, t, 1, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_ComposedDiff, t, 2, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_ComposedSpec_ViewZ, t, 3, 1 );
 
 // Outputs
-NRI_RESOURCE( RWTexture2D<float4>, gOut_Composed, u, 0, 1 );
+NRI_RESOURCE( RWTexture2D<float3>, gOut_Composed, u, 0, 1 );
 NRI_RESOURCE( RWTexture2D<float3>, gInOut_Mv, u, 1, 1 );
 
 //========================================================================================
@@ -66,7 +67,13 @@ float3 TraceTransparent( TraceTransparentDesc desc )
         if( bounce == 1 )
             pathThroughput *= isReflection ? F : 1.0 - F;
         else
-            isReflection = Rng::Hash::GetFloat( ) < F;
+        {
+            float rnd = Sequence::Bayer4x4( desc.pixelPos, gFrameIndex + bounce );
+            if( gDenoiserType == DENOISER_REFERENCE || gRR )
+                rnd = Rng::Hash::GetFloat( );
+
+            isReflection = rnd < F;
+        }
 
         // Compute ray
         float3 ray = reflect( -geometryProps.V, geometryProps.N );
@@ -184,8 +191,8 @@ void main( int2 pixelPos : SV_DispatchThreadId )
 
     // Composed without glass
     float3 diff = gIn_ComposedDiff[ pixelPos ];
-    float4 spec = gIn_ComposedSpec_ViewZ[ pixelPos ];
-    float3 Lsum = diff + spec.xyz * float( gOnScreen == SHOW_FINAL );
+    float3 spec = gIn_ComposedSpec_ViewZ[ pixelPos ].xyz;
+    float3 Lsum = diff + spec * float( gOnScreen == SHOW_FINAL );
 
     // Primary ray for transparent geometry only
     float3 cameraRayOrigin = ( float3 )0;
@@ -198,8 +205,12 @@ void main( int2 pixelPos : SV_DispatchThreadId )
 
     GeometryProps geometryPropsT = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, tmin0, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, gTransparent == 0.0 ? 0 : GEOMETRY_ONLY_TRANSPARENT, 0 );
 
+    // Material ID
+    float normMaterialID;
+    float4 normalAndRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos ], normMaterialID );
+
     // Trace delta events
-    if( !geometryPropsT.IsSky( ) && geometryPropsT.tmin < tmin0 )
+    if( !geometryPropsT.IsSky( ) && geometryPropsT.tmin < tmin0 && normMaterialID != MATERIAL_ID_PSR / MATERIAL_NORM )
     {
         // Patch motion vectors replacing MV for the background with MV for the closest glass layer.
         // IMPORTANT: surface-based motion can be used only if the object is curved.
@@ -230,7 +241,5 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     Lsum = ApplyExposure( Lsum );
 
     // Output
-    float z = spec.w;
-
-    gOut_Composed[ pixelPos ] = float4( Lsum, z );
+    gOut_Composed[ pixelPos ] = Lsum;
 }

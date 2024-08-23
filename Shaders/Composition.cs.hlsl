@@ -202,7 +202,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 diffDemod = ( 1.0 - Fenv ) * albedo * 0.99 + 0.01;
     float3 specDemod = Fenv * 0.99 + 0.01;
 
-    if( normMaterialID == MATERIAL_ID_HAIR / 3.0 && NRD_NORMAL_ENCODING == NRD_NORMAL_ENCODING_R10G10B10A2_UNORM )
+    if( normMaterialID == MATERIAL_ID_HAIR / MATERIAL_NORM )
     {
         diffDemod = 1.0;
         specDemod = 1.0;

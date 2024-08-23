@@ -10,6 +10,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 #include "NRIFramework.h"
 #include "Extensions/NRIRayTracing.h"
+#include "Extensions/NRIResourceAllocator.h"
 
 // NRD and NRI-based integration
 #include "NRD.h"
@@ -45,7 +46,7 @@ constexpr float CAMERA_BACKWARD_OFFSET              = 0.0f; // m, 3rd person cam
 constexpr bool CAMERA_RELATIVE                      = true;
 constexpr bool ALLOW_BLAS_MERGING                   = true;
 constexpr bool ALLOW_HDR                            = false; // use "WIN + ALT + B" to switch HDR mode
-constexpr bool USE_FP11                             = false; // saves a bit of memory and performance, but adds banding on the sky
+constexpr bool USE_LOW_PRECISION_FP_FORMATS         = true; // saves a bit of memory and performance
 constexpr bool NRD_ALLOW_DESCRIPTOR_CACHING         = true;
 constexpr int32_t MAX_HISTORY_FRAME_NUM             = (int32_t)std::min(60u, std::min(nrd::REBLUR_MAX_HISTORY_FRAME_NUM, nrd::RELAX_MAX_HISTORY_FRAME_NUM));
 constexpr uint32_t TEXTURES_PER_MATERIAL            = 4;
@@ -159,7 +160,7 @@ enum class Texture : uint32_t
     Unfiltered_Spec,
     Unfiltered_Translucency,
     Validation,
-    Composed_ViewZ,
+    Composed,
     DlssOutput,
     PreFinal,
     Final,
@@ -263,8 +264,8 @@ enum class Descriptor : uint32_t
     Unfiltered_Translucency_StorageTexture,
     Validation_Texture,
     Validation_StorageTexture,
-    Composed_ViewZ_Texture,
-    Composed_ViewZ_StorageTexture,
+    Composed_Texture,
+    Composed_StorageTexture,
     DlssOutput_Texture,
     DlssOutput_StorageTexture,
     PreFinal_Texture,
@@ -333,6 +334,7 @@ struct NRIInterface
     , public nri::StreamerInterface
     , public nri::SwapChainInterface
     , public nri::RayTracingInterface
+    , public nri::ResourceAllocatorInterface
 {};
 
 struct Frame
@@ -600,7 +602,6 @@ private:
     std::vector<nri::TextureBarrierDesc> m_TextureStates;
     std::vector<nri::Format> m_TextureFormats;
     std::vector<nri::Buffer*> m_Buffers;
-    std::vector<nri::Memory*> m_MemoryAllocations;
     std::vector<nri::Descriptor*> m_Descriptors;
     std::vector<nri::DescriptorSet*> m_DescriptorSets;
     std::vector<nri::Pipeline*> m_Pipelines;
@@ -694,12 +695,6 @@ Sample::~Sample()
     NRI.DestroySwapChain(*m_SwapChain);
     NRI.DestroyStreamer(*m_Streamer);
 
-    for (size_t i = 0; i < m_MemoryAllocations.size(); i++)
-    {
-        if (m_MemoryAllocations[i])
-            NRI.FreeMemory(*m_MemoryAllocations[i]);
-    }
-
     DestroyUI(NRI);
 
     nri::nriDestroyDevice(*m_Device);
@@ -729,6 +724,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::StreamerInterface), (nri::StreamerInterface*)&NRI) );
     NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::SwapChainInterface), (nri::SwapChainInterface*)&NRI) );
     NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::RayTracingInterface), (nri::RayTracingInterface*)&NRI) );
+    NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::ResourceAllocatorInterface), (nri::ResourceAllocatorInterface*)&NRI) );
 
     NRI_ABORT_ON_FAILURE( NRI.GetCommandQueue(*m_Device, nri::CommandQueueType::GRAPHICS, m_CommandQueue) );
     NRI_ABORT_ON_FAILURE( NRI.CreateFence(*m_Device, 0, m_FrameFence) );
@@ -923,6 +919,10 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
 
     m_SettingsDefault = m_Settings;
     m_ShowValidationOverlay = m_DebugNRD;
+
+    nri::VideoMemoryInfo videoMemoryInfo = {};
+    NRI.QueryVideoMemoryInfo(*m_Device, nri::MemoryLocation::DEVICE, videoMemoryInfo);
+    printf("Allocated %.2f Mb\n", videoMemoryInfo.usageSize / (1024.0f * 1024.0f));
 
     return InitUI(NRI, NRI, *m_Device, swapChainFormat);
 }
@@ -2691,43 +2691,26 @@ void Sample::CreateAccelerationStructures()
 
     // Create temp buffer in UPLOAD heap
     nri::Buffer* uploadBuffer = nullptr;
-    nri::Memory* uploadMemory = nullptr;
     {
-        const nri::BufferDesc bufferDesc = {uploadSize, 0, nri::BufferUsageBits::ACCELERATION_STRUCTURE_BUILD_READ};
-        NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, uploadBuffer));
+        nri::AllocateBufferDesc allocateBufferDesc = {};
+        allocateBufferDesc.desc = {uploadSize, 0, nri::BufferUsageBits::ACCELERATION_STRUCTURE_BUILD_READ};
+        allocateBufferDesc.memoryLocation = nri::MemoryLocation::HOST_UPLOAD;
 
-        nri::MemoryDesc memoryDesc = {};
-        NRI.GetBufferMemoryDesc(*m_Device, bufferDesc, nri::MemoryLocation::HOST_UPLOAD, memoryDesc);
-
-        nri::AllocateMemoryDesc allocateMemoryDesc = {memoryDesc.size, memoryDesc.type};
-        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, allocateMemoryDesc, uploadMemory));
-
-        const nri::BufferMemoryBindingDesc memoryBindingDesc = {uploadMemory, uploadBuffer};
-        NRI_ABORT_ON_FAILURE(NRI.BindBufferMemory(*m_Device, &memoryBindingDesc, 1));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateBuffer(*m_Device, allocateBufferDesc, uploadBuffer));
     }
 
     uint8_t* uploadData = (uint8_t*)NRI.MapBuffer(*uploadBuffer, 0, nri::WHOLE_SIZE);
 
     { // AccelerationStructure::TLAS_World
-        nri::AccelerationStructureDesc accelerationStructureDesc = {};
-        accelerationStructureDesc.type = nri::AccelerationStructureType::TOP_LEVEL;
-        accelerationStructureDesc.flags = TLAS_BUILD_BITS;
-        accelerationStructureDesc.instanceOrGeometryObjectNum = helper::GetCountOf(m_Scene.instances);
+        nri::AllocateAccelerationStructureDesc allocateAccelerationStructureDesc = {};
+        allocateAccelerationStructureDesc.desc.type = nri::AccelerationStructureType::TOP_LEVEL;
+        allocateAccelerationStructureDesc.desc.flags = TLAS_BUILD_BITS;
+        allocateAccelerationStructureDesc.desc.instanceOrGeometryObjectNum = helper::GetCountOf(m_Scene.instances);
+        allocateAccelerationStructureDesc.memoryLocation = nri::MemoryLocation::DEVICE;
 
         nri::AccelerationStructure* accelerationStructure = nullptr;
-        NRI_ABORT_ON_FAILURE(NRI.CreateAccelerationStructure(*m_Device, accelerationStructureDesc, accelerationStructure));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateAccelerationStructure(*m_Device, allocateAccelerationStructureDesc, accelerationStructure));
         m_AccelerationStructures.push_back(accelerationStructure);
-
-        nri::MemoryDesc memoryDesc = {};
-        NRI.GetAccelerationStructureMemoryDesc(*accelerationStructure, memoryDesc);
-
-        nri::Memory* memory = nullptr;
-        nri::AllocateMemoryDesc allocateMemoryDesc = {memoryDesc.size, memoryDesc.type};
-        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, allocateMemoryDesc, memory));
-        m_MemoryAllocations.push_back(memory);
-
-        const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = {memory, accelerationStructure};
-        NRI_ABORT_ON_FAILURE(NRI.BindAccelerationStructureMemory(*m_Device, &memoryBindingDesc, 1));
 
         // Descriptor::World_AccelerationStructure
         nri::Descriptor* descriptor = nullptr;
@@ -2736,25 +2719,15 @@ void Sample::CreateAccelerationStructures()
     }
 
     { // AccelerationStructure::TLAS_Emissive
-        nri::AccelerationStructureDesc accelerationStructureDesc = {};
-        accelerationStructureDesc.type = nri::AccelerationStructureType::TOP_LEVEL;
-        accelerationStructureDesc.flags = TLAS_BUILD_BITS;
-        accelerationStructureDesc.instanceOrGeometryObjectNum = helper::GetCountOf(m_Scene.instances);
+        nri::AllocateAccelerationStructureDesc allocateAccelerationStructureDesc = {};
+        allocateAccelerationStructureDesc.desc.type = nri::AccelerationStructureType::TOP_LEVEL;
+        allocateAccelerationStructureDesc.desc.flags = TLAS_BUILD_BITS;
+        allocateAccelerationStructureDesc.desc.instanceOrGeometryObjectNum = helper::GetCountOf(m_Scene.instances);
+        allocateAccelerationStructureDesc.memoryLocation = nri::MemoryLocation::DEVICE;
 
         nri::AccelerationStructure* accelerationStructure = nullptr;
-        NRI_ABORT_ON_FAILURE(NRI.CreateAccelerationStructure(*m_Device, accelerationStructureDesc, accelerationStructure));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateAccelerationStructure(*m_Device, allocateAccelerationStructureDesc, accelerationStructure));
         m_AccelerationStructures.push_back(accelerationStructure);
-
-        nri::MemoryDesc memoryDesc = {};
-        NRI.GetAccelerationStructureMemoryDesc(*accelerationStructure, memoryDesc);
-
-        nri::Memory* memory = nullptr;
-        nri::AllocateMemoryDesc allocateMemoryDesc = {memoryDesc.size, memoryDesc.type};
-        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, allocateMemoryDesc, memory));
-        m_MemoryAllocations.push_back(memory);
-
-        const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = {memory, accelerationStructure};
-        NRI_ABORT_ON_FAILURE(NRI.BindAccelerationStructureMemory(*m_Device, &memoryBindingDesc, 1));
 
         // Descriptor::Light_AccelerationStructure
         nri::Descriptor* descriptor = nullptr;
@@ -2763,6 +2736,7 @@ void Sample::CreateAccelerationStructures()
     }
 
     // Create BOTTOM_LEVEL acceleration structures for static geometry
+    const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
     uint64_t scratchSize = 0;
 
     for (uint32_t mode = (uint32_t)AccelerationStructure::BLAS_StaticOpaque; mode <= (uint32_t)AccelerationStructure::BLAS_StaticEmissive; mode++)
@@ -2866,38 +2840,27 @@ void Sample::CreateAccelerationStructures()
         if (geometryObjectsNum)
         {
             // Create BLAS
-            nri::AccelerationStructureDesc accelerationStructureDesc = {};
-            accelerationStructureDesc.type = nri::AccelerationStructureType::BOTTOM_LEVEL;
-            accelerationStructureDesc.flags = BLAS_RIGID_MESH_BUILD_BITS;
-            accelerationStructureDesc.instanceOrGeometryObjectNum = geometryObjectsNum;
-            accelerationStructureDesc.geometryObjects = &geometryObjects[geometryObjectBase];
+            nri::AllocateAccelerationStructureDesc allocateAccelerationStructureDesc = {};
+            allocateAccelerationStructureDesc.desc.type = nri::AccelerationStructureType::BOTTOM_LEVEL;
+            allocateAccelerationStructureDesc.desc.flags = BLAS_RIGID_MESH_BUILD_BITS;
+            allocateAccelerationStructureDesc.desc.instanceOrGeometryObjectNum = geometryObjectsNum;
+            allocateAccelerationStructureDesc.desc.geometryObjects = &geometryObjects[geometryObjectBase];
+            allocateAccelerationStructureDesc.memoryLocation = nri::MemoryLocation::DEVICE;
 
             nri::AccelerationStructure* accelerationStructure = nullptr;
-            NRI_ABORT_ON_FAILURE(NRI.CreateAccelerationStructure(*m_Device, accelerationStructureDesc, accelerationStructure));
+            NRI_ABORT_ON_FAILURE(NRI.AllocateAccelerationStructure(*m_Device, allocateAccelerationStructureDesc, accelerationStructure));
             m_AccelerationStructures.push_back(accelerationStructure);
 
-            nri::MemoryDesc memoryDesc = {};
-            NRI.GetAccelerationStructureMemoryDesc(*accelerationStructure, memoryDesc);
-
-            nri::Memory* memory = nullptr;
-            nri::AllocateMemoryDesc allocateMemoryDesc = {memoryDesc.size, memoryDesc.type};
-            NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, allocateMemoryDesc, memory));
-            m_MemoryAllocations.push_back(memory);
-
-            const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = {memory, accelerationStructure};
-            NRI_ABORT_ON_FAILURE(NRI.BindAccelerationStructureMemory(*m_Device, &memoryBindingDesc, 1));
-
             // Update parameters
-            parameters.push_back( {accelerationStructure, scratchSize, (uint32_t)geometryObjectBase, geometryObjectsNum, accelerationStructureDesc.flags} );
+            parameters.push_back( {accelerationStructure, scratchSize, (uint32_t)geometryObjectBase, geometryObjectsNum, allocateAccelerationStructureDesc.desc.flags} );
 
             uint64_t size = NRI.GetAccelerationStructureBuildScratchBufferSize(*accelerationStructure);
-            scratchSize += size;
+            scratchSize += helper::Align(size, deviceDesc.rayTracingScratchAlignment);
         }
         else
         {
             // Needed only to preserve order
             m_AccelerationStructures.push_back(nullptr);
-            m_MemoryAllocations.push_back(nullptr);
         }
     }
 
@@ -2941,37 +2904,27 @@ void Sample::CreateAccelerationStructures()
         geometryObject.triangles.indexType = sizeof(utils::Index) == 2 ? nri::IndexType::UINT16 : nri::IndexType::UINT32;
 
         // Create BLAS
-        nri::AccelerationStructureDesc accelerationStructureDesc = {};
-        accelerationStructureDesc.type = nri::AccelerationStructureType::BOTTOM_LEVEL;
-        accelerationStructureDesc.flags = mesh.HasMorphTargets() ? BLAS_DEFORMABLE_MESH_BUILD_BITS : BLAS_RIGID_MESH_BUILD_BITS;
-        accelerationStructureDesc.instanceOrGeometryObjectNum = 1;
-        accelerationStructureDesc.geometryObjects = &geometryObject;
+        nri::AllocateAccelerationStructureDesc allocateAccelerationStructureDesc = {};
+        allocateAccelerationStructureDesc.desc.type = nri::AccelerationStructureType::BOTTOM_LEVEL;
+        allocateAccelerationStructureDesc.desc.flags = mesh.HasMorphTargets() ? BLAS_DEFORMABLE_MESH_BUILD_BITS : BLAS_RIGID_MESH_BUILD_BITS;
+        allocateAccelerationStructureDesc.desc.instanceOrGeometryObjectNum = 1;
+        allocateAccelerationStructureDesc.desc.geometryObjects = &geometryObject;
+        allocateAccelerationStructureDesc.memoryLocation = nri::MemoryLocation::DEVICE;
 
         nri::AccelerationStructure* accelerationStructure = nullptr;
-        NRI_ABORT_ON_FAILURE(NRI.CreateAccelerationStructure(*m_Device, accelerationStructureDesc, accelerationStructure));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateAccelerationStructure(*m_Device, allocateAccelerationStructureDesc, accelerationStructure));
         m_AccelerationStructures.push_back(accelerationStructure);
 
-        nri::MemoryDesc memoryDesc = {};
-        NRI.GetAccelerationStructureMemoryDesc(*accelerationStructure, memoryDesc);
-
-        nri::Memory* memory = nullptr;
-        nri::AllocateMemoryDesc allocateMemoryDesc = {memoryDesc.size, memoryDesc.type};
-        NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, allocateMemoryDesc, memory));
-        m_MemoryAllocations.push_back(memory);
-
-        const nri::AccelerationStructureMemoryBindingDesc memoryBindingDesc = {memory, accelerationStructure};
-        NRI_ABORT_ON_FAILURE(NRI.BindAccelerationStructureMemory(*m_Device, &memoryBindingDesc, 1));
-
         // Update parameters
-        parameters.push_back( {accelerationStructure, scratchSize, (uint32_t)(geometryObjects.size() - 1), 1, accelerationStructureDesc.flags } );
+        parameters.push_back( {accelerationStructure, scratchSize, (uint32_t)(geometryObjects.size() - 1), 1, allocateAccelerationStructureDesc.desc.flags } );
 
         uint64_t buildSize = NRI.GetAccelerationStructureBuildScratchBufferSize(*accelerationStructure);
-        scratchSize += buildSize;
+        scratchSize += helper::Align(buildSize, deviceDesc.rayTracingScratchAlignment);
 
         if (mesh.HasMorphTargets())
         {
             uint64_t updateSize = NRI.GetAccelerationStructureUpdateScratchBufferSize(*accelerationStructure);
-            m_MorphMeshScratchSize += max(buildSize, updateSize);
+            m_MorphMeshScratchSize += helper::Align(max(buildSize, updateSize), deviceDesc.rayTracingScratchAlignment);
         }
 
         // Update geometry offset
@@ -2980,19 +2933,14 @@ void Sample::CreateAccelerationStructures()
     }
 
     // Allocate scratch memory
-    const nri::BufferDesc bufferDesc = {scratchSize, 0, nri::BufferUsageBits::RAY_TRACING_BUFFER | nri::BufferUsageBits::SHADER_RESOURCE_STORAGE};
     nri::Buffer* scratchBuffer = nullptr;
-    NRI_ABORT_ON_FAILURE(NRI.CreateBuffer(*m_Device, bufferDesc, scratchBuffer));
+    {
+        nri::AllocateBufferDesc allocateBufferDesc = {};
+        allocateBufferDesc.desc = {scratchSize, 0, nri::BufferUsageBits::RAY_TRACING_BUFFER};
+        allocateBufferDesc.memoryLocation = nri::MemoryLocation::DEVICE;
 
-    nri::MemoryDesc memoryDesc = {};
-    NRI.GetBufferMemoryDesc(*m_Device, bufferDesc, nri::MemoryLocation::DEVICE, memoryDesc);
-
-    nri::Memory* scratchMemory = nullptr;
-    nri::AllocateMemoryDesc allocateMemoryDesc = {memoryDesc.size, memoryDesc.type};
-    NRI_ABORT_ON_FAILURE(NRI.AllocateMemory(*m_Device, allocateMemoryDesc, scratchMemory));
-
-    const nri::BufferMemoryBindingDesc bufferMemoryBindingDesc = { scratchMemory, scratchBuffer };
-    NRI_ABORT_ON_FAILURE(NRI.BindBufferMemory(*m_Device, &bufferMemoryBindingDesc, 1));
+        NRI_ABORT_ON_FAILURE(NRI.AllocateBuffer(*m_Device, allocateBufferDesc, scratchBuffer));
+    }
 
     // Create command allocator and command buffer
     nri::CommandAllocator* commandAllocator = nullptr;
@@ -3027,10 +2975,7 @@ void Sample::CreateAccelerationStructures()
     NRI.UnmapBuffer(*uploadBuffer);
 
     NRI.DestroyBuffer(*scratchBuffer);
-    NRI.FreeMemory(*scratchMemory);
-
     NRI.DestroyBuffer(*uploadBuffer);
-    NRI.FreeMemory(*uploadMemory);
 
     NRI.DestroyCommandBuffer(*commandBuffer);
     NRI.DestroyCommandAllocator(*commandAllocator);
@@ -3136,7 +3081,8 @@ void Sample::CreateResources(nri::Format swapChainFormat)
 #endif
 
     const nri::Format taaFormat = nri::Format::RGBA16_SFLOAT; // required for new TAA even in LDR mode (RGBA16_UNORM can't be used)
-    const nri::Format hdrRgbFormat = USE_FP11 ? nri::Format::R11_G11_B10_UFLOAT : nri::Format::RGBA16_SFLOAT;
+    const nri::Format colorFormat = USE_LOW_PRECISION_FP_FORMATS ? nri::Format::R11_G11_B10_UFLOAT : nri::Format::RGBA16_SFLOAT;
+    const nri::Format criticalColorFormat = nri::Format::RGBA16_SFLOAT; // TODO: R9_G9_B9_E5_UFLOAT?
     const nri::Format shadowFormat = SIGMA_TRANSLUCENT ? nri::Format::RGBA8_UNORM : nri::Format::R8_UNORM;
 
     const uint16_t w = (uint16_t)m_RenderResolution.x;
@@ -3174,7 +3120,7 @@ void Sample::CreateResources(nri::Format swapChainFormat)
     // Textures (DEVICE)
     CreateTexture(descriptorDescs, "Texture::ViewZ", nri::Format::R32_SFLOAT, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
-    CreateTexture(descriptorDescs, "Texture::Motion", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::Mv", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::Normal_Roughness", normalFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
@@ -3182,9 +3128,9 @@ void Sample::CreateResources(nri::Format swapChainFormat)
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::BaseColor_Metalness", nri::Format::RGBA8_SRGB, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
-    CreateTexture(descriptorDescs, "Texture::DirectLighting", hdrRgbFormat, w, h, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::DirectLighting", colorFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
-    CreateTexture(descriptorDescs, "Texture::DirectEmission", hdrRgbFormat, w, h, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::DirectEmission", colorFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::Shadow", shadowFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
@@ -3202,15 +3148,15 @@ void Sample::CreateResources(nri::Format swapChainFormat)
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::Validation", nri::Format::RGBA8_UNORM, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
-    CreateTexture(descriptorDescs, "Texture::Composed_ViewZ", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::Composed", criticalColorFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
-    CreateTexture(descriptorDescs, "Texture::DlssOutput", hdrRgbFormat, (uint16_t)GetOutputResolution().x, (uint16_t)GetOutputResolution().y, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::DlssOutput", criticalColorFormat, (uint16_t)GetOutputResolution().x, (uint16_t)GetOutputResolution().y, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
-    CreateTexture(descriptorDescs, "Texture::PreFinal", hdrRgbFormat, (uint16_t)GetOutputResolution().x, (uint16_t)GetOutputResolution().y, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::PreFinal", criticalColorFormat, (uint16_t)GetOutputResolution().x, (uint16_t)GetOutputResolution().y, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
     CreateTexture(descriptorDescs, "Texture::Final", swapChainFormat, (uint16_t)GetWindowResolution().x, (uint16_t)GetWindowResolution().y, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::COPY_SOURCE);
-    CreateTexture(descriptorDescs, "Texture::ComposedDiff", hdrRgbFormat, w, h, 1, 1,
+    CreateTexture(descriptorDescs, "Texture::ComposedDiff", colorFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
     CreateTexture(descriptorDescs, "Texture::ComposedSpec_ViewZ", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
@@ -3237,20 +3183,6 @@ void Sample::CreateResources(nri::Format swapChainFormat)
 
     for (const utils::Texture* texture : m_Scene.textures)
         CreateTexture(descriptorDescs, "", texture->GetFormat(), texture->GetWidth(), texture->GetHeight(), texture->GetMipNum(), texture->GetArraySize(), nri::TextureUsageBits::SHADER_RESOURCE, nri::AccessBits::UNKNOWN);
-
-    // Bind memory
-    nri::ResourceGroupDesc resourceGroupDesc = {};
-    resourceGroupDesc.memoryLocation = nri::MemoryLocation::DEVICE;
-    resourceGroupDesc.bufferNum = helper::GetCountOf(m_Buffers);
-    resourceGroupDesc.buffers = m_Buffers.data();
-    resourceGroupDesc.textureNum = helper::GetCountOf(m_Textures);
-    resourceGroupDesc.textures = m_Textures.data();
-    resourceGroupDesc.preferredMemorySize = 256ull * 1024ull * 1024ull;
-
-    size_t baseAllocation = m_MemoryAllocations.size();
-    uint32_t newAllocations = NRI.CalculateAllocationNumber(*m_Device, resourceGroupDesc);
-    m_MemoryAllocations.resize(baseAllocation + newAllocations, nullptr);
-    NRI_ABORT_ON_FAILURE( NRI.AllocateAndBindMemory(*m_Device, resourceGroupDesc, m_MemoryAllocations.data() + baseAllocation));
 
     // Create descriptors
     nri::Descriptor* descriptor = nullptr;
@@ -3429,13 +3361,14 @@ void Sample::CreateDescriptorSets()
         const nri::Descriptor* resources[] =
         {
             Get(Descriptor::ViewZ_Texture),
+            Get(Descriptor::Normal_Roughness_Texture),
             Get(Descriptor::ComposedDiff_Texture),
             Get(Descriptor::ComposedSpec_ViewZ_Texture),
         };
 
         const nri::Descriptor* storageResources[] =
         {
-            Get(Descriptor::Composed_ViewZ_StorageTexture),
+            Get(Descriptor::Composed_StorageTexture),
             Get(Descriptor::Mv_StorageTexture),
         };
 
@@ -3454,8 +3387,9 @@ void Sample::CreateDescriptorSets()
     { // DescriptorSet::Taa1a
         const nri::Descriptor* resources[] =
         {
+            Get(Descriptor::ViewZ_Texture),
             Get(Descriptor::Mv_Texture),
-            Get(Descriptor::Composed_ViewZ_Texture),
+            Get(Descriptor::Composed_Texture),
             Get(Descriptor::TaaHistoryPrev_Texture),
         };
 
@@ -3479,8 +3413,9 @@ void Sample::CreateDescriptorSets()
     { // DescriptorSet::Taa1b
         const nri::Descriptor* resources[] =
         {
+            Get(Descriptor::ViewZ_Texture),
             Get(Descriptor::Mv_Texture),
-            Get(Descriptor::Composed_ViewZ_Texture),
+            Get(Descriptor::Composed_Texture),
             Get(Descriptor::TaaHistory_Texture),
         };
 
@@ -3580,7 +3515,7 @@ void Sample::CreateDescriptorSets()
         const nri::Descriptor* resources[] =
         {
             Get(Descriptor::PreFinal_Texture),
-            Get(Descriptor::Composed_ViewZ_Texture),
+            Get(Descriptor::Composed_Texture),
             Get(Descriptor::Validation_Texture),
         };
 
@@ -3774,10 +3709,12 @@ void Sample::CreateDescriptorSets()
 
 void Sample::CreateTexture(std::vector<DescriptorDesc>& descriptorDescs, const char* debugName, nri::Format format, nri::Dim_t width, nri::Dim_t height, nri::Mip_t mipNum, nri::Dim_t arraySize, nri::TextureUsageBits usage, nri::AccessBits access)
 {
-    const nri::TextureDesc textureDesc = nri::Texture2D(format, width, height, mipNum, arraySize, usage);
+    nri::AllocateTextureDesc allocateTextureDesc = {};
+    allocateTextureDesc.desc = nri::Texture2D(format, width, height, mipNum, arraySize, usage);
+    allocateTextureDesc.memoryLocation = nri::MemoryLocation::DEVICE;
 
     nri::Texture* texture = nullptr;
-    NRI_ABORT_ON_FAILURE(NRI.CreateTexture(*m_Device, textureDesc, texture));
+    NRI_ABORT_ON_FAILURE(NRI.AllocateTexture(*m_Device, allocateTextureDesc, texture));
     m_Textures.push_back(texture);
 
     if (access != nri::AccessBits::UNKNOWN)
@@ -3803,13 +3740,14 @@ void Sample::CreateBuffer(std::vector<DescriptorDesc>& descriptorDescs, const ch
     if (!elements)
         elements = 1;
 
-    nri::BufferDesc bufferDesc = {};
-    bufferDesc.size = elements * stride;
-    bufferDesc.structureStride = (format == nri::Format::UNKNOWN && stride != 1) ? stride : 0;
-    bufferDesc.usageMask = usage;
+    nri::AllocateBufferDesc allocateBufferDesc = {};
+    allocateBufferDesc.desc.size = elements * stride;
+    allocateBufferDesc.desc.structureStride = (format == nri::Format::UNKNOWN && stride != 1) ? stride : 0;
+    allocateBufferDesc.desc.usageMask = usage;
+    allocateBufferDesc.memoryLocation = nri::MemoryLocation::DEVICE;
 
     nri::Buffer* buffer = nullptr;
-    NRI_ABORT_ON_FAILURE( NRI.CreateBuffer(*m_Device, bufferDesc, buffer) );
+    NRI_ABORT_ON_FAILURE( NRI.AllocateBuffer(*m_Device, allocateBufferDesc, buffer) );
     m_Buffers.push_back(buffer);
 
     descriptorDescs.push_back( {debugName, buffer, format, nri::TextureUsageBits::NONE, usage} );
@@ -4475,8 +4413,8 @@ void Sample::RenderFrame(uint32_t frameIndex)
         NrdIntegration_SetResource(userPool, nrd::ResourceType::OUT_SHADOW_TRANSLUCENCY, {&GetState(Texture::Shadow), GetFormat(Texture::Shadow)});
 
         // REFERENCE
-        NrdIntegration_SetResource(userPool, nrd::ResourceType::IN_SIGNAL, {&GetState(Texture::Composed_ViewZ), GetFormat(Texture::Composed_ViewZ)});
-        NrdIntegration_SetResource(userPool, nrd::ResourceType::OUT_SIGNAL, {&GetState(Texture::Composed_ViewZ), GetFormat(Texture::Composed_ViewZ)});
+        NrdIntegration_SetResource(userPool, nrd::ResourceType::IN_SIGNAL, {&GetState(Texture::Composed), GetFormat(Texture::Composed)});
+        NrdIntegration_SetResource(userPool, nrd::ResourceType::OUT_SIGNAL, {&GetState(Texture::Composed), GetFormat(Texture::Composed)});
     }
 
     const uint32_t dummyDynamicConstantOffset = 0;
@@ -4607,6 +4545,8 @@ void Sample::RenderFrame(uint32_t frameIndex)
             { // Update BLAS
                 helper::Annotation annotation(NRI, commandBuffer, "Morph mesh: BLAS");
 
+                const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
+
                 // Do build if the animation gets paused
                 bool doBuild = m_Settings.pauseAnimation && !m_SettingsPrev.pauseAnimation;
 
@@ -4635,14 +4575,14 @@ void Sample::RenderFrame(uint32_t frameIndex)
                         NRI.CmdBuildBottomLevelAccelerationStructure(commandBuffer, 1, &geometryObject, BLAS_DEFORMABLE_MESH_BUILD_BITS, accelerationStructure, *Get(Buffer::MorphMeshScratch), scratchOffset);
 
                         uint64_t size = NRI.GetAccelerationStructureBuildScratchBufferSize(accelerationStructure);
-                        scratchOffset += size;
+                        scratchOffset += helper::Align(size, deviceDesc.rayTracingScratchAlignment);;
                     }
                     else
                     {
                         NRI.CmdUpdateBottomLevelAccelerationStructure(commandBuffer, 1, &geometryObject, BLAS_DEFORMABLE_MESH_BUILD_BITS, accelerationStructure, accelerationStructure, *Get(Buffer::MorphMeshScratch), scratchOffset);
 
                         uint64_t size = NRI.GetAccelerationStructureUpdateScratchBufferSize(accelerationStructure);
-                        scratchOffset += size;
+                        scratchOffset += helper::Align(size, deviceDesc.rayTracingScratchAlignment);;
                     }
                 }
 
@@ -4914,10 +4854,11 @@ void Sample::RenderFrame(uint32_t frameIndex)
             {
                 // Input
                 {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 {Texture::ComposedDiff, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 // Output
-                {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::Composed, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
                 {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
             };
             nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, optimizedTransitions.data(), 0, 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
@@ -4961,7 +4902,6 @@ void Sample::RenderFrame(uint32_t frameIndex)
                     // Output
                     {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
                     {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
-                    {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 };
                 nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, optimizedTransitions.data(), 0, 0, BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
                 NRI.CmdBarrier(commandBuffer, transitionBarriers);
@@ -4980,7 +4920,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                     // Input
                     {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                     {Texture::Mv, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
-                    {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                    {Texture::Composed, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                     // Output
                     {Texture::DlssOutput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
                 };
@@ -4989,7 +4929,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
                 DlssDispatchDesc dlssDesc = {};
                 dlssDesc.texOutput = {Get(Texture::DlssOutput), Get(Descriptor::DlssOutput_StorageTexture), GetFormat(Texture::DlssOutput), {GetOutputResolution().x, GetOutputResolution().y}};
-                dlssDesc.texInput = {Get(Texture::Composed_ViewZ), Get(Descriptor::Composed_ViewZ_Texture), GetFormat(Texture::Composed_ViewZ), {m_RenderResolution.x, m_RenderResolution.y}};
+                dlssDesc.texInput = {Get(Texture::Composed), Get(Descriptor::Composed_Texture), GetFormat(Texture::Composed), {m_RenderResolution.x, m_RenderResolution.y}};
                 dlssDesc.texMv = {Get(Texture::Mv), Get(Descriptor::Mv_Texture), GetFormat(Texture::Mv), {m_RenderResolution.x, m_RenderResolution.y}};
                 dlssDesc.texDepth = {Get(Texture::ViewZ), Get(Descriptor::ViewZ_Texture), GetFormat(Texture::ViewZ), {m_RenderResolution.x, m_RenderResolution.y}};
                 dlssDesc.viewportDims = {rectW, rectH};
@@ -5028,8 +4968,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
             const TextureState transitions[] =
             {
                 // Input
+                {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 {Texture::Mv, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
-                {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::Composed, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 {taaSrc, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 // Output
                 {taaDst, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
@@ -5079,7 +5020,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
             {
                 // Input
                 {Texture::PreFinal, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
-                {Texture::Composed_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                {Texture::Composed, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 {Texture::Validation, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 // Output
                 {Texture::Final, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},

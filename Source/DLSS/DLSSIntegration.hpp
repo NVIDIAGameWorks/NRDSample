@@ -3,7 +3,7 @@
 #include <assert.h> // assert
 #include <stdio.h> // printf
 
-static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 140, "Unsupported NRI version!");
+static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 141, "Unsupported NRI version!");
 
 // An ugly temp workaround until DLSS fix the problem
 #ifndef _WIN32
@@ -141,8 +141,8 @@ bool DlssIntegration::InitializeLibrary(nri::Device& device, const char* appData
     else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VK)
     {
         VkDevice vkDevice = (VkDevice)NRI.GetDeviceNativeObject(*m_Device);
-        VkPhysicalDevice vkPhysicalDevice = (VkPhysicalDevice)NRI.GetVkPhysicalDevice(*m_Device);
-        VkInstance vkInstance = (VkInstance)NRI.GetVkInstance(*m_Device);
+        VkPhysicalDevice vkPhysicalDevice = (VkPhysicalDevice)NRI.GetPhysicalDeviceVK(*m_Device);
+        VkInstance vkInstance = (VkInstance)NRI.GetInstanceVK(*m_Device);
         result = NVSDK_NGX_VULKAN_Init(m_ApplicationId, path, vkInstance, vkPhysicalDevice, vkDevice);
         if (NVSDK_NGX_SUCCEED(result))
             result = NVSDK_NGX_VULKAN_GetCapabilityParameters(&m_NgxParameters);

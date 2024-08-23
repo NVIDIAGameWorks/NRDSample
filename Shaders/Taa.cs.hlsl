@@ -10,9 +10,10 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 #include "Include/Shared.hlsli"
 
-NRI_RESOURCE( Texture2D<float3>, gIn_Mv, t, 0, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_ComposedLighting_ViewZ, t, 1, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_History, t, 2, 1 );
+NRI_RESOURCE( Texture2D<float>, gIn_ViewZ, t, 0, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_Mv, t, 1, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_Composed, t, 2, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_History, t, 3, 1 );
 
 NRI_RESOURCE( RWTexture2D<float4>, gOut_Result, u, 0, 1 );
 
@@ -41,9 +42,9 @@ void Preload( uint2 sharedPos, int2 globalPos )
 {
     globalPos = clamp( globalPos, 0, gRectSize - 1.0 );
 
-    float4 color_viewZ = gIn_ComposedLighting_ViewZ[ globalPos ];
-    color_viewZ.xyz = ApplyTonemap( color_viewZ.xyz );
-    color_viewZ.w = abs( color_viewZ.w ) * Math::Sign( gNearZ ) / FP16_VIEWZ_SCALE;
+    float4 color_viewZ;
+    color_viewZ.xyz = ApplyTonemap( gIn_Composed[ globalPos ] );
+    color_viewZ.w = gIn_ViewZ[ globalPos ];
 
     s_Data[ sharedPos.y ][ sharedPos.x ] = color_viewZ;
 }
