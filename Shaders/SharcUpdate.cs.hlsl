@@ -60,9 +60,14 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     SharcInit( sharcState );
 
     // Primary ray
-    float3 cameraRayOrigin = ( float3 )0;
-    float3 cameraRayDirection = ( float3 )0;
-    GetCameraRay( cameraRayOrigin, cameraRayDirection, sampleUv );
+    float3 Xv = Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, gNearZ, gOrthoMode );
+
+    float3 cameraRayOrigin = Geometry::AffineTransform( gViewToWorld, Xv );
+    float3 cameraRayDirection = gOrthoMode == 0.0 ? normalize( Geometry::RotateVector( gViewToWorld, Xv ) ) : -gViewDirection.xyz;
+
+    // Force some portion of rays to be absolutely random to keep cache alive behind the camera
+    if( Rng::Hash::GetFloat( ) < 0.2 )
+        cameraRayDirection = normalize( Rng::Hash::GetFloat4( ).xyz - 0.5 );
 
     // Cast ray
     GeometryProps geometryProps = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, INF, GetConeAngleFromAngularRadius( 0.0, gTanPixelAngularRadius * SHARC_DOWNSCALE ), gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
@@ -197,7 +202,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
                 if( isDiffuse )
                 {
                     float NoV = abs( dot( materialProps.N, geometryProps.V ) );
-                    throughput *= Math::Pi( 1.0 ) * albedo * BRDF::DiffuseTerm_Burley( materialProps.roughness, NoL, NoV, VoH );
+                    throughput *= albedo * saturate( Math::Pi( 1.0 ) * BRDF::DiffuseTerm_Burley( materialProps.roughness, NoL, NoV, VoH ) );
                 }
                 else
                 {

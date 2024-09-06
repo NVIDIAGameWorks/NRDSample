@@ -15,14 +15,12 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #include "SharcCommon.h"
 
 // Inputs
-NRI_RESOURCE( Texture2D<float>, gIn_ViewZ, t, 0, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_Normal_Roughness, t, 1, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_ComposedDiff, t, 2, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_ComposedSpec_ViewZ, t, 3, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_ComposedDiff, t, 0, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_ComposedSpec_ViewZ, t, 1, 1 );
 
 // Outputs
 NRI_RESOURCE( RWTexture2D<float3>, gOut_Composed, u, 0, 1 );
-NRI_RESOURCE( RWTexture2D<float3>, gInOut_Mv, u, 1, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gInOut_Mv, u, 1, 1 );
 
 //========================================================================================
 // TRACE TRANSPARENT
@@ -108,7 +106,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
             MaterialProps materialProps = GetMaterialProps( geometryProps );
 
             // Lighting
-            float4 Lcached = float4( materialProps.Lemi, 1.0 );
+            float4 Lcached = float4( 0, 0, 0, 1 );
             if( !geometryProps.IsSky( ) && NRD_MODE < OCCLUSION )
             {
                 // L1 cache - reproject previous frame, carefully treating specular
@@ -117,7 +115,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
                 Lcached = float4( prevLdiff + prevLspec, reprojectionWeight );
 
                 // L2 cache - SHARC
-                if( gSHARC )
+                if( gSHARC && NRD_MODE < OCCLUSION )
                 {
                     GridParameters gridParameters = ( GridParameters )0;
                     gridParameters.cameraPosition = gCameraGlobalPos.xyz;
@@ -147,21 +145,19 @@ float3 TraceTransparent( TraceTransparentDesc desc )
                     bool isSharcAllowed = geometryProps.tmin > voxelSize; // voxel angular size is acceptable
                     isSharcAllowed = isSharcAllowed && Rng::Hash::GetFloat( ) > Lcached.w; // probabilistically estimate the need
 
-                    float3 sharcRadiance = 0;
+                    float3 sharcRadiance;
                     if( isSharcAllowed && SharcGetCachedRadiance( sharcState, sharcHitData, sharcRadiance, false ) )
-                    {
-                        Lcached.xyz = max( sharcRadiance, materialProps.Lemi );
-                        Lcached.w = 1.0;
-                    }
+                        Lcached = float4( sharcRadiance, 1.0 );
                 }
 
                 // Cache miss - compute lighting, if not found in caches
-                if( Lcached.w != 1.0 )
+                if( Rng::Hash::GetFloat( ) > Lcached.w )
                 {
-                    float3 L = GetShadowedLighting( geometryProps, materialProps, false );
-                    Lcached.xyz = lerp( L, Lcached.xyz, Lcached.w );
+                    Lcached.xyz = GetShadowedLighting( geometryProps, materialProps, false );
+                    Lcached.w = 0.0; // not from cache
                 }
             }
+            Lcached.xyz = max( Lcached.xyz, materialProps.Lemi );
 
             // Output
             return Lcached.xyz * pathThroughput;
@@ -199,18 +195,14 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 cameraRayDirection = ( float3 )0;
     GetCameraRay( cameraRayOrigin, cameraRayDirection, sampleUv );
 
-    float viewZ = gIn_ViewZ[ pixelPos ];
+    float viewZ = gInOut_Mv[ pixelPos ].w / FP16_VIEWZ_SCALE; // viewZ before PSR
     float3 Xv = Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
     float tmin0 = gOrthoMode == 0 ? length( Xv ) : abs( Xv.z );
 
     GeometryProps geometryPropsT = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, tmin0, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, gTransparent == 0.0 ? 0 : GEOMETRY_ONLY_TRANSPARENT, 0 );
 
-    // Material ID
-    float normMaterialID;
-    float4 normalAndRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos ], normMaterialID );
-
     // Trace delta events
-    if( !geometryPropsT.IsSky( ) && geometryPropsT.tmin < tmin0 && normMaterialID != MATERIAL_ID_PSR / MATERIAL_NORM )
+    if( !geometryPropsT.IsSky( ) && geometryPropsT.tmin < tmin0 )
     {
         // Patch motion vectors replacing MV for the background with MV for the closest glass layer.
         // IMPORTANT: surface-based motion can be used only if the object is curved.
@@ -219,7 +211,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         if( geometryPropsT.curvature != 0.0 )
         {
             float3 motion = GetMotion( geometryPropsT.X, geometryPropsT.Xprev );
-            gInOut_Mv[ pixelPos ] = motion;
+            gInOut_Mv[ pixelPos ] = motion.xyzz; // .w - don't care
         }
 
         // Trace transparent stuff

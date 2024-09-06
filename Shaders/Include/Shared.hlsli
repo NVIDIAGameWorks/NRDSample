@@ -43,7 +43,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define USE_RANDOMIZED_ROUGHNESS            0 // randomize roughness ( a common case in games )
 #define USE_LOAD                            0 // Load vs SampleLevel
 #define USE_SHARC_DEBUG                     0 // 1 - show cache, 2 - show grid
-#define USE_SHARC_V_DEPENDENT               0 // includes true specular (it's just wrong)
+#define USE_SHARC_V_DEPENDENT               1 // needed to get a full match with prev frame data // TODO: improve multi-bounce low-roughness case
 
 //=============================================================================================
 // CONSTANTS
@@ -92,8 +92,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 // Material ID
 #define MATERIAL_ID_DEFAULT                 0
 #define MATERIAL_ID_METAL                   1
-#define MATERIAL_ID_PSR                     2
-#define MATERIAL_ID_HAIR                    3
+#define MATERIAL_ID_HAIR                    2
 #define MATERIAL_NORM                       3.0
 
 // Mip mode

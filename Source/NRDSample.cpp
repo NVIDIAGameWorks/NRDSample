@@ -2188,6 +2188,12 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     float sunCurr = smoothstep( -0.9f, 0.05f, sin( radians(m_Settings.sunElevation) ) );
     float sunPrev = smoothstep( -0.9f, 0.05f, sin( radians(m_SettingsPrev.sunElevation) ) );
     float resetHistoryFactor = 1.0f - smoothstep( 0.0f, 0.2f, abs(sunCurr - sunPrev) );
+
+    float emiCurr = m_Settings.emission * m_Settings.emissionIntensity;
+    float emiPrev = m_SettingsPrev.emission * m_SettingsPrev.emissionIntensity;
+    if (emiCurr != emiPrev)
+        resetHistoryFactor *= 1.0f - abs(emiCurr - emiPrev) / max(emiCurr, emiPrev);
+
     if (m_ForceHistoryReset)
         resetHistoryFactor = 0.0f;
 
@@ -2819,17 +2825,17 @@ void Sample::CreateAccelerationStructures()
             geometryObject = {};
             geometryObject.type = nri::GeometryType::TRIANGLES;
             geometryObject.flags = material.IsAlphaOpaque() ? nri::BottomLevelGeometryBits::NONE : nri::BottomLevelGeometryBits::OPAQUE_GEOMETRY;
-            geometryObject.triangles.vertexBuffer = uploadBuffer;
-            geometryObject.triangles.vertexOffset = geometryOffset;
-            geometryObject.triangles.vertexNum = mesh.vertexNum;
-            geometryObject.triangles.vertexStride = sizeof(float[3]);
-            geometryObject.triangles.vertexFormat = nri::Format::RGB32_SFLOAT;
-            geometryObject.triangles.indexBuffer = uploadBuffer;
-            geometryObject.triangles.indexOffset = geometryOffset + vertexDataSize;
-            geometryObject.triangles.indexNum = mesh.indexNum;
-            geometryObject.triangles.indexType = sizeof(utils::Index) == 2 ? nri::IndexType::UINT16 : nri::IndexType::UINT32;
-            geometryObject.triangles.transformBuffer = uploadBuffer;
-            geometryObject.triangles.transformOffset = transformOffset;
+            geometryObject.geometry.triangles.vertexBuffer = uploadBuffer;
+            geometryObject.geometry.triangles.vertexOffset = geometryOffset;
+            geometryObject.geometry.triangles.vertexNum = mesh.vertexNum;
+            geometryObject.geometry.triangles.vertexStride = sizeof(float[3]);
+            geometryObject.geometry.triangles.vertexFormat = nri::Format::RGB32_SFLOAT;
+            geometryObject.geometry.triangles.indexBuffer = uploadBuffer;
+            geometryObject.geometry.triangles.indexOffset = geometryOffset + vertexDataSize;
+            geometryObject.geometry.triangles.indexNum = mesh.indexNum;
+            geometryObject.geometry.triangles.indexType = sizeof(utils::Index) == 2 ? nri::IndexType::UINT16 : nri::IndexType::UINT32;
+            geometryObject.geometry.triangles.transformBuffer = uploadBuffer;
+            geometryObject.geometry.triangles.transformOffset = transformOffset;
 
             // Update geometry offset
             geometryOffset += vertexDataSize + helper::Align(indexDataSize, 4);
@@ -2893,15 +2899,15 @@ void Sample::CreateAccelerationStructures()
         geometryObject = {};
         geometryObject.type = nri::GeometryType::TRIANGLES;
         geometryObject.flags = nri::BottomLevelGeometryBits::NONE; // will be set in TLAS instance
-        geometryObject.triangles.vertexBuffer = uploadBuffer;
-        geometryObject.triangles.vertexOffset = geometryOffset;
-        geometryObject.triangles.vertexNum = mesh.vertexNum;
-        geometryObject.triangles.vertexStride = vertexStride;
-        geometryObject.triangles.vertexFormat = mesh.HasMorphTargets() ? nri::Format::RGBA16_SFLOAT : nri::Format::RGB32_SFLOAT;
-        geometryObject.triangles.indexBuffer = uploadBuffer;
-        geometryObject.triangles.indexOffset = geometryOffset + vertexDataSize;
-        geometryObject.triangles.indexNum = mesh.indexNum;
-        geometryObject.triangles.indexType = sizeof(utils::Index) == 2 ? nri::IndexType::UINT16 : nri::IndexType::UINT32;
+        geometryObject.geometry.triangles.vertexBuffer = uploadBuffer;
+        geometryObject.geometry.triangles.vertexOffset = geometryOffset;
+        geometryObject.geometry.triangles.vertexNum = mesh.vertexNum;
+        geometryObject.geometry.triangles.vertexStride = vertexStride;
+        geometryObject.geometry.triangles.vertexFormat = mesh.HasMorphTargets() ? nri::Format::RGBA16_SFLOAT : nri::Format::RGB32_SFLOAT;
+        geometryObject.geometry.triangles.indexBuffer = uploadBuffer;
+        geometryObject.geometry.triangles.indexOffset = geometryOffset + vertexDataSize;
+        geometryObject.geometry.triangles.indexNum = mesh.indexNum;
+        geometryObject.geometry.triangles.indexType = sizeof(utils::Index) == 2 ? nri::IndexType::UINT16 : nri::IndexType::UINT32;
 
         // Create BLAS
         nri::AllocateAccelerationStructureDesc allocateAccelerationStructureDesc = {};
@@ -3360,8 +3366,6 @@ void Sample::CreateDescriptorSets()
     { // DescriptorSet::TraceTransparent1
         const nri::Descriptor* resources[] =
         {
-            Get(Descriptor::ViewZ_Texture),
-            Get(Descriptor::Normal_Roughness_Texture),
             Get(Descriptor::ComposedDiff_Texture),
             Get(Descriptor::ComposedSpec_ViewZ_Texture),
         };
@@ -4559,15 +4563,15 @@ void Sample::RenderFrame(uint32_t frameIndex)
                     nri::GeometryObject geometryObject = {};
                     geometryObject.type = nri::GeometryType::TRIANGLES;
                     geometryObject.flags = nri::BottomLevelGeometryBits::NONE; // will be set in TLAS instance
-                    geometryObject.triangles.vertexBuffer = Get(Buffer::MorphedPositions);
-                    geometryObject.triangles.vertexStride = sizeof(float16_t4);
-                    geometryObject.triangles.vertexOffset = geometryObject.triangles.vertexStride * (m_Scene.morphedVerticesNum * animCurrBufferIndex + meshInstance.morphedVertexOffset);
-                    geometryObject.triangles.vertexNum = mesh.vertexNum;
-                    geometryObject.triangles.vertexFormat = nri::Format::RGBA16_SFLOAT;
-                    geometryObject.triangles.indexBuffer = Get(Buffer::MorphMeshIndices);
-                    geometryObject.triangles.indexOffset = mesh.morphMeshIndexOffset * sizeof(utils::Index);
-                    geometryObject.triangles.indexNum = mesh.indexNum;
-                    geometryObject.triangles.indexType = sizeof(utils::Index) == 2 ? nri::IndexType::UINT16 : nri::IndexType::UINT32;
+                    geometryObject.geometry.triangles.vertexBuffer = Get(Buffer::MorphedPositions);
+                    geometryObject.geometry.triangles.vertexStride = sizeof(float16_t4);
+                    geometryObject.geometry.triangles.vertexOffset = geometryObject.geometry.triangles.vertexStride * (m_Scene.morphedVerticesNum * animCurrBufferIndex + meshInstance.morphedVertexOffset);
+                    geometryObject.geometry.triangles.vertexNum = mesh.vertexNum;
+                    geometryObject.geometry.triangles.vertexFormat = nri::Format::RGBA16_SFLOAT;
+                    geometryObject.geometry.triangles.indexBuffer = Get(Buffer::MorphMeshIndices);
+                    geometryObject.geometry.triangles.indexOffset = mesh.morphMeshIndexOffset * sizeof(utils::Index);
+                    geometryObject.geometry.triangles.indexNum = mesh.indexNum;
+                    geometryObject.geometry.triangles.indexType = sizeof(utils::Index) == 2 ? nri::IndexType::UINT16 : nri::IndexType::UINT32;
 
                     nri::AccelerationStructure& accelerationStructure = *m_AccelerationStructures[meshInstance.blasIndex];
                     if (doBuild)
@@ -4853,8 +4857,6 @@ void Sample::RenderFrame(uint32_t frameIndex)
             const TextureState transitions[] =
             {
                 // Input
-                {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
-                {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 {Texture::ComposedDiff, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 {Texture::ComposedSpec_ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                 // Output

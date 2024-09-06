@@ -66,9 +66,9 @@ float2 GetConeAngleFromAngularRadius( float mip, float tanConeAngle )
 
 float2 GetConeAngleFromRoughness( float mip, float roughness )
 {
-    float coneAngle = ImportanceSampling::GetSpecularLobeTanHalfAngle( roughness );
+    float tanConeAngle = roughness * roughness * 0.05; // TODO: tweaked to be accurate and give perf boost
 
-    return GetConeAngleFromAngularRadius( mip, coneAngle );
+    return GetConeAngleFromAngularRadius( mip, tanConeAngle );
 }
 
 float3 GetSamplingCoords( uint textureIndex, float2 uv, float mip, int mode )
@@ -357,7 +357,7 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps, bool viewIndependen
     // Normal
     coords = GetSamplingCoords( baseTexture + 2, geometryProps.uv, geometryProps.mip, MIP_LESS_SHARP );
     float2 packedNormal = gIn_Textures[ NonUniformResourceIndex( baseTexture + 2 ) ].SAMPLE( coords ).xy;
-    float3 N = ( gUseNormalMap && !viewIndependentLightingModel ) ? Geometry::TransformLocalNormal( packedNormal, geometryProps.T, geometryProps.N ) : geometryProps.N;
+    float3 N = gUseNormalMap ? Geometry::TransformLocalNormal( packedNormal, geometryProps.T, geometryProps.N ) : geometryProps.N;
     float3 T = geometryProps.T.xyz;
 
     // Estimate curvature
@@ -510,6 +510,11 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps, bool viewIndependen
 // MISC
 //====================================================================================================================================
 
+bool IsPsrAllowed( MaterialProps materialProps )
+{
+    return gPSR && materialProps.roughness < 0.044 && ( materialProps.metalness > 0.941 || Color::Luminance( materialProps.baseColor ) < 0.005 ); // TODO: tweaked for some content?
+}
+
 float3 GetShadowedLighting( GeometryProps geometryProps, MaterialProps materialProps, bool softShadows = true )
 {
     const uint instanceInclusionMask = GEOMETRY_IGNORE_TRANSPARENT; // Default shadow rays must ignore transparency // TODO: what about translucency?
@@ -533,7 +538,7 @@ float3 GetShadowedLighting( GeometryProps geometryProps, MaterialProps materialP
 
     L += materialProps.Lemi;
 
-    return L;
+    return NRD_MODE < OCCLUSION ? L : 0.0;
 }
 
 float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps materialProps, bool useMagicBoost = false )

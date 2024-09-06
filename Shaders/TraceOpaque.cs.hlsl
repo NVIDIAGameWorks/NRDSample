@@ -21,7 +21,7 @@ NRI_RESOURCE( Texture2D<uint3>, gIn_ScramblingRanking, t, 2, 1 );
 NRI_RESOURCE( Texture2D<uint4>, gIn_Sobol, t, 3, 1 );
 
 // Outputs
-NRI_RESOURCE( RWTexture2D<float3>, gOut_Mv, u, 0, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_Mv, u, 0, 1 );
 NRI_RESOURCE( RWTexture2D<float>, gOut_ViewZ, u, 1, 1 );
 NRI_RESOURCE( RWTexture2D<float4>, gOut_Normal_Roughness, u, 2, 1 );
 NRI_RESOURCE( RWTexture2D<float4>, gOut_BaseColor_Metalness, u, 3, 1 );
@@ -82,7 +82,8 @@ float4 GetRadianceFromPreviousFrame( GeometryProps geometryProps, MaterialProps 
     float b = Color::Luminance( prevLspec );
     prevFrameWeight *= lerp( diffuseProbabilityBiased, 1.0, ( a + NRD_EPS ) / ( a + b + NRD_EPS ) );
 
-    return float4( prevLsum, prevFrameWeight );
+    // Return avoiding really bad reprojection
+    return NRD_MODE < OCCLUSION ? float4( prevLsum * saturate( prevFrameWeight / 0.001 ), prevFrameWeight ) : 0.0;
 }
 
 //========================================================================================
@@ -148,12 +149,7 @@ struct TraceOpaqueResult
     #endif
 };
 
-bool IsPsrAllowed( MaterialProps materialProps )
-{
-    return materialProps.roughness < 0.044 && ( materialProps.metalness > 0.941 || Color::Luminance( materialProps.baseColor ) < 0.005 ); // TODO: tweaked for some content?
-}
-
-TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
+TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
 {
     // TODO: for RESOLUTION_FULL_PROBABILISTIC with 1 path per pixel the tracer can be significantly simplified
 
@@ -162,93 +158,85 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
     //=====================================================================================================================================================================
 
     float viewZ = Geometry::AffineTransform( gWorldToView, desc.geometryProps.X ).z;
-    float3 psrLsum = 0.0;
+    float4 Lpsr = 0;
+    float3x3 mirrorMatrix = Geometry::GetMirrorMatrix( 0 ); // identity
 
     #if( USE_PSR == 1 )
-        float3x3 mirrorMatrix = Geometry::GetMirrorMatrix( 0 ); // identity
+    {
         float3 psrThroughput = 1.0;
 
-        if( gPSR && IsPsrAllowed( desc.materialProps ) )
+        GeometryProps geometryProps = desc.geometryProps;
+        MaterialProps materialProps = desc.materialProps;
+
+        float accumulatedHitDist = 0.0;
+        float accumulatedPseudoCurvature = 0.0; // TODO: is there a less empirical solution?
+        bool isPSR = false;
+
+        [loop]
+        while( desc.bounceNum && !geometryProps.IsSky( ) && IsPsrAllowed( materialProps ) )
         {
-            GeometryProps geometryProps = desc.geometryProps;
-            MaterialProps materialProps = desc.materialProps;
+            isPSR = true;
 
-            float accumulatedHitDist = 0.0;
-            float accumulatedPseudoCurvature = 0.0; // TODO: is there a less empirical solution?
+            // Origin point
+            float curvature = materialProps.curvature;
+            accumulatedPseudoCurvature += Math::Pow01( abs( curvature ), 0.25 );
 
-            [loop]
-            for( uint bounceIndex = 1; bounceIndex <= desc.bounceNum; bounceIndex++ )
             {
-                //=============================================================================================================================================================
-                // PSR - Origin point
-                //=============================================================================================================================================================
+                // Accumulate mirror matrix
+                mirrorMatrix = mul( Geometry::GetMirrorMatrix( materialProps.N ), mirrorMatrix );
 
-                float curvature = materialProps.curvature;
-                accumulatedPseudoCurvature += Math::Pow01( abs( curvature ), 0.25 );
+                // Choose a ray
+                float3 ray = reflect( -geometryProps.V, materialProps.N );
 
-                {
-                    // Accumulate mirror matrix
-                    mirrorMatrix = mul( Geometry::GetMirrorMatrix( materialProps.N ), mirrorMatrix );
+                // Update throughput
+                #if( NRD_MODE < OCCLUSION )
+                    float3 albedo, Rf0;
+                    BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
 
-                    // Choose a ray
-                    float3 ray = reflect( -geometryProps.V, materialProps.N );
+                    float NoV = abs( dot( materialProps.N, geometryProps.V ) );
+                    float3 Fenv = BRDF::EnvironmentTerm_Rtg( Rf0, NoV, materialProps.roughness );
 
-                    // Update throughput
-                    #if( NRD_MODE < OCCLUSION )
-                        float3 albedo, Rf0;
-                        BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
+                    psrThroughput *= Fenv;
+                #endif
 
-                        float NoV = abs( dot( materialProps.N, geometryProps.V ) );
-                        float3 Fenv = BRDF::EnvironmentTerm_Rtg( Rf0, NoV, materialProps.roughness );
+                // Abort if expected contribution of the current bounce is low
+                if( PSR_THROUGHPUT_THRESHOLD != 0.0 && Color::Luminance( psrThroughput ) < PSR_THROUGHPUT_THRESHOLD )
+                    break;
 
-                        psrThroughput *= Fenv;
-                    #endif
-
-                    // Abort if expected contribution of the current bounce is low
-                    if( PSR_THROUGHPUT_THRESHOLD != 0.0 && Color::Luminance( psrThroughput ) < PSR_THROUGHPUT_THRESHOLD )
-                        break;
-
-                    //=========================================================================================================================================================
-                    // PSR - Trace to the next hit
-                    //=========================================================================================================================================================
-
-                    float2 mipAndCone = GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness );
-                    geometryProps = CastRay( geometryProps.GetXoffset( geometryProps.N ), ray, 0.0, INF, mipAndCone, gWorldTlas, desc.instanceInclusionMask, desc.rayFlags );
-                    materialProps = GetMaterialProps( geometryProps );
-                }
-
-                //=============================================================================================================================================================
-                // PSR - Hit point
-                //=============================================================================================================================================================
-
-                {
-                    // Accumulate hit distance representing virtual point position ( see "README/NOISY INPUTS" )
-                    // TODO: this heuristic works best so far
-                    float hitDistFocused = geometryProps.tmin / ( 2.0 * curvature * geometryProps.tmin + 1.0 );
-                    accumulatedHitDist += hitDistFocused * Math::SmoothStep( 0.2, 0.0, accumulatedPseudoCurvature );
-
-                    // If hit is not a delta-event ( or the last bounce, or a miss ) it's PSR
-                    if( !IsPsrAllowed( materialProps ) || bounceIndex == desc.bounceNum || geometryProps.IsSky( ) )
-                    {
-                        // Update bounces
-                        desc.bounceNum -= bounceIndex;
-                        break;
-                    }
-                }
+                // Trace to the next hit
+                float2 mipAndCone = GetConeAngleFromRoughness( geometryProps.mip, materialProps.roughness );
+                geometryProps = CastRay( geometryProps.GetXoffset( geometryProps.N ), ray, 0.0, INF, mipAndCone, gWorldTlas, desc.instanceInclusionMask, desc.rayFlags );
+                materialProps = GetMaterialProps( geometryProps );
             }
 
-            //=============================================================================================================================================================
-            // PSR - Lighting
-            //=============================================================================================================================================================
-
-            float4 Lcached = float4( materialProps.Lemi, 1.0 );
-            if( !geometryProps.IsSky( ) && NRD_MODE < OCCLUSION )
+            // Hit point
             {
+                // Accumulate hit distance representing virtual point position ( see "README/NOISY INPUTS" )
+                // TODO: this heuristic works best so far
+                float hitDistFocused = geometryProps.tmin / ( 2.0 * curvature * geometryProps.tmin + 1.0 );
+                accumulatedHitDist += hitDistFocused * Math::SmoothStep( 0.2, 0.0, accumulatedPseudoCurvature );
+            }
+
+            desc.bounceNum--;
+        }
+
+        if( isPSR )
+        {
+            // Update materials, direct lighting and emission
+            float3 psrNormal = float3( 0, 0, 1 );
+            uint materialID = materialProps.metalness < 0.5 ? MATERIAL_ID_DEFAULT : MATERIAL_ID_METAL;
+
+            if( !geometryProps.IsSky( ) )
+            {
+                psrNormal = Geometry::RotateVectorInverse( mirrorMatrix, materialProps.N );
+
+                gOut_BaseColor_Metalness[ desc.pixelPos ] = float4( Color::ToSrgb( materialProps.baseColor ), materialProps.metalness );
+
                 // L1 cache - reproject previous frame, carefully treating specular
-                Lcached = GetRadianceFromPreviousFrame( geometryProps, materialProps, desc.pixelPos, false );
+                Lpsr = GetRadianceFromPreviousFrame( geometryProps, materialProps, desc.pixelPos, false );
 
                 // L2 cache - SHARC
-                if( gSHARC )
+                if( gSHARC && NRD_MODE < OCCLUSION )
                 {
                     GridParameters gridParameters = ( GridParameters )0;
                     gridParameters.cameraPosition = gCameraGlobalPos.xyz;
@@ -276,66 +264,50 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                     sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
 
                     bool isSharcAllowed = geometryProps.tmin > voxelSize; // voxel angular size is acceptable
-                    isSharcAllowed = isSharcAllowed && Rng::Hash::GetFloat( ) > Lcached.w; // probabilistically estimate the need
+                    isSharcAllowed = isSharcAllowed && Rng::Hash::GetFloat( ) > Lpsr.w; // probabilistically estimate the need
                     isSharcAllowed = isSharcAllowed && desc.bounceNum == 0; // allow only for the last bounce for PSR
 
-                    float3 sharcRadiance = 0;
+                    float3 sharcRadiance;
                     if( isSharcAllowed && SharcGetCachedRadiance( sharcState, sharcHitData, sharcRadiance, false ) )
-                    {
-                        Lcached.xyz = max( sharcRadiance, materialProps.Lemi );
-                        Lcached.w = 1.0;
-                    }
+                        Lpsr = float4( sharcRadiance, 1.0 );
                 }
 
-                // Cache miss - compute lighting, if not found in caches
-                if( Lcached.w != 1.0 )
-                {
-                    float3 L = GetShadowedLighting( geometryProps, materialProps );
-                    Lcached.xyz = lerp( L, Lcached.xyz, Lcached.w );
-                }
+                // TODO: add a macro switch for old mode ( with coupled direct lighting )
+
+                // Subtract direct lighting, process it separately
+                float3 L = GetShadowedLighting( geometryProps, materialProps );
+
+                if( desc.bounceNum != 0 )
+                    Lpsr.xyz *= Lpsr.w;
+
+                Lpsr.xyz = max( Lpsr.xyz - L, 0.0 );
+
+                gOut_DirectLighting[ desc.pixelPos ] = materialProps.Ldirect * psrThroughput;
             }
 
-            //=============================================================================================================================================================
-            // PSR - Other
-            //=============================================================================================================================================================
+            gOut_DirectEmission[ desc.pixelPos ] = materialProps.Lemi * psrThroughput;
+            gOut_Normal_Roughness[ desc.pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( psrNormal, materialProps.roughness, materialID );
 
-            // Throughput will be applied later
-            psrLsum = Lcached.xyz;
-
-            // Update materials and INF emission
-            float3 psrNormal = float3( 0, 0, 1 );
-            if( !geometryProps.IsSky( ) )
-            {
-                psrNormal = Geometry::RotateVectorInverse( mirrorMatrix, materialProps.N );
-
-                gOut_BaseColor_Metalness[ desc.pixelPos ] = float4( Color::ToSrgb( materialProps.baseColor ), materialProps.metalness );
-            }
-            else
-            {
-                // Composition pass doesn't apply "psrThroughput" to INF pixels
-                gOut_DirectEmission[ desc.pixelPos ] = psrLsum * psrThroughput;
-            }
-
-            // IMPORTANT: use another materialID to avoid potential leaking, because PSR uses own de-modulation scheme. Also needed for tracing of transparent stuff
-            gOut_Normal_Roughness[ desc.pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( psrNormal, materialProps.roughness, MATERIAL_ID_PSR );
-
-            // Update viewZ
+            // PSR - Update motion
             float3 Xvirtual = desc.geometryProps.X - desc.geometryProps.V * accumulatedHitDist;
-            viewZ = Geometry::AffineTransform( gWorldToView, Xvirtual ).z;
-
-            gOut_ViewZ[ desc.pixelPos ] = geometryProps.IsSky( ) ? Math::Sign( viewZ ) * INF : viewZ;
-
-            // Update motion
             float3 XvirtualPrev = Xvirtual + geometryProps.Xprev - geometryProps.X;
             float3 motion = GetMotion( Xvirtual, XvirtualPrev );
-            gOut_Mv[ desc.pixelPos ] = motion;
 
-            // Replace primary surface props with the replacement props
+            gOut_Mv[ desc.pixelPos ] = float4( motion, viewZ * FP16_VIEWZ_SCALE ); // keep viewZ before PSR ( needed for glass )
+
+            // PSR - Update viewZ
+            viewZ = Geometry::AffineTransform( gWorldToView, Xvirtual ).z;
+            viewZ = geometryProps.IsSky( ) ? Math::Sign( viewZ ) * INF : viewZ;
+
+            gOut_ViewZ[ desc.pixelPos ] = viewZ;
+
+            // PSR - Replace primary surface props with the replacement props
             desc.geometryProps = geometryProps;
             desc.materialProps = materialProps;
         }
 
         gOut_PsrThroughput[ desc.pixelPos ] = psrThroughput;
+    }
     #endif
 
     //=====================================================================================================================================================================
@@ -352,7 +324,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
     uint diffPathsNum = 0;
 
     [loop]
-    for( uint i = 0; i < pathNum; i++ )
+    for( uint path = 0; path < pathNum; path++ )
     {
         GeometryProps geometryProps = desc.geometryProps;
         MaterialProps materialProps = desc.materialProps;
@@ -360,41 +332,40 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
         float accumulatedHitDist = 0;
         float accumulatedDiffuseLikeMotion = 0;
 
-        float3 Lsum = psrLsum;
-        float3 pathThroughput = 1.0;
+        bool isDiffusePath = gTracingMode == RESOLUTION_HALF ? desc.checkerboard : ( path & 0x1 );
+        uint2 blueNoisePos = desc.pixelPos + uint2( Sequence::Weyl2D( 0.0, path ) * ( BLUE_NOISE_SPATIAL_DIM - 1 ) );
 
-        bool isDiffusePath = gTracingMode == RESOLUTION_HALF ? desc.checkerboard : ( i & 0x1 );
-
-        uint2 blueNoisePos = desc.pixelPos + uint2( Sequence::Weyl2D( 0.0, i ) * ( BLUE_NOISE_SPATIAL_DIM - 1 ) );
+        float diffProb0 = EstimateDiffuseProbability( geometryProps, materialProps ) * float( !geometryProps.Has( FLAG_HAIR ) );
+        float3 Lsum = Lpsr.xyz * ( gTracingMode == RESOLUTION_FULL ? ( isDiffusePath ? diffProb0 : ( 1.0 - diffProb0 ) ) : 1.0 );
+        float3 pathThroughput = 1.0 - Lpsr.w;
 
         [loop]
-        for( uint bounceIndex = 1; bounceIndex <= desc.bounceNum && !geometryProps.IsSky( ); bounceIndex++ )
+        for( uint bounce = 1; bounce <= desc.bounceNum && !geometryProps.IsSky( ); bounce++ )
         {
-            bool isDiffuse = isDiffusePath;
-
             //=============================================================================================================================================================
             // Origin point
             //=============================================================================================================================================================
 
+            bool isDiffuse = isDiffusePath;
             {
                 // Estimate diffuse probability
                 float diffuseProbability = EstimateDiffuseProbability( geometryProps, materialProps ) * float( !geometryProps.Has( FLAG_HAIR ) );
 
                 // Clamp probability to a sane range to guarantee a sample in 3x3 ( or 5x5 ) area
                 float rnd = Rng::Hash::GetFloat( );
-                if( gTracingMode == RESOLUTION_FULL_PROBABILISTIC && bounceIndex == 1 && !gRR )
+                if( gTracingMode == RESOLUTION_FULL_PROBABILISTIC && bounce == 1 && !gRR )
                 {
                     diffuseProbability = float( diffuseProbability != 0.0 ) * clamp( diffuseProbability, gMinProbability, 1.0 - gMinProbability );
                     rnd = Sequence::Bayer4x4( desc.pixelPos, gFrameIndex ) + rnd / 16.0;
                 }
 
                 // Diffuse or specular path?
-                if( gTracingMode == RESOLUTION_FULL_PROBABILISTIC || bounceIndex > 1 )
+                if( gTracingMode == RESOLUTION_FULL_PROBABILISTIC || bounce > 1 )
                 {
                     isDiffuse = rnd < diffuseProbability;
                     pathThroughput /= abs( float( !isDiffuse ) - diffuseProbability );
 
-                    if( bounceIndex == 1 )
+                    if( bounce == 1 )
                         isDiffusePath = isDiffuse;
                 }
 
@@ -410,7 +381,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 // If IS is enabled, generate up to IMPORTANCE_SAMPLES_NUM rays depending on roughness
                 // If IS is disabled, there is no need to generate up to IMPORTANCE_SAMPLES_NUM rays for specular because VNDF v3 doesn't produce rays pointing inside the surface
                 uint maxSamplesNum = 0;
-                if( bounceIndex == 1 && gDisableShadowsAndEnableImportanceSampling && NRD_MODE < OCCLUSION ) // TODO: use IS in each bounce?
+                if( bounce == 1 && gDisableShadowsAndEnableImportanceSampling && NRD_MODE < OCCLUSION ) // TODO: use IS in each bounce?
                     maxSamplesNum = IMPORTANCE_SAMPLES_NUM * ( isDiffuse ? 1.0 : materialProps.roughness );
                 maxSamplesNum = max( maxSamplesNum, 1 );
 
@@ -506,7 +477,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                 // ( Optional ) Save sampling direction for the 1st bounce
                 #if( NRD_MODE == SH || NRD_MODE == DIRECTIONAL_OCCLUSION )
-                    if( bounceIndex == 1 )
+                    if( bounce == 1 )
                     {
                         float3 psrRay = ray;
                         #if( USE_PSR == 1 )
@@ -534,7 +505,7 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                         if( isDiffuse )
                         {
                             float NoV = abs( dot( materialProps.N, geometryProps.V ) );
-                            pathThroughput *= Math::Pi( 1.0 ) * albedo * BRDF::DiffuseTerm_Burley( materialProps.roughness, NoL, NoV, VoH );
+                            pathThroughput *= albedo * saturate( Math::Pi( 1.0 ) * BRDF::DiffuseTerm_Burley( materialProps.roughness, NoL, NoV, VoH ) );
                         }
                         else
                         {
@@ -610,14 +581,14 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
                 // Lighting
                 //=============================================================================================================================================================
 
-                float4 Lcached = float4( materialProps.Lemi, 1.0 );
+                float4 Lcached = float4( 0, 0, 0, 1 );
                 if( !geometryProps.IsSky( ) && NRD_MODE < OCCLUSION )
                 {
                     // L1 cache - reproject previous frame, carefully treating specular
                     Lcached = GetRadianceFromPreviousFrame( geometryProps, materialProps, desc.pixelPos, false );
 
                     // L2 cache - SHARC
-                    if( gSHARC )
+                    if( gSHARC && NRD_MODE < OCCLUSION )
                     {
                         GridParameters gridParameters = ( GridParameters )0;
                         gridParameters.cameraPosition = gCameraGlobalPos.xyz;
@@ -646,23 +617,21 @@ TraceOpaqueResult TraceOpaque( TraceOpaqueDesc desc )
 
                         bool isSharcAllowed = geometryProps.tmin > voxelSize; // voxel angular size is acceptable
                         isSharcAllowed = isSharcAllowed && Rng::Hash::GetFloat( ) > Lcached.w; // probabilistically estimate the need
-                        isSharcAllowed = isSharcAllowed && ( isDiffuse || Rng::Hash::GetFloat( ) < smc || bounceIndex == desc.bounceNum ); // allowed for diffuse-like events or last bounce
+                        isSharcAllowed = isSharcAllowed && ( isDiffuse || Rng::Hash::GetFloat( ) < smc || bounce == desc.bounceNum ); // allowed for diffuse-like events or last bounce
 
-                        float3 sharcRadiance = 0;
+                        float3 sharcRadiance;
                         if( isSharcAllowed && SharcGetCachedRadiance( sharcState, sharcHitData, sharcRadiance, false ) )
-                        {
-                            Lcached.xyz = max( sharcRadiance, materialProps.Lemi );
-                            Lcached.w = 1.0;
-                        }
+                            Lcached = float4( sharcRadiance, 1.0 );
                     }
 
                     // Cache miss - compute lighting, if not found in caches
-                    if( Lcached.w != 1.0 )
+                    if( Rng::Hash::GetFloat( ) > Lcached.w && bounce < desc.bounceNum )
                     {
-                        float3 L = GetShadowedLighting( geometryProps, materialProps );
-                        Lcached.xyz = lerp( L, Lcached.xyz, Lcached.w );
+                        Lcached.xyz = GetShadowedLighting( geometryProps, materialProps );
+                        Lcached.w = 0.0; // not from cache
                     }
                 }
+                Lcached.xyz = max( Lcached.xyz, materialProps.Lemi );
 
                 //=============================================================================================================================================================
                 // Other
@@ -865,11 +834,13 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     // ViewZ
     float viewZ = Geometry::AffineTransform( gWorldToView, geometryProps0.X ).z;
     viewZ = geometryProps0.IsSky( ) ? Math::Sign( viewZ ) * INF : viewZ;
+
     gOut_ViewZ[ pixelPos ] = viewZ;
 
     // Motion
     float3 motion = GetMotion( geometryProps0.X, geometryProps0.Xprev );
-    gOut_Mv[ pixelPos ] = motion;
+
+    gOut_Mv[ pixelPos ] = float4( motion, viewZ * FP16_VIEWZ_SCALE );
 
     // Early out - sky
     if( geometryProps0.IsSky( ) )
@@ -887,7 +858,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     uint materialID = geometryProps0.Has( FLAG_HAIR ) ? MATERIAL_ID_HAIR : ( materialProps0.metalness < 0.5 ? MATERIAL_ID_DEFAULT : MATERIAL_ID_METAL );
 
     #if( USE_SIMULATED_MATERIAL_ID_TEST == 1 )
-        materialID = frac( geometryProps0.X ).x < 0.05 ? MATERIAL_ID_PSR : materialID;
+        materialID = frac( geometryProps0.X ).x < 0.05 ? MATERIAL_ID_HAIR : materialID;
     #endif
 
     float3 N = materialProps0.N;
@@ -936,16 +907,45 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     gOut_DirectLighting[ pixelPos ] = materialProps0.Ldirect;
     gOut_DirectEmission[ pixelPos ] = materialProps0.Lemi;
 
-    // Sun shadow
+    //================================================================================================================================================================================
+    // Secondary rays ( indirect and direct lighting from local light sources ) + potential PSR
+    //================================================================================================================================================================================
+
+    TraceOpaqueDesc desc = ( TraceOpaqueDesc )0;
+    desc.geometryProps = geometryProps0;
+    desc.materialProps = materialProps0;
+    desc.pixelPos = pixelPos;
+    desc.checkerboard = checkerboard;
+    desc.pathNum = gSampleNum;
+    desc.bounceNum = gBounceNum; // TODO: adjust by roughness?
+    desc.instanceInclusionMask = GEOMETRY_IGNORE_TRANSPARENT;
+    desc.rayFlags = 0;
+
+    TraceOpaqueResult result = TraceOpaque( desc );
+
+    #if( USE_SIMULATED_MATERIAL_ID_TEST == 1 )
+        if( frac( geometryProps0.X ).x < 0.05 )
+            result.diffRadiance = float3( 0, 10, 0 ) * Color::Luminance( result.diffRadiance );
+    #endif
+
+    #if( USE_SIMULATED_FIREFLY_TEST == 1 )
+        const float maxFireflyEnergyScaleFactor = 10000.0;
+        result.diffRadiance /= lerp( 1.0 / maxFireflyEnergyScaleFactor, 1.0, Rng::Hash::GetFloat( ) );
+    #endif
+
+    //================================================================================================================================================================================
+    // Sun shadow ( after potential PSR )
+    //================================================================================================================================================================================
+
     float2 rnd = GetBlueNoise( pixelPos, false );
     rnd = ImportanceSampling::Cosine::GetRay( rnd ).xy;
     rnd *= gTanSunAngularRadius;
 
     float3 sunDirection = normalize( gSunBasisX.xyz * rnd.x + gSunBasisY.xyz * rnd.y + gSunDirection.xyz );
-    float3 Xoffset = geometryProps0.GetXoffset( sunDirection, SHADOW_RAY_OFFSET );
-    float2 mipAndCone = GetConeAngleFromAngularRadius( geometryProps0.mip, gTanSunAngularRadius );
+    float3 Xoffset = desc.geometryProps.GetXoffset( sunDirection, SHADOW_RAY_OFFSET );
+    float2 mipAndCone = GetConeAngleFromAngularRadius( desc.geometryProps.mip, gTanSunAngularRadius );
 
-    float shadowTranslucency = ( Color::Luminance( materialProps0.Ldirect ) != 0.0 && !gDisableShadowsAndEnableImportanceSampling ) ? 1.0 : 0.0;
+    float shadowTranslucency = ( Color::Luminance( desc.materialProps.Ldirect ) != 0.0 && !gDisableShadowsAndEnableImportanceSampling ) ? 1.0 : 0.0;
     float shadowHitDist = 0.0;
 
     while( shadowTranslucency > 0.01 )
@@ -972,32 +972,6 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
 
     gOut_ShadowData[ pixelPos ] = penumbra;
     gOut_Shadow_Translucency[ pixelPos ] = translucency;
-
-    //================================================================================================================================================================================
-    // Secondary rays ( indirect and direct lighting from local light sources )
-    //================================================================================================================================================================================
-
-    TraceOpaqueDesc desc = ( TraceOpaqueDesc )0;
-    desc.geometryProps = geometryProps0;
-    desc.materialProps = materialProps0;
-    desc.pixelPos = pixelPos;
-    desc.checkerboard = checkerboard;
-    desc.pathNum = gSampleNum;
-    desc.bounceNum = gBounceNum; // TODO: adjust by roughness?
-    desc.instanceInclusionMask = GEOMETRY_IGNORE_TRANSPARENT;
-    desc.rayFlags = 0;
-
-    TraceOpaqueResult result = TraceOpaque( desc );
-
-    #if( USE_SIMULATED_MATERIAL_ID_TEST == 1 )
-        if( frac( geometryProps0.X ).x < 0.05 )
-            result.diffRadiance = float3( 0, 10, 0 ) * Color::Luminance( result.diffRadiance );
-    #endif
-
-    #if( USE_SIMULATED_FIREFLY_TEST == 1 )
-        const float maxFireflyEnergyScaleFactor = 10000.0;
-        result.diffRadiance /= lerp( 1.0 / maxFireflyEnergyScaleFactor, 1.0, Rng::Hash::GetFloat( ) );
-    #endif
 
     //================================================================================================================================================================================
     // Output
