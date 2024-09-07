@@ -106,7 +106,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
             MaterialProps materialProps = GetMaterialProps( geometryProps );
 
             // Lighting
-            float4 Lcached = float4( 0, 0, 0, 1 );
+            float4 Lcached = 0;
             if( !geometryProps.IsSky( ) && NRD_MODE < OCCLUSION )
             {
                 // L1 cache - reproject previous frame, carefully treating specular
@@ -153,8 +153,8 @@ float3 TraceTransparent( TraceTransparentDesc desc )
                 // Cache miss - compute lighting, if not found in caches
                 if( Rng::Hash::GetFloat( ) > Lcached.w )
                 {
-                    Lcached.xyz = GetShadowedLighting( geometryProps, materialProps, false );
-                    Lcached.w = 0.0; // not from cache
+                    float3 L = GetShadowedLighting( geometryProps, materialProps );
+                    Lcached.xyz = max( Lcached.xyz, L );
                 }
             }
             Lcached.xyz = max( Lcached.xyz, materialProps.Lemi );

@@ -2192,7 +2192,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     float emiCurr = m_Settings.emission * m_Settings.emissionIntensity;
     float emiPrev = m_SettingsPrev.emission * m_SettingsPrev.emissionIntensity;
     if (emiCurr != emiPrev)
-        resetHistoryFactor *= 1.0f - abs(emiCurr - emiPrev) / max(emiCurr, emiPrev);
+        resetHistoryFactor *= lerp(1.0f, 0.5f, abs(emiCurr - emiPrev) / max(emiCurr, emiPrev));
 
     if (m_ForceHistoryReset)
         resetHistoryFactor = 0.0f;

@@ -7,10 +7,10 @@ All-in-one repository including all relevant pieces to see [*NRD (NVIDIA Real-ti
 - HALF resolution (checkerboard), FULL resolution and FULL resolution tracing with PROBABILISTIC diffuse / specular selection at the primary hit
 - NRD denoising, including occlusion-only and spherical harmonics / gaussian modes
 - overhead-free multi-bounce propagation (even in case of a single bounce) based on reusing the previously denoised frame
+- SHARC radiance cache
 - reference accumulation
 - several rays per pixel and bounces
 - realistic glass with multi-bounce reflections and refractions
-- physically based ambient estimation using RT
 - mip level calculation
 - curvature estimation
 

@@ -202,7 +202,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
                 if( isDiffuse )
                 {
                     float NoV = abs( dot( materialProps.N, geometryProps.V ) );
-                    throughput *= albedo * saturate( Math::Pi( 1.0 ) * BRDF::DiffuseTerm_Burley( materialProps.roughness, NoL, NoV, VoH ) );
+                    throughput *= saturate( albedo * Math::Pi( 1.0 ) * BRDF::DiffuseTerm_Burley( materialProps.roughness, NoL, NoV, VoH ) );
                 }
                 else
                 {

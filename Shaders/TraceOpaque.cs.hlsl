@@ -505,7 +505,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                         if( isDiffuse )
                         {
                             float NoV = abs( dot( materialProps.N, geometryProps.V ) );
-                            pathThroughput *= albedo * saturate( Math::Pi( 1.0 ) * BRDF::DiffuseTerm_Burley( materialProps.roughness, NoL, NoV, VoH ) );
+                            pathThroughput *= saturate( albedo * Math::Pi( 1.0 ) * BRDF::DiffuseTerm_Burley( materialProps.roughness, NoL, NoV, VoH ) );
                         }
                         else
                         {
@@ -581,7 +581,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                 // Lighting
                 //=============================================================================================================================================================
 
-                float4 Lcached = float4( 0, 0, 0, 1 );
+                float4 Lcached = 0;
                 if( !geometryProps.IsSky( ) && NRD_MODE < OCCLUSION )
                 {
                     // L1 cache - reproject previous frame, carefully treating specular
@@ -625,10 +625,10 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                     }
 
                     // Cache miss - compute lighting, if not found in caches
-                    if( Rng::Hash::GetFloat( ) > Lcached.w && bounce < desc.bounceNum )
+                    if( Rng::Hash::GetFloat( ) > Lcached.w )
                     {
-                        Lcached.xyz = GetShadowedLighting( geometryProps, materialProps );
-                        Lcached.w = 0.0; // not from cache
+                        float3 L = GetShadowedLighting( geometryProps, materialProps );
+                        Lcached.xyz = bounce < desc.bounceNum ? L : max( Lcached.xyz, L );
                     }
                 }
                 Lcached.xyz = max( Lcached.xyz, materialProps.Lemi );
