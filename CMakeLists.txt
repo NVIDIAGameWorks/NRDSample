@@ -142,7 +142,7 @@ if (WIN32)
 else ()
     find_library (NGX_D_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
     find_library (NGX_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
-    find_file (DLSS_SR_DLL NAMES libnvidia-ngx-dlss.so.3.7.10 PATHS "External/NGX/lib/Linux_x86_64/rel")
+    find_file (DLSS_SR_DLL NAMES libnvidia-ngx-dlss.so.3.7.20 PATHS "External/NGX/lib/Linux_x86_64/rel")
 endif ()
 
 if (NGX_D_LIB AND NGX_LIB AND DLSS_SR_DLL)

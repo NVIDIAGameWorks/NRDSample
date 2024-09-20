@@ -30,6 +30,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define USE_SHARC_DITHERING                 1 // must be in [0; 1] range
 #define USE_TRANSLUCENCY                    1 // translucent foliage
 #define USE_NIS                             1 // NIS filter (debug only)
+#define USE_SHARC_V_DEPENDENT               1 // needed to get a full match with prev frame data // TODO: improve multi-bounce low-roughness case
 
 // Default = 0
 #define USE_SANITIZATION                    0 // NRD sample is NAN/INF free
@@ -43,7 +44,6 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define USE_RANDOMIZED_ROUGHNESS            0 // randomize roughness ( a common case in games )
 #define USE_LOAD                            0 // Load vs SampleLevel
 #define USE_SHARC_DEBUG                     0 // 1 - show cache, 2 - show grid
-#define USE_SHARC_V_DEPENDENT               1 // needed to get a full match with prev frame data // TODO: improve multi-bounce low-roughness case
 
 //=============================================================================================
 // CONSTANTS
@@ -271,7 +271,6 @@ NRI_RESOURCE( cbuffer, GlobalConstants, b, 0, SET_GLOBAL )
     float gTanSunAngularRadius;
     float gTanPixelAngularRadius;
     float gDebug;
-    float gTransparent;
     float gPrevFrameConfidence;
     float gMinProbability;
     float gUnproject;
@@ -283,6 +282,7 @@ NRI_RESOURCE( cbuffer, GlobalConstants, b, 0, SET_GLOBAL )
     float gExposure;
     float gMipBias;
     float gOrthoMode;
+    uint32_t gTransparent;
     uint32_t gSharcMaxAccumulatedFrameNum;
     uint32_t gDenoiserType;
     uint32_t gDisableShadowsAndEnableImportanceSampling; // TODO: remove - modify GetSunIntensity to return 0 if sun is below horizon

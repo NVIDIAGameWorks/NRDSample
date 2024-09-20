@@ -1021,7 +1021,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
             uint32_t head = frameIndex % N;
             m_FrameTimes[head] = m_Timer.GetFrameTime();
             ImGui::PushStyleColor(ImGuiCol_Text, colorFps);
-                ImGui::PlotLines("", m_FrameTimes.data(), N, head, buf, lo, hi, ImVec2(0.0f, 70.0f));
+                ImGui::PlotLines("##Plot", m_FrameTimes.data(), N, head, buf, lo, hi, ImVec2(0.0f, 70.0f));
             ImGui::PopStyleColor();
 
             if (IsButtonPressed(Button::Right))
@@ -2437,8 +2437,8 @@ void Sample::CreatePipelineLayoutAndDescriptorPool()
     // SET_OTHER
     const nri::DescriptorRangeDesc descriptorRanges1[] =
     {
-        { 0, 12, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER },
-        { 0, 13, nri::DescriptorType::STORAGE_TEXTURE, nri::StageBits::COMPUTE_SHADER },
+        { 0, 12, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER, nri::DescriptorRangeBits::PARTIALLY_BOUND },
+        { 0, 13, nri::DescriptorType::STORAGE_TEXTURE, nri::StageBits::COMPUTE_SHADER, nri::DescriptorRangeBits::PARTIALLY_BOUND },
     };
 
     // SET_RAY_TRACING
@@ -2447,14 +2447,14 @@ void Sample::CreatePipelineLayoutAndDescriptorPool()
     {
         { 0, 2, nri::DescriptorType::ACCELERATION_STRUCTURE, nri::StageBits::COMPUTE_SHADER },
         { 2, 3, nri::DescriptorType::STRUCTURED_BUFFER, nri::StageBits::COMPUTE_SHADER },
-        { 5, textureNum, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER, nri::VARIABLE_DESCRIPTOR_NUM, nri::DESCRIPTOR_ARRAY },
+        { 5, textureNum, nri::DescriptorType::TEXTURE, nri::StageBits::COMPUTE_SHADER, nri::DescriptorRangeBits::PARTIALLY_BOUND | nri::DescriptorRangeBits::VARIABLE_SIZED_ARRAY },
     };
 
     // SET_MORPH
     const nri::DescriptorRangeDesc descriptorRanges3[] =
     {
-        { 0, 3, nri::DescriptorType::STRUCTURED_BUFFER, nri::StageBits::COMPUTE_SHADER },
-        { 0, 2, nri::DescriptorType::STORAGE_STRUCTURED_BUFFER, nri::StageBits::COMPUTE_SHADER },
+        { 0, 3, nri::DescriptorType::STRUCTURED_BUFFER, nri::StageBits::COMPUTE_SHADER, nri::DescriptorRangeBits::PARTIALLY_BOUND },
+        { 0, 2, nri::DescriptorType::STORAGE_STRUCTURED_BUFFER, nri::StageBits::COMPUTE_SHADER, nri::DescriptorRangeBits::PARTIALLY_BOUND },
     };
 
     // SET_SHARC
@@ -2465,19 +2465,19 @@ void Sample::CreatePipelineLayoutAndDescriptorPool()
 
     nri::DynamicConstantBufferDesc dynamicConstantBuffer = { 0, nri::StageBits::COMPUTE_SHADER };
 
-    const nri::DescriptorSetDesc descriptorSetDesc[] =
+    const nri::DescriptorSetDesc descriptorSetDescs[] =
     {
         { SET_GLOBAL, descriptorRanges0, helper::GetCountOf(descriptorRanges0), &dynamicConstantBuffer, 1 },
-        { SET_OTHER, descriptorRanges1, helper::GetCountOf(descriptorRanges1), nullptr, 0, nri::PARTIALLY_BOUND },
+        { SET_OTHER, descriptorRanges1, helper::GetCountOf(descriptorRanges1), nullptr, 0 },
         { SET_RAY_TRACING, descriptorRanges2, helper::GetCountOf(descriptorRanges2) },
-        { SET_MORPH, descriptorRanges3, helper::GetCountOf(descriptorRanges3), &dynamicConstantBuffer, 1, nri::PARTIALLY_BOUND },
+        { SET_MORPH, descriptorRanges3, helper::GetCountOf(descriptorRanges3), &dynamicConstantBuffer, 1 },
         { SET_SHARC, descriptorRanges4, helper::GetCountOf(descriptorRanges4) },
     };
 
     { // Pipeline layout
         nri::PipelineLayoutDesc pipelineLayoutDesc = {};
-        pipelineLayoutDesc.descriptorSets = descriptorSetDesc;
-        pipelineLayoutDesc.descriptorSetNum = helper::GetCountOf(descriptorSetDesc);
+        pipelineLayoutDesc.descriptorSets = descriptorSetDescs;
+        pipelineLayoutDesc.descriptorSetNum = helper::GetCountOf(descriptorSetDescs);
         pipelineLayoutDesc.shaderStages = nri::StageBits::COMPUTE_SHADER;
 
         NRI_ABORT_ON_FAILURE(NRI.CreatePipelineLayout(*m_Device, pipelineLayoutDesc, m_PipelineLayout));
@@ -2488,29 +2488,29 @@ void Sample::CreatePipelineLayoutAndDescriptorPool()
 
         uint32_t setNum = 1;
         descriptorPoolDesc.descriptorSetMaxNum += setNum;
-        descriptorPoolDesc.dynamicConstantBufferMaxNum += descriptorSetDesc[SET_GLOBAL].dynamicConstantBufferNum * setNum;
-        descriptorPoolDesc.samplerMaxNum += descriptorSetDesc[SET_GLOBAL].ranges[0].descriptorNum * BUFFERED_FRAME_MAX_NUM * setNum;
+        descriptorPoolDesc.dynamicConstantBufferMaxNum += descriptorSetDescs[SET_GLOBAL].dynamicConstantBufferNum * setNum;
+        descriptorPoolDesc.samplerMaxNum += descriptorSetDescs[SET_GLOBAL].ranges[0].descriptorNum * BUFFERED_FRAME_MAX_NUM * setNum;
 
         setNum = (uint32_t)DescriptorSet::MAX_NUM - 6; // exclude non-SET_OTHER sets
         descriptorPoolDesc.descriptorSetMaxNum += setNum;
-        descriptorPoolDesc.textureMaxNum += descriptorSetDesc[SET_OTHER].ranges[0].descriptorNum * setNum;
-        descriptorPoolDesc.storageTextureMaxNum += descriptorSetDesc[SET_OTHER].ranges[1].descriptorNum * setNum;
+        descriptorPoolDesc.textureMaxNum += descriptorSetDescs[SET_OTHER].ranges[0].descriptorNum * setNum;
+        descriptorPoolDesc.storageTextureMaxNum += descriptorSetDescs[SET_OTHER].ranges[1].descriptorNum * setNum;
 
         setNum = 1;
         descriptorPoolDesc.descriptorSetMaxNum += setNum;
-        descriptorPoolDesc.accelerationStructureMaxNum += descriptorSetDesc[SET_RAY_TRACING].ranges[0].descriptorNum * setNum;
-        descriptorPoolDesc.structuredBufferMaxNum += descriptorSetDesc[SET_RAY_TRACING].ranges[1].descriptorNum * setNum;
-        descriptorPoolDesc.textureMaxNum += descriptorSetDesc[SET_RAY_TRACING].ranges[2].descriptorNum * setNum;
+        descriptorPoolDesc.accelerationStructureMaxNum += descriptorSetDescs[SET_RAY_TRACING].ranges[0].descriptorNum * setNum;
+        descriptorPoolDesc.structuredBufferMaxNum += descriptorSetDescs[SET_RAY_TRACING].ranges[1].descriptorNum * setNum;
+        descriptorPoolDesc.textureMaxNum += descriptorSetDescs[SET_RAY_TRACING].ranges[2].descriptorNum * setNum;
 
         setNum = 2;
         descriptorPoolDesc.descriptorSetMaxNum += setNum;
-        descriptorPoolDesc.dynamicConstantBufferMaxNum += descriptorSetDesc[SET_MORPH].dynamicConstantBufferNum * setNum;
-        descriptorPoolDesc.structuredBufferMaxNum += descriptorSetDesc[SET_MORPH].ranges[0].descriptorNum * setNum;
-        descriptorPoolDesc.storageStructuredBufferMaxNum += descriptorSetDesc[SET_MORPH].ranges[1].descriptorNum * setNum;
+        descriptorPoolDesc.dynamicConstantBufferMaxNum += descriptorSetDescs[SET_MORPH].dynamicConstantBufferNum * setNum;
+        descriptorPoolDesc.structuredBufferMaxNum += descriptorSetDescs[SET_MORPH].ranges[0].descriptorNum * setNum;
+        descriptorPoolDesc.storageStructuredBufferMaxNum += descriptorSetDescs[SET_MORPH].ranges[1].descriptorNum * setNum;
 
         setNum = 2;
         descriptorPoolDesc.descriptorSetMaxNum += setNum;
-        descriptorPoolDesc.storageStructuredBufferMaxNum += descriptorSetDesc[SET_SHARC].ranges[0].descriptorNum * setNum;
+        descriptorPoolDesc.storageStructuredBufferMaxNum += descriptorSetDescs[SET_SHARC].ranges[0].descriptorNum * setNum;
 
         NRI_ABORT_ON_FAILURE(NRI.CreateDescriptorPool(*m_Device, descriptorPoolDesc, m_DescriptorPool));
     }
@@ -2705,8 +2705,6 @@ void Sample::CreateAccelerationStructures()
         NRI_ABORT_ON_FAILURE(NRI.AllocateBuffer(*m_Device, allocateBufferDesc, uploadBuffer));
     }
 
-    uint8_t* uploadData = (uint8_t*)NRI.MapBuffer(*uploadBuffer, 0, nri::WHOLE_SIZE);
-
     { // AccelerationStructure::TLAS_World
         nri::AllocateAccelerationStructureDesc allocateAccelerationStructureDesc = {};
         allocateAccelerationStructureDesc.desc.type = nri::AccelerationStructureType::TOP_LEVEL;
@@ -2744,6 +2742,8 @@ void Sample::CreateAccelerationStructures()
     // Create BOTTOM_LEVEL acceleration structures for static geometry
     const nri::DeviceDesc& deviceDesc = NRI.GetDeviceDesc(*m_Device);
     uint64_t scratchSize = 0;
+
+    uint8_t* uploadData = (uint8_t*)NRI.MapBuffer(*uploadBuffer, 0, nri::WHOLE_SIZE);
 
     for (uint32_t mode = (uint32_t)AccelerationStructure::BLAS_StaticOpaque; mode <= (uint32_t)AccelerationStructure::BLAS_StaticEmissive; mode++)
     {
@@ -2788,15 +2788,19 @@ void Sample::CreateAccelerationStructures()
             // Copy geometry to temp buffer
             assert( !mesh.HasMorphTargets() );
             uint64_t vertexDataSize = mesh.vertexNum * sizeof(float[3]);
-            uint8_t* p = uploadData + geometryOffset;
-            for (uint32_t v = 0; v < mesh.vertexNum; v++)
-            {
-                memcpy(p, m_Scene.vertices[mesh.vertexOffset + v].pos, sizeof(float[3]));
-                p += sizeof(float[3]);
-            }
-
             uint64_t indexDataSize = mesh.indexNum * sizeof(utils::Index);
-            memcpy(p, &m_Scene.indices[mesh.indexOffset], indexDataSize);
+
+            if (uploadData)
+            {
+                uint8_t* p = uploadData + geometryOffset;
+                for (uint32_t v = 0; v < mesh.vertexNum; v++)
+                {
+                    memcpy(p, m_Scene.vertices[mesh.vertexOffset + v].pos, sizeof(float[3]));
+                    p += sizeof(float[3]);
+                }
+
+                memcpy(p, &m_Scene.indices[mesh.indexOffset], indexDataSize);
+            }
 
             // Copy transform to temp buffer
             float4x4 mObjectToWorld = instance.rotation;
@@ -2818,7 +2822,8 @@ void Sample::CreateAccelerationStructures()
             mObjectToWorld.Transpose3x4();
 
             uint64_t transformOffset = geometryObjects.size() * sizeof(float[12]);
-            memcpy(uploadData + transformOffset, mObjectToWorld.a, sizeof(float[12]));
+            if (uploadData)
+                memcpy(uploadData + transformOffset, mObjectToWorld.a, sizeof(float[12]));
 
             // Add geometry object
             nri::GeometryObject& geometryObject = geometryObjects.emplace_back();
@@ -2880,19 +2885,23 @@ void Sample::CreateAccelerationStructures()
 
         // Copy geometry to temp buffer
         uint64_t vertexStride = mesh.HasMorphTargets() ? sizeof(float16_t4) : sizeof(float[3]);
-        uint8_t* p = uploadData + geometryOffset;
-        for (uint32_t v = 0; v < mesh.vertexNum; v++)
-        {
-            if (mesh.HasMorphTargets())
-                memcpy(p, &m_Scene.morphVertices[mesh.morphTargetVertexOffset + v].pos, vertexStride);
-            else
-                memcpy(p, m_Scene.vertices[mesh.vertexOffset + v].pos, vertexStride);
-            p += vertexStride;
-        }
-
         uint64_t vertexDataSize = mesh.vertexNum * vertexStride;
         uint64_t indexDataSize = mesh.indexNum * sizeof(utils::Index);
-        memcpy(p, &m_Scene.indices[mesh.indexOffset], indexDataSize);
+
+        if (uploadData)
+        {
+            uint8_t* p = uploadData + geometryOffset;
+            for (uint32_t v = 0; v < mesh.vertexNum; v++)
+            {
+                if (mesh.HasMorphTargets())
+                    memcpy(p, &m_Scene.morphVertices[mesh.morphTargetVertexOffset + v].pos, vertexStride);
+                else
+                    memcpy(p, m_Scene.vertices[mesh.vertexOffset + v].pos, vertexStride);
+                p += vertexStride;
+            }
+
+            memcpy(p, &m_Scene.indices[mesh.indexOffset], indexDataSize);
+        }
 
         // Add geometry object
         nri::GeometryObject& geometryObject = geometryObjects.emplace_back();
@@ -3714,7 +3723,15 @@ void Sample::CreateDescriptorSets()
 void Sample::CreateTexture(std::vector<DescriptorDesc>& descriptorDescs, const char* debugName, nri::Format format, nri::Dim_t width, nri::Dim_t height, nri::Mip_t mipNum, nri::Dim_t arraySize, nri::TextureUsageBits usage, nri::AccessBits access)
 {
     nri::AllocateTextureDesc allocateTextureDesc = {};
-    allocateTextureDesc.desc = nri::Texture2D(format, width, height, mipNum, arraySize, usage);
+    allocateTextureDesc.desc.type = nri::TextureType::TEXTURE_2D;
+    allocateTextureDesc.desc.usageMask = usage;
+    allocateTextureDesc.desc.format = format;
+    allocateTextureDesc.desc.width = width;
+    allocateTextureDesc.desc.height = height;
+    allocateTextureDesc.desc.depth = 1;
+    allocateTextureDesc.desc.mipNum = mipNum;
+    allocateTextureDesc.desc.layerNum = arraySize;
+    allocateTextureDesc.desc.sampleNum = 1;
     allocateTextureDesc.memoryLocation = nri::MemoryLocation::DEVICE;
 
     nri::Texture* texture = nullptr;
@@ -4247,7 +4264,6 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float otherMaxAccumulated
         constants.gTanSunAngularRadius                          = tan( radians( m_Settings.sunAngularDiameter * 0.5f ) );
         constants.gTanPixelAngularRadius                        = tan( 0.5f * radians(m_Settings.camFov) / outputSize.x );
         constants.gDebug                                        = m_Settings.debug;
-        constants.gTransparent                                  = (m_HasTransparent && NRD_MODE < OCCLUSION && (m_Settings.onScreen == 0 || m_Settings.onScreen == 2)) ? 1.0f : 0.0f;
         constants.gPrevFrameConfidence                          = (m_Settings.usePrevFrame && NRD_MODE < OCCLUSION) ? prevFrameMaxAccumulatedFrameNum / (1.0f + prevFrameMaxAccumulatedFrameNum) : 0.0f;
         constants.gMinProbability                               = minProbability;
         constants.gUnproject                                    = 1.0f / (0.5f * rectH * project[1]);
@@ -4259,6 +4275,7 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float otherMaxAccumulated
         constants.gExposure                                     = m_Settings.exposure;
         constants.gMipBias                                      = mipBias;
         constants.gOrthoMode                                    = orthoMode;
+        constants.gTransparent                                  = (m_HasTransparent && NRD_MODE < OCCLUSION && (m_Settings.onScreen == 0 || m_Settings.onScreen == 2)) ? 1 : 0;
         constants.gSharcMaxAccumulatedFrameNum                  = sharcMaxAccumulatedFrameNum;
         constants.gDenoiserType                                 = (uint32_t)m_Settings.denoiser;
         constants.gDisableShadowsAndEnableImportanceSampling    = (sunDirection.z < 0.0f && m_Settings.importanceSampling && NRD_MODE < OCCLUSION) ? 1 : 0;
@@ -5054,8 +5071,12 @@ void Sample::RenderFrame(uint32_t frameIndex)
         }
 
         { // UI
-            nri::TextureBarrierDesc beforeTransitions = nri::TextureBarrier(backBuffer->texture, {nri::AccessBits::COPY_DESTINATION, nri::Layout::COPY_DESTINATION, nri::StageBits::COPY}, {nri::AccessBits::COLOR_ATTACHMENT, nri::Layout::COLOR_ATTACHMENT, nri::StageBits::COLOR_ATTACHMENT});
-            nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, &beforeTransitions, 0, 0, 1};
+            nri::TextureBarrierDesc before = {};
+            before.texture = backBuffer->texture;
+            before.before = {nri::AccessBits::COPY_DESTINATION, nri::Layout::COPY_DESTINATION, nri::StageBits::COPY};
+            before.after = {nri::AccessBits::COLOR_ATTACHMENT, nri::Layout::COLOR_ATTACHMENT, nri::StageBits::COLOR_ATTACHMENT};
+
+            nri::BarrierGroupDesc transitionBarriers = {nullptr, nullptr, &before, 0, 0, 1};
             NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
             nri::AttachmentsDesc desc = {};
@@ -5066,8 +5087,8 @@ void Sample::RenderFrame(uint32_t frameIndex)
             RenderUI(NRI, NRI, *m_Streamer, commandBuffer, m_SdrScale, m_IsSrgb);
             NRI.CmdEndRendering(commandBuffer);
 
-            const nri::TextureBarrierDesc afterTransitions = nri::TextureBarrierFromState(beforeTransitions, {nri::AccessBits::UNKNOWN, nri::Layout::PRESENT, nri::StageBits::ALL});
-            transitionBarriers = {nullptr, nullptr, &afterTransitions, 0, 0, 1};
+            const nri::TextureBarrierDesc after = nri::TextureBarrierFromState(before, {nri::AccessBits::UNKNOWN, nri::Layout::PRESENT, nri::StageBits::ALL});
+            transitionBarriers = {nullptr, nullptr, &after, 0, 0, 1};
             NRI.CmdBarrier(commandBuffer, transitionBarriers);
         }
     }

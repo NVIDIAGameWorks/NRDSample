@@ -107,7 +107,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
 
             // Lighting
             float4 Lcached = 0;
-            if( !geometryProps.IsSky( ) && NRD_MODE < OCCLUSION )
+            if( !geometryProps.IsSky( ) )
             {
                 // L1 cache - reproject previous frame, carefully treating specular
                 float3 prevLdiff, prevLspec;
@@ -115,40 +115,38 @@ float3 TraceTransparent( TraceTransparentDesc desc )
                 Lcached = float4( prevLdiff + prevLspec, reprojectionWeight );
 
                 // L2 cache - SHARC
-                if( gSHARC && NRD_MODE < OCCLUSION )
-                {
-                    GridParameters gridParameters = ( GridParameters )0;
-                    gridParameters.cameraPosition = gCameraGlobalPos.xyz;
-                    gridParameters.cameraPositionPrev = gCameraGlobalPosPrev.xyz;
-                    gridParameters.sceneScale = SHARC_SCENE_SCALE;
-                    gridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+                GridParameters gridParameters = ( GridParameters )0;
+                gridParameters.cameraPosition = gCameraGlobalPos.xyz;
+                gridParameters.cameraPositionPrev = gCameraGlobalPosPrev.xyz;
+                gridParameters.sceneScale = SHARC_SCENE_SCALE;
+                gridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
 
-                    float3 Xglobal = GetGlobalPos( geometryProps.X );
-                    uint level = GetGridLevel( Xglobal, gridParameters );
-                    float voxelSize = GetVoxelSize( level, gridParameters );
-                    float smc = GetSpecMagicCurve( materialProps.roughness );
+                float3 Xglobal = GetGlobalPos( geometryProps.X );
+                uint level = GetGridLevel( Xglobal, gridParameters );
+                float voxelSize = GetVoxelSize( level, gridParameters );
+                float smc = GetSpecMagicCurve( materialProps.roughness );
 
-                    float3x3 mBasis = Geometry::GetBasis( geometryProps.N );
-                    float2 rndScaled = ( Rng::Hash::GetFloat2( ) - 0.5 ) * voxelSize * USE_SHARC_DITHERING;
-                    Xglobal += mBasis[ 0 ] * rndScaled.x + mBasis[ 1 ] * rndScaled.y;
+                float3x3 mBasis = Geometry::GetBasis( geometryProps.N );
+                float2 rndScaled = ( Rng::Hash::GetFloat2( ) - 0.5 ) * voxelSize * USE_SHARC_DITHERING;
+                Xglobal += mBasis[ 0 ] * rndScaled.x + mBasis[ 1 ] * rndScaled.y;
 
-                    SharcHitData sharcHitData = ( SharcHitData )0;
-                    sharcHitData.positionWorld = Xglobal;
-                    sharcHitData.normalWorld = geometryProps.N;
+                SharcHitData sharcHitData = ( SharcHitData )0;
+                sharcHitData.positionWorld = Xglobal;
+                sharcHitData.normalWorld = geometryProps.N;
 
-                    SharcState sharcState;
-                    sharcState.gridParameters = gridParameters;
-                    sharcState.hashMapData.capacity = SHARC_CAPACITY;
-                    sharcState.hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
-                    sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
+                SharcState sharcState;
+                sharcState.gridParameters = gridParameters;
+                sharcState.hashMapData.capacity = SHARC_CAPACITY;
+                sharcState.hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
+                sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
 
-                    bool isSharcAllowed = geometryProps.tmin > voxelSize; // voxel angular size is acceptable
-                    isSharcAllowed = isSharcAllowed && Rng::Hash::GetFloat( ) > Lcached.w; // probabilistically estimate the need
+                bool isSharcAllowed = gSHARC && NRD_MODE < OCCLUSION; // trivial
+                isSharcAllowed &= geometryProps.tmin > voxelSize; // voxel angular size is acceptable
+                isSharcAllowed &= Rng::Hash::GetFloat( ) > Lcached.w; // probabilistically estimate the need
 
-                    float3 sharcRadiance;
-                    if( isSharcAllowed && SharcGetCachedRadiance( sharcState, sharcHitData, sharcRadiance, false ) )
-                        Lcached = float4( sharcRadiance, 1.0 );
-                }
+                float3 sharcRadiance;
+                if( isSharcAllowed && SharcGetCachedRadiance( sharcState, sharcHitData, sharcRadiance, false ) )
+                    Lcached = float4( sharcRadiance, 1.0 );
 
                 // Cache miss - compute lighting, if not found in caches
                 if( Rng::Hash::GetFloat( ) > Lcached.w )
@@ -199,7 +197,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 Xv = Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
     float tmin0 = gOrthoMode == 0 ? length( Xv ) : abs( Xv.z );
 
-    GeometryProps geometryPropsT = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, tmin0, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, gTransparent == 0.0 ? 0 : GEOMETRY_ONLY_TRANSPARENT, 0 );
+    GeometryProps geometryPropsT = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, tmin0, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, gTransparent ? GEOMETRY_ONLY_TRANSPARENT : 0, 0 );
 
     // Trace delta events
     if( !geometryPropsT.IsSky( ) && geometryPropsT.tmin < tmin0 )

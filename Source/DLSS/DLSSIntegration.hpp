@@ -3,7 +3,7 @@
 #include <assert.h> // assert
 #include <stdio.h> // printf
 
-static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 147, "Unsupported NRI version!");
+static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 151, "Unsupported NRI version!");
 
 // An ugly temp workaround until DLSS fix the problem
 #ifndef _WIN32

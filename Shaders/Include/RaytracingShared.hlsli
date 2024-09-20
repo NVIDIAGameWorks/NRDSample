@@ -567,7 +567,7 @@ float ReprojectIrradiance(
     bool isPrevFrame, bool isRefraction,
     Texture2D<float3> texDiff, Texture2D<float4> texSpecViewZ,
     GeometryProps geometryProps, uint2 pixelPos,
-    out float3 prevLdiff, out float3 prevLspec
+    out float3 Ldiff, out float3 Lspec
 )
 {
     // Get UV and ignore back projection
@@ -576,9 +576,6 @@ float ReprojectIrradiance(
     float2 rescale = ( isPrevFrame ? gRectSizePrev : gRectSize ) * gInvRenderSize;
     float4 data = texSpecViewZ.SampleLevel( gNearestSampler, uv * rescale, 0 );
     float prevViewZ = abs( data.w ) / FP16_VIEWZ_SCALE;
-
-    prevLdiff = texDiff.SampleLevel( gNearestSampler, uv * rescale, 0 );
-    prevLspec = data.xyz;
 
     // Initial state
     float weight = 1.0;
@@ -591,7 +588,7 @@ float ReprojectIrradiance(
     if( isRefraction )
     {
         // Confidence - viewZ ( PSR makes prevViewZ further than the original primary surface )
-        weight *= Math::LinearStep( 0.03, 0.01, saturate( err ) );
+        weight *= Math::LinearStep( 0.01, 0.005, saturate( err ) );
 
         // Fade-out on screen edges ( hard )
         weight *= all( saturate( uv ) == uv );
@@ -599,7 +596,7 @@ float ReprojectIrradiance(
     else
     {
         // Confidence - viewZ
-        weight *= Math::LinearStep( 0.03, 0.01, abs( err ) );
+        weight *= Math::LinearStep( 0.01, 0.005, abs( err ) );
 
         // Fade-out on screen edges ( soft )
         float2 f = Math::LinearStep( 0.0, 0.1, uv ) * Math::LinearStep( 1.0, 0.9, uv );
@@ -619,17 +616,30 @@ float ReprojectIrradiance(
     // Ignore sky
     weight *= float( !geometryProps.IsSky( ) );
 
-    // Clear out bad values
+    // Use only if radiance is on the screen
+    weight *= float( gOnScreen < SHOW_AMBIENT_OCCLUSION );
+
+    // Add global confidence
+    if( isPrevFrame )
+        weight *= gPrevFrameConfidence; // see C++ code for details
+
+    // Read data
+    Ldiff = texDiff.SampleLevel( gNearestSampler, uv * rescale, 0 );
+    Lspec = data.xyz;
+
+    // Avoid NANs
     [flatten]
-    if( any( isnan( prevLdiff ) | isinf( prevLdiff ) | isnan( prevLspec ) | isinf( prevLspec ) ) )
+    if( any( isnan( Ldiff ) | isinf( Ldiff ) | isnan( Lspec ) | isinf( Lspec ) ) || NRD_MODE >= OCCLUSION )
     {
-        prevLdiff = 0;
-        prevLspec = 0;
+        Ldiff = 0;
+        Lspec = 0;
         weight = 0;
     }
 
-    // Use only if radiance is on the screen
-    weight *= float( gOnScreen < SHOW_AMBIENT_OCCLUSION );
+    // Avoid really bad reprojection
+    float f = saturate( weight / 0.001 );
+    Ldiff *= f;
+    Lspec *= f;
 
     return weight;
 }
