@@ -97,7 +97,19 @@
         },
         {
           "Command": "--scene=Kitchen/Kitchen.gltf"
-        }
+        },
+        {
+          "Command": "--scene=Bistro2/bistro.gltf"
+        },
+        {
+          "Command": "--scene=LivingRoom/living_room.gltf"
+        },
+        {
+          "Command": "--scene=TransparentMachines/transparent-machines-pt1.gltf"
+        },
+        {
+          "Command": "--scene=CornellBox/cornellBox.gltf"
+        },
       ]
     },
     {

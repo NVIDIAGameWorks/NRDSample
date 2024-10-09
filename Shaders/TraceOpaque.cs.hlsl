@@ -74,7 +74,7 @@ float4 GetRadianceFromPreviousFrame( GeometryProps geometryProps, MaterialProps 
     float diffuseProbabilityBiased = EstimateDiffuseProbability( geometryProps, materialProps, true );
     float3 prevLsum = prevLdiff + prevLspec * diffuseProbabilityBiased;
 
-    float diffuseLikeMotion = lerp( diffuseProbabilityBiased, 1.0, Math::Sqrt01( materialProps.curvature ) );
+    float diffuseLikeMotion = lerp( diffuseProbabilityBiased, 1.0, Math::Sqrt01( materialProps.curvature ) ); // TODO: review
     prevFrameWeight *= isDiffuse ? 1.0 : diffuseLikeMotion;
 
     float a = Color::Luminance( prevLdiff );
@@ -168,7 +168,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
         MaterialProps materialProps = desc.materialProps;
 
         float accumulatedHitDist = 0.0;
-        float accumulatedPseudoCurvature = 0.0; // TODO: is there a less empirical solution?
+        float accumulatedCurvature = 0.0;
         bool isPSR = false;
 
         [loop]
@@ -177,10 +177,10 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
             isPSR = true;
 
             // Origin point
-            float curvature = materialProps.curvature;
-            accumulatedPseudoCurvature += Math::Pow01( abs( curvature ), 0.25 );
-
             {
+                // Accumulate curvature
+                accumulatedCurvature += materialProps.curvature; // yes, before hit
+
                 // Accumulate mirror matrix
                 mirrorMatrix = mul( Geometry::GetMirrorMatrix( materialProps.N ), mirrorMatrix );
 
@@ -211,9 +211,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
             // Hit point
             {
                 // Accumulate hit distance representing virtual point position ( see "README/NOISY INPUTS" )
-                // TODO: this heuristic works best so far
-                float hitDistFocused = geometryProps.tmin / ( 2.0 * curvature * geometryProps.tmin + 1.0 );
-                accumulatedHitDist += hitDistFocused * Math::SmoothStep( 0.2, 0.0, accumulatedPseudoCurvature );
+                accumulatedHitDist += ApplyThinLensEquation( geometryProps.hitT, accumulatedCurvature ) ;
             }
 
             desc.bounceNum--;
@@ -261,7 +259,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                 sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
 
                 bool isSharcAllowed = gSHARC && NRD_MODE < OCCLUSION; // trivial
-                isSharcAllowed &= geometryProps.tmin > voxelSize; // voxel angular size is acceptable
+                isSharcAllowed &= geometryProps.hitT > voxelSize; // voxel angular size is acceptable
                 isSharcAllowed &= Rng::Hash::GetFloat( ) > Lpsr.w; // probabilistically estimate the need
                 isSharcAllowed &= desc.bounceNum == 0; // allow only for the last bounce for PSR
 
@@ -328,6 +326,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
 
         float accumulatedHitDist = 0;
         float accumulatedDiffuseLikeMotion = 0;
+        float accumulatedCurvature = 0;
 
         bool isDiffusePath = gTracingMode == RESOLUTION_HALF ? desc.checkerboard : ( path & 0x1 );
         uint2 blueNoisePos = desc.pixelPos + uint2( Sequence::Weyl2D( 0.0, path ) * ( BLUE_NOISE_SPATIAL_DIM - 1 ) );
@@ -611,7 +610,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                     sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
 
                     bool isSharcAllowed = gSHARC && NRD_MODE < OCCLUSION; // trivial
-                    isSharcAllowed &= geometryProps.tmin > voxelSize; // voxel angular size is acceptable
+                    isSharcAllowed &= geometryProps.hitT > voxelSize; // voxel angular size is acceptable
                     isSharcAllowed &= Rng::Hash::GetFloat( ) > Lcached.w; // probabilistically estimate the need
                     isSharcAllowed &= isDiffuse || Rng::Hash::GetFloat( ) < smc || bounce == desc.bounceNum; // allowed for diffuse-like events or last bounce
 
@@ -640,21 +639,6 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                 pathThroughput *= 1.0 - Lcached.w;
 
                 // Accumulate path length for NRD ( see "README/NOISY INPUTS" )
-                /*
-                REQUIREMENTS:
-                    - hitT for the bounce after the primary hit or PSR must be provided "as is"
-                    - hitT for subsequent bounces and for bounces before PSR must be adjusted by curvature and lobe energy dissipation on the application side
-
-                IDEAL SOLUTION ( after PSR ):
-                    hitDist = 0;
-                    for( uint bounce = N; bounce > PSR + 1; bounce-- )
-                    {
-                        hitDist += hitT[ bounce ];
-                        hitDist = ApplyThinLensEquation( hitDist, curvature[ bounce - 1 ] );
-                        hitDist = ApplyLobeSpread( hitDist, bounce, isDiffuse ? 1.0 : roughness  );
-                    }
-                    hitDist += hitT[ PSR + 1 ];
-                */
                 float a = Color::Luminance( L );
                 float b = Color::Luminance( Lsum ); // already includes L
                 float importance = a / ( b + 1e-6 );
@@ -662,11 +646,11 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                 importance *= 1.0 - Color::Luminance( materialProps.Lemi ) / ( a + 1e-6 );
 
                 float diffuseLikeMotion = EstimateDiffuseProbability( geometryProps, materialProps, true );
-                diffuseLikeMotion = lerp( diffuseLikeMotion, 1.0, Math::Sqrt01( materialProps.curvature ) );
                 diffuseLikeMotion = isDiffuse ? 1.0 : diffuseLikeMotion;
 
-                accumulatedHitDist += geometryProps.tmin * Math::SmoothStep( 0.2, 0.0, accumulatedDiffuseLikeMotion );
+                accumulatedHitDist += ApplyThinLensEquation( geometryProps.hitT, accumulatedCurvature ) * Math::SmoothStep( 0.2, 0.0, accumulatedDiffuseLikeMotion );
                 accumulatedDiffuseLikeMotion += 1.0 - importance * ( 1.0 - diffuseLikeMotion );
+                accumulatedCurvature += materialProps.curvature; // yes, after hit
             }
         }
 
@@ -891,11 +875,11 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     else if( gOnScreen == SHOW_UV )
         materialProps0.Ldirect = float3( frac( geometryProps0.uv ), 0 );
     else if( gOnScreen == SHOW_CURVATURE )
-        materialProps0.Ldirect = sqrt( abs( materialProps0.curvature ) );
+        materialProps0.Ldirect = sqrt(abs(materialProps0.curvature)) * 0.1;
     else if( gOnScreen == SHOW_MIP_PRIMARY )
     {
         float mipNorm = Math::Sqrt01( geometryProps0.mip / MAX_MIP_LEVEL );
-        materialProps0.Ldirect = Color::ColorizeZucconi( mipNorm );
+        materialProps0.Ldirect = Color::ColorizeZucconi(mipNorm);
     }
 
     // Unshadowed sun lighting and emission
@@ -948,7 +932,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         GeometryProps geometryPropsShadow = CastRay( Xoffset, sunDirection, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_ALL, 0 );
 
         // Update hit dist
-        shadowHitDist += geometryPropsShadow.tmin;
+        shadowHitDist += geometryPropsShadow.hitT;
 
         // Terminate on miss ( before updating translucency! )
         if( geometryPropsShadow.IsSky( ) )
@@ -959,7 +943,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         shadowTranslucency *= lerp( geometryPropsShadow.Has( FLAG_TRANSPARENT ) ? 0.9 : 0.0, 0.0, Math::Pow01( 1.0 - NoV, 2.5 ) );
 
         // Go to the next hit
-        Xoffset += sunDirection * ( geometryPropsShadow.tmin + 0.001 );
+        Xoffset += sunDirection * ( geometryPropsShadow.hitT + 0.001 );
     }
 
     float penumbra = SIGMA_FrontEnd_PackPenumbra( shadowHitDist, gTanSunAngularRadius );

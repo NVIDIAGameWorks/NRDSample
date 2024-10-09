@@ -129,8 +129,7 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     history.xyz = max( history.xyz, 0.0 ); // yes, not "saturate"
 
     // Remove transfer
-    bool isSrgb = gIsSrgb && ( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR );
-    if( isSrgb )
+    if( gIsSrgb )
         history.xyz = Color::FromSrgb( history.xyz );
 
     // Update mix rate
@@ -160,7 +159,7 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
     float3 result = lerp( clampedHistory, input, mixRate );
 
     // Apply transfer
-    if( isSrgb )
+    if( gIsSrgb )
         result = Color::ToSrgb( result );
 
     // Output

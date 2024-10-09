@@ -30,7 +30,7 @@ struct GeometryProps
     float3 N;
     float2 uv;
     float mip;
-    float tmin;
+    float hitT;
     float curvature;
     uint textureOffsetAndFlags;
     uint instanceIndex;
@@ -53,7 +53,7 @@ struct GeometryProps
     { return ( ( textureOffsetAndFlags >> 2 ) & 0x1 ) ? float3( 1.0, 0.0, 0.0 ) : float3( 0.0, 1.0, 0.0 ); }
 
     bool IsSky( )
-    { return tmin == INF; }
+    { return hitT == INF; }
 };
 
 float2 GetConeAngleFromAngularRadius( float mip, float tanConeAngle )
@@ -118,11 +118,13 @@ float3 GetSamplingCoords( uint textureIndex, float2 uv, float mip, int mode )
         if( instanceData.textureOffsetAndFlags & ( FLAG_STATIC << FLAG_FIRST_BIT ) ) \
             mObjectToWorld = ( float3x3 )mOverloaded; \
         \
-        float flip = Math::Sign( instanceData.invScale ) * ( rayQuery.CandidateTriangleFrontFace( ) ? -1.0 : 1.0 ); \
+        float flip = Math::Sign( instanceData.scale ) * ( rayQuery.CandidateTriangleFrontFace( ) ? -1.0 : 1.0 ); \
         \
         /* Primitive */ \
         uint primitiveIndex = instanceData.primitiveOffset + rayQuery.CandidatePrimitiveIndex( ); \
         PrimitiveData primitiveData = gIn_PrimitiveData[ primitiveIndex ]; \
+        \
+        float worldArea = primitiveData.worldArea * instanceData.scale * instanceData.scale; \
         \
         /* Barycentrics */ \
         float3 barycentrics; \
@@ -141,12 +143,12 @@ float3 GetSamplingCoords( uint textureIndex, float2 uv, float mip, int mode )
         N = Geometry::RotateVector( mObjectToWorld, N ); \
         N = normalize( N * flip ); \
         \
-        /* Mip level ( TODO: doesn't take into account integrated AO / SO - i.e. diffuse = lowest mip, but what if we see the sky through a tiny hole? ) */ \
-        float NoR = abs( dot( rayQuery.WorldRayDirection( ), N ) ); \
+        /* Mip level */ \
+        float NoRay = abs( dot( rayQuery.WorldRayDirection( ), N ) ); \
         float a = rayQuery.CandidateTriangleRayT( ); \
         a *= mipAndCone.y; \
-        a *= Math::PositiveRcp( NoR ); \
-        a *= primitiveData.worldToUvUnits * abs( instanceData.invScale ); \
+        a *= Math::PositiveRcp( NoRay ); \
+        a *= sqrt( primitiveData.uvArea / worldArea ); \
         \
         float mip = log2( a ); \
         mip += MAX_MIP_LEVEL; \
@@ -210,19 +212,19 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
     while( rayQuery.Proceed( ) )
         CheckNonOpaqueTriangle( rayQuery, mipAndCone );
 
-    // TODO: reuse data if committed == candidate (use T to check)
+    // TODO: reuse data if committed == candidate ( use T to check )
     GeometryProps props = ( GeometryProps )0;
     props.mip = mipAndCone.x;
 
     if( rayQuery.CommittedStatus( ) == COMMITTED_NOTHING )
     {
-        props.tmin = INF;
-        props.X = origin + direction * props.tmin;
+        props.hitT = INF;
+        props.X = origin + direction * props.hitT;
         props.Xprev = props.X;
     }
     else
     {
-        props.tmin = rayQuery.CommittedRayT( );
+        props.hitT = rayQuery.CommittedRayT( );
 
         // Instance
         uint instanceIndex = rayQuery.CommittedInstanceID( ) + rayQuery.CommittedGeometryIndex( );
@@ -240,11 +242,13 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
         if( props.Has( FLAG_STATIC ) )
             mObjectToWorld = ( float3x3 )mOverloaded;
 
-        float flip = Math::Sign( instanceData.invScale ) * ( rayQuery.CommittedTriangleFrontFace( ) ? -1.0 : 1.0 );
+        float flip = Math::Sign( instanceData.scale ) * ( rayQuery.CommittedTriangleFrontFace( ) ? -1.0 : 1.0 );
 
         // Primitive
         uint primitiveIndex = instanceData.primitiveOffset + rayQuery.CommittedPrimitiveIndex( );
         PrimitiveData primitiveData = gIn_PrimitiveData[ primitiveIndex ];
+
+        float worldArea = primitiveData.worldArea * instanceData.scale * instanceData.scale;
 
         // Barycentrics
         float3 barycentrics;
@@ -262,14 +266,17 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
         props.N = -N; // TODO: why negated?
 
         // Curvature
-        props.curvature = barycentrics.x * primitiveData.curvature0_curvature1.x + barycentrics.y * primitiveData.curvature0_curvature1.y + barycentrics.z * primitiveData.curvature2_bitangentSign.x;
-        props.curvature /= abs( instanceData.invScale );
+        float dnSq0 = Math::LengthSquared( n0 - n1 );
+        float dnSq1 = Math::LengthSquared( n1 - n2 );
+        float dnSq2 = Math::LengthSquared( n2 - n0 );
+        float dnSq = max( dnSq0, max( dnSq1, dnSq2 ) );
+        props.curvature = sqrt( dnSq / worldArea );
 
-        // Mip level (TODO: doesn't take into account integrated AO / SO - i.e. diffuse = lowest mip, but what if we see the sky through a tiny hole?)
-        float NoR = abs( dot( direction, props.N ) );
-        float a = props.tmin * mipAndCone.y;
-        a *= Math::PositiveRcp( NoR );
-        a *= primitiveData.worldToUvUnits * abs( instanceData.invScale );
+        // Mip level
+        float NoRay = abs( dot( direction, props.N ) );
+        float a = props.hitT * mipAndCone.y;
+        a *= Math::PositiveRcp( NoRay );
+        a *= sqrt( primitiveData.uvArea / worldArea );
 
         float mip = log2( a );
         mip += MAX_MIP_LEVEL;
@@ -287,9 +294,9 @@ GeometryProps CastRay( float3 origin, float3 direction, float Tmin, float Tmax, 
         float3 T = barycentrics.x * t0 + barycentrics.y * t1 + barycentrics.z * t2;
         T = Geometry::RotateVector( mObjectToWorld, T );
         T = normalize( T );
-        props.T = float4( T, primitiveData.curvature2_bitangentSign.y );
+        props.T = float4( T, primitiveData.bitangentSign_unused.x );
 
-        props.X = origin + direction * props.tmin;
+        props.X = origin + direction * props.hitT;
         if( props.Has( FLAG_DEFORMABLE ) )
         {
             MorphedPrimitivePrevPositions prev = gIn_MorphedPrimitivePrevPositions[ instanceData.morphedPrimitiveOffset + rayQuery.CommittedPrimitiveIndex( ) ];
@@ -361,7 +368,10 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps, bool viewIndependen
     float3 T = geometryProps.T.xyz;
 
     // Estimate curvature
-    float curvature = length( Geometry::UnpackLocalNormal( packedNormal ).xy ) * float( gUseNormalMap );
+    float viewZ = Geometry::AffineTransform( gWorldToView, geometryProps.X ).z;
+    float pixelSize = gUnproject * lerp( abs( viewZ ), 1.0, abs( gOrthoMode ) );
+    float localCurvature = length( Geometry::UnpackLocalNormal( packedNormal ).xy ) * float( gUseNormalMap );
+    localCurvature /= pixelSize;
 
     // Emission
     coords = GetSamplingCoords( baseTexture + 3, geometryProps.uv, geometryProps.mip, MIP_VISIBILITY );
@@ -501,7 +511,7 @@ MaterialProps GetMaterialProps( GeometryProps geometryProps, bool viewIndependen
     props.baseColor = baseColor;
     props.roughness = roughness;
     props.metalness = metalness;
-    props.curvature = geometryProps.curvature + curvature;
+    props.curvature = geometryProps.curvature + localCurvature;
 
     return props;
 }

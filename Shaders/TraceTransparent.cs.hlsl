@@ -66,16 +66,15 @@ float3 TraceTransparent( TraceTransparentDesc desc )
             pathThroughput *= isReflection ? F : 1.0 - F;
         else
         {
-            float rnd = Sequence::Bayer4x4( desc.pixelPos, gFrameIndex + bounce );
-            if( gDenoiserType == DENOISER_REFERENCE || gRR )
-                rnd = Rng::Hash::GetFloat( );
+            float rndBayer = Sequence::Bayer4x4( desc.pixelPos, gFrameIndex + bounce );
+            float rndWhite = Rng::Hash::GetFloat( );
+            float rnd = ( gDenoiserType == DENOISER_REFERENCE || gRR ) ? rndWhite : rndBayer + rndWhite / 16.0;
 
             isReflection = rnd < F;
         }
 
         // Compute ray
         float3 ray = reflect( -geometryProps.V, geometryProps.N );
-
         if( !isReflection )
         {
             float3 I = -geometryProps.V;
@@ -141,7 +140,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
                 sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
 
                 bool isSharcAllowed = gSHARC && NRD_MODE < OCCLUSION; // trivial
-                isSharcAllowed &= geometryProps.tmin > voxelSize; // voxel angular size is acceptable
+                isSharcAllowed &= geometryProps.hitT > voxelSize; // voxel angular size is acceptable
                 isSharcAllowed &= Rng::Hash::GetFloat( ) > Lcached.w; // probabilistically estimate the need
 
                 float3 sharcRadiance;
@@ -200,17 +199,14 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     GeometryProps geometryPropsT = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, tmin0, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, gTransparent ? GEOMETRY_ONLY_TRANSPARENT : 0, 0 );
 
     // Trace delta events
-    if( !geometryPropsT.IsSky( ) && geometryPropsT.tmin < tmin0 )
+    if( !geometryPropsT.IsSky( ) && geometryPropsT.hitT < tmin0 )
     {
         // Patch motion vectors replacing MV for the background with MV for the closest glass layer.
         // IMPORTANT: surface-based motion can be used only if the object is curved.
         // TODO: let's use the simplest heuristic for now, but better switch to some "smart" interpolation between
         // MVs for the primary opaque surface hit and the primary glass surface hit.
-        if( geometryPropsT.curvature != 0.0 )
-        {
-            float3 motion = GetMotion( geometryPropsT.X, geometryPropsT.Xprev );
-            gInOut_Mv[ pixelPos ] = motion.xyzz; // .w - don't care
-        }
+        float3 mvT = GetMotion( geometryPropsT.X, geometryPropsT.Xprev );
+        gInOut_Mv[ pixelPos ] = mvT.xyzz; // .w - don't care
 
         // Trace transparent stuff
         TraceTransparentDesc desc = ( TraceTransparentDesc )0;
@@ -221,10 +217,12 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         // IMPORTANT: use 1 reflection path and 1 refraction path at the primary glass hit to significantly reduce noise
         // TODO: use probabilistic split at the primary glass hit when denoising becomes available
         desc.isReflection = true;
-        Lsum = TraceTransparent( desc );
+        float3 reflection = TraceTransparent( desc );
+        Lsum = reflection;
 
         desc.isReflection = false;
-        Lsum += TraceTransparent( desc );
+        float3 refraction = TraceTransparent( desc );
+        Lsum += refraction;
     }
 
     // Apply exposure

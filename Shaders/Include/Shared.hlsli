@@ -200,9 +200,9 @@ struct PrimitiveData
     float16_t2 t1;
 
     float16_t2 t2;
-    float16_t2 curvature0_curvature1;
-    float16_t2 curvature2_bitangentSign;
-    float worldToUvUnits;
+    float16_t2 bitangentSign_unused;
+    float worldArea;
+    float uvArea;
 };
 
 struct InstanceData
@@ -223,7 +223,7 @@ struct InstanceData
 
     // TODO: handling object scale embedded into the transformation matrix (assuming uniform scale)
     // TODO: sign represents triangle winding
-    float invScale;
+    float scale;
 };
 
 //===============================================================
@@ -383,6 +383,11 @@ float GetSpecMagicCurve( float roughness )
     f *= Math::Pow01( roughness, 0.25 );
 
     return f;
+}
+
+float ApplyThinLensEquation( float hitDist, float curvature )
+{
+    return hitDist / ( 2.0 * curvature * hitDist + 1.0 );
 }
 
 // Returns 3D motion in world space or 2.5D motion in screen space

@@ -31,9 +31,8 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     // Noisy input
     float3 input = gIn_PreAA.SampleLevel( gNearestSampler, pixelUv * gRectSize * gInvRenderSize, 0 ).xyz;
 
-    bool isSrgb = gIsSrgb && ( gOnScreen == SHOW_FINAL || gOnScreen == SHOW_BASE_COLOR );
     input = ApplyTonemap( input );
-    if( isSrgb )
+    if( gIsSrgb )
         input = Color::ToSrgb( saturate( input ) );
 
     // Split screen - noisy input / denoised output
@@ -43,7 +42,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     Rng::Hash::Initialize( pixelPos, gFrameIndex );
 
     float rnd = Rng::Hash::GetFloat( );
-    result += ( rnd - 0.5 ) / ( isSrgb ? 256.0 : 1024.0 );
+    result += ( rnd - 0.5 ) / ( gIsSrgb ? 256.0 : 1024.0 );
 
     // Split screen - vertical line
     float verticalLine = saturate( 1.0 - abs( pixelUv.x - gSeparator ) * gWindowSize.x / 3.5 );

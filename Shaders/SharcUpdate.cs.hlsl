@@ -37,6 +37,16 @@ float3 GetAmbientBRDF( GeometryProps geometryProps, MaterialProps materialProps,
 [numthreads( 16, 16, 1 )]
 void main( uint2 pixelPos : SV_DispatchThreadId )
 {
+    /*
+    TODO: modify SHARC to support:
+    - material de-modulation
+    - 2 levels of detail: fine and coarse ( large voxels )
+    - firefly suppression
+    - anti-lag
+    - dynamic "sceneScale"
+    - auto "sceneScale" adjustment to guarantee desired number of samples in voxels on average
+    */
+
     // Initialize RNG
     Rng::Hash::Initialize( pixelPos, gFrameIndex );
 
@@ -86,8 +96,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         sharcHitData.normalWorld = normalize( geometryProps.N + ( Rng::Hash::GetFloat4( ).xyz - 0.5 ) * SHARC_NORMAL_DITHER );
 
         SharcSetThroughput( sharcState, 1.0 );
-
-        if( !SharcUpdateHit( sharcState, sharcHitData, L, Rng::Hash::GetFloat( ) ) )
+        if( !SharcUpdateHit( sharcState, sharcHitData, L, 1.0 ) )
             return;
     }
 
@@ -246,7 +255,6 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
             sharcHitData.normalWorld = normalize( geometryProps.N + ( Rng::Hash::GetFloat4( ).xyz - 0.5 ) * SHARC_NORMAL_DITHER );
 
             SharcSetThroughput( sharcState, throughput );
-
             if( geometryProps.IsSky( ) )
                 SharcUpdateMiss( sharcState, L );
             else if( !SharcUpdateHit( sharcState, sharcHitData, L, Rng::Hash::GetFloat( ) ) )
