@@ -31,11 +31,13 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define USE_TRANSLUCENCY                    1 // translucent foliage
 #define USE_NIS                             1 // NIS filter (debug only)
 #define USE_SHARC_V_DEPENDENT               1 // needed to get a full match with prev frame data // TODO: improve multi-bounce low-roughness case
+#define USE_MOVING_EMISSION_FIX             1 // fixes a dark tail, left by an animated emissive object
 
 // Default = 0
 #define USE_SANITIZATION                    0 // NRD sample is NAN/INF free
-#define USE_SIMULATED_MATERIAL_ID_TEST      0 // for "material ID" support debugging
+#define USE_SIMULATED_MATERIAL_ID_TEST      0 // "material ID" debugging
 #define USE_SIMULATED_FIREFLY_TEST          0 // "anti-firefly" debugging
+#define USE_CAMERA_ATTACHED_REFLECTION_TEST 0 // test special treatment for reflections of objects attached to the camera
 #define USE_RUSSIAN_ROULETTE                0 // bad practice for real-time denoising
 #define USE_DRS_STRESS_TEST                 0 // test for verifying that NRD doesn't touch data outside of DRS rectangle
 #define USE_INF_STRESS_TEST                 0 // test for verifying that NRD doesn't touch data outside of denoising range
@@ -44,6 +46,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define USE_RANDOMIZED_ROUGHNESS            0 // randomize roughness ( a common case in games )
 #define USE_LOAD                            0 // Load vs SampleLevel
 #define USE_SHARC_DEBUG                     0 // 1 - show cache, 2 - show grid
+#define USE_TAA_DEBUG                       0 // 1 - show weight
 
 //=============================================================================================
 // CONSTANTS
@@ -90,10 +93,10 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define MATERIAL_COBALT                     2
 
 // Material ID
-#define MATERIAL_ID_DEFAULT                 0
-#define MATERIAL_ID_METAL                   1
-#define MATERIAL_ID_HAIR                    2
-#define MATERIAL_NORM                       3.0
+#define MATERIAL_ID_DEFAULT                 0.0
+#define MATERIAL_ID_METAL                   1.0
+#define MATERIAL_ID_HAIR                    2.0
+#define MATERIAL_ID_SELF_REFLECTION         3.0
 
 // Mip mode
 #define MIP_VISIBILITY                      0 // for visibility: emission, shadow and alpha mask
@@ -119,10 +122,11 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define SPEC_LOBE_ENERGY                    0.95 // trimmed to 95%
 #define LEAF_TRANSLUCENCY                   0.25
 #define LEAF_THICKNESS                      0.001 // TODO: viewZ dependent?
-#define STRAND_THICKNESS                    80e-6
+#define STRAND_THICKNESS                    80e-6f
 #define TAA_HISTORY_SHARPNESS               0.5
-#define BOUNCE_RAY_OFFSET                   0.05 // pixels
 #define SHADOW_RAY_OFFSET                   1.0 // pixels
+#define BOUNCE_RAY_OFFSET                   0.25 // pixels
+#define GLASS_RAY_OFFSET                    0.05 // pixels
 
 #define SHARC_CAPACITY                      ( 1 << 22 )
 #define SHARC_SCENE_SCALE                   50.0
@@ -290,7 +294,6 @@ NRI_RESOURCE( cbuffer, GlobalConstants, b, 0, SET_GLOBAL )
     uint32_t gFrameIndex;
     uint32_t gForcedMaterial;
     uint32_t gUseNormalMap;
-    uint32_t gIsWorldSpaceMotionEnabled;
     uint32_t gTracingMode;
     uint32_t gSampleNum;
     uint32_t gBounceNum;
@@ -395,20 +398,17 @@ float3 GetMotion( float3 X, float3 Xprev )
 {
     float3 motion = Xprev - X;
 
-    if( !gIsWorldSpaceMotionEnabled )
-    {
-        float viewZ = Geometry::AffineTransform( gWorldToView, X ).z;
-        float2 sampleUv = Geometry::GetScreenUv( gWorldToClip, X );
+    float viewZ = Geometry::AffineTransform( gWorldToView, X ).z;
+    float2 sampleUv = Geometry::GetScreenUv( gWorldToClip, X );
 
-        float viewZprev = Geometry::AffineTransform( gWorldToViewPrev, Xprev ).z;
-        float2 sampleUvPrev = Geometry::GetScreenUv( gWorldToClipPrev, Xprev );
+    float viewZprev = Geometry::AffineTransform( gWorldToViewPrev, Xprev ).z;
+    float2 sampleUvPrev = Geometry::GetScreenUv( gWorldToClipPrev, Xprev );
 
-        // IMPORTANT: scaling to "pixel" unit significantly improves utilization of FP16
-        motion.xy = ( sampleUvPrev - sampleUv ) * gRectSize;
+    // IMPORTANT: scaling to "pixel" unit significantly improves utilization of FP16
+    motion.xy = ( sampleUvPrev - sampleUv ) * gRectSize;
 
-        // IMPORTANT: 2.5D motion is preferred over 3D motion due to imprecision issues caused by FP16 rounding negative effects
-        motion.z = viewZprev - viewZ;
-    }
+    // IMPORTANT: 2.5D motion is preferred over 3D motion due to imprecision issues caused by FP16 rounding negative effects
+    motion.z = viewZprev - viewZ;
 
     return motion;
 }

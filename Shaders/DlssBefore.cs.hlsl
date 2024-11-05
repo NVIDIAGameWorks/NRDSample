@@ -11,7 +11,6 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #include "Include/Shared.hlsli"
 
 NRI_RESOURCE( RWTexture2D<float>, gInOut_ViewZ, u, 0, 1 );
-NRI_RESOURCE( RWTexture2D<float3>, gInOut_Mv, u, 1, 1 );
 
 [numthreads( 16, 16, 1 )]
 void main( uint2 pixelPos : SV_DispatchThreadId )
@@ -29,16 +28,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     if( gSR )
     {
         float4 clipPos = Geometry::ProjectiveTransform( gViewToClip, Xv );
-        gInOut_ViewZ[ pixelPos ] = clipPos.z / clipPos.w;
-    }
 
-    // Patch MV, because 2D MVs needed
-    if( gIsWorldSpaceMotionEnabled )
-    {
-        float3 mv = gInOut_Mv[ pixelPos ];
-        float3 Xprev = Geometry::AffineTransform( gViewToWorld, Xv ) + mv;
-        float2 pixelUvPrev = Geometry::GetScreenUv( gWorldToClipPrev, Xprev );
-        mv.xy = ( pixelUvPrev - pixelUv ) * gRenderSize;
-        gInOut_Mv[ pixelPos ] = mv;
+        gInOut_ViewZ[ pixelPos ] = clipPos.z / clipPos.w;
     }
 }

@@ -59,6 +59,11 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         result = lerp( result, validation.xyz, validation.w );
     }
 
+    // Debug
+    #if( USE_TAA_DEBUG == 1 )
+        result = gIn_PostAA[ pixelPos ].w;
+    #endif
+
     // Output
     gOut_Final[ pixelPos ] = result;
 }

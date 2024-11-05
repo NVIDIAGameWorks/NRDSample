@@ -10,10 +10,9 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 
 #include "Include/Shared.hlsli"
 
-NRI_RESOURCE( Texture2D<float>, gIn_ViewZ, t, 0, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_Mv, t, 1, 1 );
-NRI_RESOURCE( Texture2D<float3>, gIn_Composed, t, 2, 1 );
-NRI_RESOURCE( Texture2D<float4>, gIn_History, t, 3, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_Mv, t, 0, 1 );
+NRI_RESOURCE( Texture2D<float3>, gIn_Composed, t, 1, 1 );
+NRI_RESOURCE( Texture2D<float4>, gIn_History, t, 2, 1 );
 
 NRI_RESOURCE( RWTexture2D<float4>, gOut_Result, u, 0, 1 );
 
@@ -36,17 +35,15 @@ NRI_RESOURCE( RWTexture2D<float4>, gOut_Result, u, 0, 1 );
     } \
     GroupMemoryBarrierWithGroupSync( )
 
-groupshared float4 s_Data[ BUFFER_Y ][ BUFFER_X ];
+groupshared float3 s_Color[ BUFFER_Y ][ BUFFER_X ];
+groupshared float3 s_Mv[ BUFFER_Y ][ BUFFER_X ];
 
 void Preload( uint2 sharedPos, int2 globalPos )
 {
     globalPos = clamp( globalPos, 0, gRectSize - 1.0 );
 
-    float4 color_viewZ;
-    color_viewZ.xyz = ApplyTonemap( gIn_Composed[ globalPos ] );
-    color_viewZ.w = gIn_ViewZ[ globalPos ];
-
-    s_Data[ sharedPos.y ][ sharedPos.x ] = color_viewZ;
+    s_Color[ sharedPos.y ][ sharedPos.x ] = ApplyTonemap( gIn_Composed[ globalPos ] );
+    s_Mv[ sharedPos.y ][ sharedPos.x ] = gIn_Mv[ globalPos ].xyw; // dZ is not needed
 }
 
 // TODO: move to ml?
@@ -76,13 +73,16 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
         return;
 
     // Neighborhood
+    float sum = 0;
     float3 m1 = 0;
     float3 m2 = 0;
     float3 input = 0;
 
-    float viewZ = s_Data[ threadPos.y + BORDER ][threadPos.x + BORDER ].w;
-    float viewZnearest = viewZ;
+    float3 centerMv = s_Mv[ threadPos.y + BORDER ][threadPos.x + BORDER ];
+    float mvLengthSqMax = Math::LengthSquared( centerMv.xy );
     int2 offseti = int2( BORDER, BORDER );
+
+    bool want5x5 = centerMv.z < 0.0; // 5x5 is needed for hair ( super thin ) and glass ( noisy ), also it's safe to use it for sky to get better edges
 
     [unroll]
     for( int dy = 0; dy <= BORDER * 2; dy++ )
@@ -90,37 +90,41 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
         [unroll]
         for( int dx = 0; dx <= BORDER * 2; dx++ )
         {
-            int2 t = int2( dx, dy );
-            int2 smemPos = threadPos + t;
-            float4 data = s_Data[ smemPos.y ][ smemPos.x ];
+            if( !want5x5 && ( dx == 0 || dx == BORDER * 2 || dy == 0 || dy == BORDER * 2 ) )
+                continue;
+
+            int2 offset = int2( dx, dy );
+            int2 smemPos = threadPos + offset;
+
+            float3 c = s_Color[ smemPos.y ][ smemPos.x ];
+            float2 mv = s_Mv[ smemPos.y ][ smemPos.x ].xy;
+            float mvLengthSq = Math::LengthSquared( mv.xy );
 
             if( dx == BORDER && dy == BORDER )
-                input = data.xyz;
-            else if( abs( data.w ) < abs( viewZnearest ) )
+                input = c;
+            else if( mvLengthSq > mvLengthSqMax )
             {
-                viewZnearest = data.w;
-                offseti = t;
+                mvLengthSqMax = mvLengthSq;
+                offseti = offset;
             }
 
-            m1 += data.xyz;
-            m2 += data.xyz * data.xyz;
+            float r2 = Math::LengthSquared( offset / BORDER - 1.0 );
+            float w = exp( -r2 );
+
+            m1 += c * w;
+            m2 += c * c * w;
+            sum += w;
         }
     }
 
-    float invSum = 1.0 / ( ( BORDER * 2 + 1 ) * ( BORDER * 2 + 1 ) );
-    m1 *= invSum;
-    m2 *= invSum;
+    m1 /= sum;
+    m2 /= sum;
 
     float3 sigma = sqrt( abs( m2 - m1 * m1 ) ); // TODO: increase sigma for hair and glass?
 
     // Previous pixel position
-    float3 Xv = Geometry::ReconstructViewPosition( pixelUv, gCameraFrustum, viewZnearest, gOrthoMode );
-    float3 X = Geometry::AffineTransform( gViewToWorld, Xv );
-    float3 mv = gIn_Mv[ pixelPos + offseti - BORDER ] * ( gIsWorldSpaceMotionEnabled ? 1.0 : gInvRectSize.xyy );
+    float3 mv = s_Mv[ threadPos.y + offseti.y ][ threadPos.x + offseti.x ].xyz * float3( gInvRectSize.xy, 1.0 );
     float2 pixelUvPrev = pixelUv + mv.xy;
-
-    if( gIsWorldSpaceMotionEnabled )
-        pixelUvPrev = Geometry::GetScreenUv( gWorldToClipPrev, X + mv );
 
     // History
     float2 pixelPosPrev = saturate( pixelUvPrev ) * gRectSizePrev;
@@ -142,21 +146,25 @@ void main( int2 threadPos : SV_GroupThreadId, int2 pixelPos : SV_DispatchThreadI
 
     // Disocclusion #2
     float3 clampedHistory = Color::ClampAabb( m1, sigma, history.xyz );
-    #if 1 // good enough
-        mixRate += length( clampedHistory - history.xyz ) * 0.75;
+    #if 0 // good enough?
+        float diff = length( clampedHistory - history.xyz );
+        diff = Math::Pow01( diff, 1.2 );
     #else
         float3 a = XyzToLab( Color::RgbToXyz( clampedHistory ) );
         float3 b = XyzToLab( Color::RgbToXyz( history.xyz ) );
 
         const float JND = 2.3; // just noticable difference
-        mixRate += length( a - b ) / ( JND * 3.0 );
+        float diff = length( a - b ) / ( JND * 3.0 );
     #endif
+    mixRate += diff;
 
     // Clamp mix rate
-    mixRate = clamp( mixRate, gTAA, 1.0 );
+    mixRate = saturate( mixRate );
+
+    // TODO: anti-flickering, compatible with "mixRate"?
 
     // Final mix
-    float3 result = lerp( clampedHistory, input, mixRate );
+    float3 result = lerp( clampedHistory, input, max( mixRate, gTAA ) );
 
     // Apply transfer
     if( gIsSrgb )

@@ -48,8 +48,8 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 Lemi = gIn_DirectEmission[ pixelPos ];
 
     // Normal, roughness and material ID
-    float normMaterialID;
-    float4 normalAndRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos ], normMaterialID );
+    float materialID;
+    float4 normalAndRoughness = NRD_FrontEnd_UnpackNormalAndRoughness( gIn_Normal_Roughness[ pixelPos ], materialID );
     float3 N = normalAndRoughness.xyz;
     float roughness = normalAndRoughness.w;
 
@@ -202,7 +202,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 diffDemod = ( 1.0 - Fenv ) * albedo * 0.99 + 0.01;
     float3 specDemod = Fenv * 0.99 + 0.01;
 
-    if( normMaterialID == MATERIAL_ID_HAIR / MATERIAL_NORM )
+    if( materialID == MATERIAL_ID_HAIR )
     {
         diffDemod = 1.0;
         specDemod = 1.0;
@@ -245,7 +245,7 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     else if( gOnScreen == SHOW_METALNESS )
         Ldiff = baseColorMetalness.w;
     else if( gOnScreen == SHOW_MATERIAL_ID )
-        Ldiff = normMaterialID;
+        Ldiff = materialID / 3.0;
     else if( gOnScreen == SHOW_PSR_THROUGHPUT )
         Ldiff = psrThroughput;
     else if( gOnScreen == SHOW_WORLD_UNITS )

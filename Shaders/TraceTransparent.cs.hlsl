@@ -89,7 +89,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
         }
 
         // Trace
-        float3 Xoffset = geometryProps.GetXoffset( geometryProps.N * Math::Sign( dot( ray, geometryProps.N ) ) );
+        float3 Xoffset = geometryProps.GetXoffset( geometryProps.N * Math::Sign( dot( ray, geometryProps.N ) ), GLASS_RAY_OFFSET );
         uint flags = bounce == desc.bounceNum ? GEOMETRY_IGNORE_TRANSPARENT : GEOMETRY_ALL;
 
         geometryProps = CastRay( Xoffset, ray, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, 0.0 ), gWorldTlas, flags, 0 );
@@ -192,7 +192,8 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 cameraRayDirection = ( float3 )0;
     GetCameraRay( cameraRayOrigin, cameraRayDirection, sampleUv );
 
-    float viewZ = gInOut_Mv[ pixelPos ].w / FP16_VIEWZ_SCALE; // viewZ before PSR
+    float viewZAndTaaMask = gInOut_Mv[ pixelPos ].w;
+    float viewZ = Math::Sign( gNearZ ) * abs( viewZAndTaaMask ) / FP16_VIEWZ_SCALE; // viewZ before PSR
     float3 Xv = Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
     float tmin0 = gOrthoMode == 0 ? length( Xv ) : abs( Xv.z );
 
@@ -201,12 +202,15 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     // Trace delta events
     if( !geometryPropsT.IsSky( ) && geometryPropsT.hitT < tmin0 )
     {
+        // Append "glass" mask to "hair" mask
+        viewZAndTaaMask = viewZAndTaaMask < 0.0 ? viewZAndTaaMask : -viewZAndTaaMask;
+
         // Patch motion vectors replacing MV for the background with MV for the closest glass layer.
         // IMPORTANT: surface-based motion can be used only if the object is curved.
         // TODO: let's use the simplest heuristic for now, but better switch to some "smart" interpolation between
         // MVs for the primary opaque surface hit and the primary glass surface hit.
         float3 mvT = GetMotion( geometryPropsT.X, geometryPropsT.Xprev );
-        gInOut_Mv[ pixelPos ] = mvT.xyzz; // .w - don't care
+        gInOut_Mv[ pixelPos ] = float4( mvT, viewZAndTaaMask );
 
         // Trace transparent stuff
         TraceTransparentDesc desc = ( TraceTransparentDesc )0;

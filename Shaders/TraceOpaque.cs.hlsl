@@ -288,7 +288,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
             float3 XvirtualPrev = Xvirtual + geometryProps.Xprev - geometryProps.X;
             float3 motion = GetMotion( Xvirtual, XvirtualPrev );
 
-            gOut_Mv[ desc.pixelPos ] = float4( motion, viewZ * FP16_VIEWZ_SCALE ); // keep viewZ before PSR ( needed for glass )
+            gOut_Mv[ desc.pixelPos ].xyz = motion; // IMPORTANT: keep viewZ before PSR ( needed for glass )
 
             // PSR - Update viewZ
             viewZ = Geometry::AffineTransform( gWorldToView, Xvirtual ).z;
@@ -651,6 +651,16 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                 accumulatedHitDist += ApplyThinLensEquation( geometryProps.hitT, accumulatedCurvature ) * Math::SmoothStep( 0.2, 0.0, accumulatedDiffuseLikeMotion );
                 accumulatedDiffuseLikeMotion += 1.0 - importance * ( 1.0 - diffuseLikeMotion );
                 accumulatedCurvature += materialProps.curvature; // yes, after hit
+
+                #if( USE_CAMERA_ATTACHED_REFLECTION_TEST == 1 && NRD_NORMAL_ENCODING == NRD_NORMAL_ENCODING_R10G10B10A2_UNORM )
+                    // IMPORTANT: lazy ( no checkerboard support ) implementation of reflections masking for objects attached to the camera
+                    // TODO: better find a generic solution for tracking of reflections for objects attached to the camera
+                    if( bounce == 1 && !isDiffuse && desc.materialProps.roughness < 0.01 )
+                    {
+                        if( !geometryProps.IsSky( ) && !geometryProps.Has( FLAG_STATIC ) )
+                            gOut_Normal_Roughness[ desc.pixelPos ].w = MATERIAL_ID_SELF_REFLECTION;
+                    }
+                #endif
             }
         }
 
@@ -819,7 +829,10 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     // Motion
     float3 motion = GetMotion( geometryProps0.X, geometryProps0.Xprev );
 
-    gOut_Mv[ pixelPos ] = float4( motion, viewZ * FP16_VIEWZ_SCALE );
+    float viewZAndTaaMask = abs( viewZ ) * FP16_VIEWZ_SCALE;
+    viewZAndTaaMask *= ( geometryProps0.Has( FLAG_HAIR ) || geometryProps0.IsSky( ) ) ? -1.0 : 1.0;
+
+    gOut_Mv[ pixelPos ] = float4( motion, viewZAndTaaMask );
 
     // Early out - sky
     if( geometryProps0.IsSky( ) )
@@ -901,6 +914,12 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     desc.rayFlags = 0;
 
     TraceOpaqueResult result = TraceOpaque( desc );
+
+    #if( USE_MOVING_EMISSION_FIX == 1 )
+        // Or emissives ( not having lighting in diffuse and specular ) can use a different material ID
+        result.diffRadiance += desc.materialProps.Lemi / Math::Pi( 2.0 );
+        result.specRadiance += desc.materialProps.Lemi / Math::Pi( 2.0 );
+    #endif
 
     #if( USE_SIMULATED_MATERIAL_ID_TEST == 1 )
         if( frac( geometryProps0.X ).x < 0.05 )

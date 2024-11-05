@@ -40,7 +40,7 @@ struct GeometryProps
         float viewZ = Geometry::AffineTransform( gWorldToView, X ).z;
         amount *= gUnproject * lerp( abs( viewZ ), 1.0, abs( gOrthoMode ) );
 
-        return X + offsetDir * amount;
+        return X + offsetDir * max( amount, 0.00001 );
     }
 
     bool Has( uint flag )
