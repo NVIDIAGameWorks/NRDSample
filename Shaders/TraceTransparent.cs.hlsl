@@ -89,7 +89,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
         }
 
         // Trace
-        float3 Xoffset = geometryProps.GetXoffset( geometryProps.N * Math::Sign( dot( ray, geometryProps.N ) ), GLASS_RAY_OFFSET );
+        float3 Xoffset = geometryProps.GetXoffset( geometryProps.N * Math::Sign( dot( ray, geometryProps.N ) ), PT_GLASS_RAY_OFFSET );
         uint flags = bounce == desc.bounceNum ? GEOMETRY_IGNORE_TRANSPARENT : GEOMETRY_ALL;
 
         geometryProps = CastRay( Xoffset, ray, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, 0.0 ), gWorldTlas, flags, 0 );

@@ -1435,19 +1435,33 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             else if ((int32_t)m_ReblurSettings.maxStabilizedFrameNumForHitDistance < m_Settings.maxAccumulatedFrameNum)
                                 isSame = false;
 
+                            bool hasSpatial = m_ReblurSettings.minBlurRadius + m_ReblurSettings.maxBlurRadius != 0.0f
+                                || m_ReblurSettings.diffusePrepassBlurRadius != 0.0f
+                                || m_ReblurSettings.specularPrepassBlurRadius != 0.0f;
                             ImGui::SameLine();
-                            if (ImGui::Button("No spatial"))
+                            if (ImGui::Button(hasSpatial ? "No spatial" : "Spatial"))
                             {
-                                m_ReblurSettings.minBlurRadius = 0.0f;
-                                m_ReblurSettings.maxBlurRadius = 0.0f;
-                                m_ReblurSettings.diffusePrepassBlurRadius = 0.0f;
-                                m_ReblurSettings.specularPrepassBlurRadius = 0.0f;
+                                if (hasSpatial)
+                                {
+                                    m_ReblurSettings.minBlurRadius = 0.0f;
+                                    m_ReblurSettings.maxBlurRadius = 0.0f;
+                                    m_ReblurSettings.diffusePrepassBlurRadius = 0.0f;
+                                    m_ReblurSettings.specularPrepassBlurRadius = 0.0f;
+                                }
+                                else
+                                {
+                                    m_ReblurSettings.minBlurRadius = defaults.minBlurRadius;
+                                    m_ReblurSettings.maxBlurRadius = defaults.maxBlurRadius;
+                                    m_ReblurSettings.diffusePrepassBlurRadius = defaults.diffusePrepassBlurRadius;
+                                    m_ReblurSettings.specularPrepassBlurRadius = defaults.specularPrepassBlurRadius;
+                                }
                             }
 
+                            bool hasFastHistory = m_Settings.maxFastAccumulatedFrameNum < m_Settings.maxAccumulatedFrameNum;
                             ImGui::SameLine();
-                            if (ImGui::Button(m_Settings.maxFastAccumulatedFrameNum < m_Settings.maxAccumulatedFrameNum ? "No fast" : "Fast"))
+                            if (ImGui::Button(hasFastHistory ? "No fast" : "Fast"))
                             {
-                                if (m_Settings.maxFastAccumulatedFrameNum < m_Settings.maxAccumulatedFrameNum)
+                                if (hasFastHistory)
                                     m_Settings.maxFastAccumulatedFrameNum = MAX_HISTORY_FRAME_NUM;
                                 else
                                     m_Settings.maxFastAccumulatedFrameNum = defaults.maxFastAccumulatedFrameNum;
@@ -1521,12 +1535,9 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
                             if (m_ReblurSettings.maxAccumulatedFrameNum && m_ReblurSettings.maxStabilizedFrameNum)
                             {
-                                ImGui::Text("ANTI-LAG:");
-                                ImGui::SliderFloat("Sigma scale", &m_ReblurSettings.antilagSettings.luminanceSigmaScale, 1.0f, 3.0f, "%.1f");
-                                ImGui::SliderFloat("Sensitivity", &m_ReblurSettings.antilagSettings.luminanceSensitivity, 1.0f, 3.0f, "%.1f");
-
-                                m_ReblurSettings.antilagSettings.hitDistanceSigmaScale = m_ReblurSettings.antilagSettings.luminanceSigmaScale;
-                                m_ReblurSettings.antilagSettings.hitDistanceSensitivity = m_ReblurSettings.antilagSettings.luminanceSensitivity;
+                                ImGui::Text("ANTI-LAG (luminance / hit distance):");
+                                ImGui::SliderFloat2("Sigma scale", &m_ReblurSettings.antilagSettings.luminanceSigmaScale, 1.0f, 5.0f, "%.1f");
+                                ImGui::SliderFloat2("Sensitivity", &m_ReblurSettings.antilagSettings.luminanceSensitivity, 1.0f, 5.0f, "%.1f");
                             }
                         }
                         else if (m_Settings.denoiser == DENOISER_RELAX)
@@ -1599,20 +1610,37 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             else if (m_RelaxSettings.enableRoughnessEdgeStopping != defaults.enableRoughnessEdgeStopping)
                                 isSame = false;
 
+                            bool hasSpatial = m_RelaxSettings.diffusePhiLuminance != 0.0f
+                                || m_RelaxSettings.specularPhiLuminance != 0.0f
+                                || m_RelaxSettings.diffusePrepassBlurRadius != 0.0f
+                                || m_RelaxSettings.specularPrepassBlurRadius != 0.0f
+                                || m_RelaxSettings.spatialVarianceEstimationHistoryThreshold != 0;
                             ImGui::SameLine();
-                            if (ImGui::Button("No spatial"))
+                            if (ImGui::Button(hasSpatial ? "No spatial" : "Spatial"))
                             {
-                                m_RelaxSettings.diffusePhiLuminance = 0.0f;
-                                m_RelaxSettings.specularPhiLuminance = 0.0f;
-                                m_RelaxSettings.diffusePrepassBlurRadius = 0.0f;
-                                m_RelaxSettings.specularPrepassBlurRadius = 0.0f;
-                                m_RelaxSettings.spatialVarianceEstimationHistoryThreshold = 0;
+                                if (hasSpatial)
+                                {
+                                    m_RelaxSettings.diffusePhiLuminance = 0.0f;
+                                    m_RelaxSettings.specularPhiLuminance = 0.0f;
+                                    m_RelaxSettings.diffusePrepassBlurRadius = 0.0f;
+                                    m_RelaxSettings.specularPrepassBlurRadius = 0.0f;
+                                    m_RelaxSettings.spatialVarianceEstimationHistoryThreshold = 0;
+                                }
+                                else
+                                {
+                                    m_RelaxSettings.diffusePhiLuminance = defaults.diffusePhiLuminance;
+                                    m_RelaxSettings.specularPhiLuminance = defaults.specularPhiLuminance;
+                                    m_RelaxSettings.diffusePrepassBlurRadius = defaults.diffusePrepassBlurRadius;
+                                    m_RelaxSettings.specularPrepassBlurRadius = defaults.specularPrepassBlurRadius;
+                                    m_RelaxSettings.spatialVarianceEstimationHistoryThreshold = defaults.spatialVarianceEstimationHistoryThreshold;
+                                }
                             }
 
+                            bool hasFastHistory = m_Settings.maxFastAccumulatedFrameNum < m_Settings.maxAccumulatedFrameNum;
                             ImGui::SameLine();
-                            if (ImGui::Button(m_Settings.maxFastAccumulatedFrameNum < m_Settings.maxAccumulatedFrameNum ? "No fast" : "Fast"))
+                            if (ImGui::Button(hasFastHistory ? "No fast" : "Fast"))
                             {
-                                if (m_Settings.maxFastAccumulatedFrameNum < m_Settings.maxAccumulatedFrameNum)
+                                if (hasFastHistory)
                                     m_Settings.maxFastAccumulatedFrameNum = MAX_HISTORY_FRAME_NUM;
                                 else
                                     m_Settings.maxFastAccumulatedFrameNum = defaults.diffuseMaxFastAccumulatedFrameNum;

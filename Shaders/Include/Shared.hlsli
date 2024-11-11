@@ -110,37 +110,29 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define SET_MORPH                           3
 #define SET_SHARC                           4
 
-// Other
-#define FP16_MAX                            65504.0
-#define INF                                 1e5
-#define LINEAR_BLOCK_SIZE                   256
-#define FP16_VIEWZ_SCALE                    0.125 // TODO: tuned for meters, needs to be scaled down for cm and mm
-#define THROUGHPUT_THRESHOLD                0.001
-#define PSR_THROUGHPUT_THRESHOLD            0.0 // TODO: even small throughput can produce a bright spot if incoming radiance is huge
-#define MAX_MIP_LEVEL                       11.0
-#define IMPORTANCE_SAMPLES_NUM              16
-#define SPEC_LOBE_ENERGY                    0.95 // trimmed to 95%
-#define LEAF_TRANSLUCENCY                   0.25
-#define LEAF_THICKNESS                      0.001 // TODO: viewZ dependent?
-#define STRAND_THICKNESS                    80e-6f
-#define TAA_HISTORY_SHARPNESS               0.5
-#define SHADOW_RAY_OFFSET                   1.0 // pixels
-#define BOUNCE_RAY_OFFSET                   0.25 // pixels
-#define GLASS_RAY_OFFSET                    0.05 // pixels
+// Path tracing
+#define PT_THROUGHPUT_THRESHOLD             0.001
+#define PT_PSR_THROUGHPUT_THRESHOLD         0.0 // TODO: even small throughput can produce a bright spot if incoming radiance is huge
+#define PT_IMPORTANCE_SAMPLES_NUM           16
+#define PT_SPEC_LOBE_ENERGY                 0.95 // trimmed to 95%
+#define PT_SHADOW_RAY_OFFSET                1.0 // pixels
+#define PT_BOUNCE_RAY_OFFSET                0.25 // pixels
+#define PT_GLASS_RAY_OFFSET                 0.05 // pixels
+#define PT_MAX_FIREFLY_RELATIVE_INTENSITY   20.0 // no more than 20x energy increase in case of probabilistic sampling
+#define PT_EVIL_TWIN_LOBE_TOLERANCE         0.005 // normalized %
 
+// Spatial HAsh-ased Radiance Cache
 #define SHARC_CAPACITY                      ( 1 << 22 )
 #define SHARC_SCENE_SCALE                   50.0
 #define SHARC_DOWNSCALE                     5
 #define SHARC_NORMAL_DITHER                 0.003
 #define SHARC_POS_DITHER                    0.001
 
+// Blue noise
 #define BLUE_NOISE_SPATIAL_DIM              128 // see StaticTexture::ScramblingRanking
 #define BLUE_NOISE_TEMPORAL_DIM             4 // good values: 4-8 for shadows, 8-16 for occlusion, 8-32 for lighting
 
-#define MORPH_MAX_ACTIVE_TARGETS_NUM        8u
-#define MORPH_ELEMENTS_PER_ROW_NUM          4
-#define MORPH_ROWS_NUM                      ( MORPH_MAX_ACTIVE_TARGETS_NUM / MORPH_ELEMENTS_PER_ROW_NUM )
-
+// NVIDIA Image Scaler
 #define NIS_SCALER                          1
 #define NIS_HDR_MODE                        0
 #define NIS_BLOCK_WIDTH                     32
@@ -149,6 +141,21 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define NIS_USE_HALF_PRECISION              1
 #define NIS_HLSL                            1
 #define NIS_VIEWPORT_SUPPORT                0
+
+// Other
+#define FP16_MAX                            65504.0
+#define INF                                 1e5
+#define LINEAR_BLOCK_SIZE                   256
+#define FP16_VIEWZ_SCALE                    0.125 // TODO: tuned for meters, needs to be scaled down for cm and mm
+#define MAX_MIP_LEVEL                       11.0
+#define LEAF_TRANSLUCENCY                   0.25
+#define LEAF_THICKNESS                      0.001 // TODO: viewZ dependent?
+#define STRAND_THICKNESS                    80e-6f
+#define TAA_HISTORY_SHARPNESS               0.5
+
+#define MORPH_MAX_ACTIVE_TARGETS_NUM        8u
+#define MORPH_ELEMENTS_PER_ROW_NUM          4
+#define MORPH_ROWS_NUM                      ( MORPH_MAX_ACTIVE_TARGETS_NUM / MORPH_ELEMENTS_PER_ROW_NUM )
 
 // Instance flags
 #define FLAG_FIRST_BIT                      25 // this + number of flags must be <= 32

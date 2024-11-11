@@ -199,7 +199,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                 #endif
 
                 // Abort if expected contribution of the current bounce is low
-                if( PSR_THROUGHPUT_THRESHOLD != 0.0 && Color::Luminance( psrThroughput ) < PSR_THROUGHPUT_THRESHOLD )
+                if( PT_PSR_THROUGHPUT_THRESHOLD != 0.0 && Color::Luminance( psrThroughput ) < PT_PSR_THROUGHPUT_THRESHOLD )
                     break;
 
                 // Trace to the next hit
@@ -347,7 +347,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                 // Estimate diffuse probability
                 float diffuseProbability = EstimateDiffuseProbability( geometryProps, materialProps ) * float( !geometryProps.Has( FLAG_HAIR ) );
 
-                // Clamp probability to a sane range to guarantee a sample in 3x3 ( or 5x5 ) area
+                // Clamp probability to a sane range to guarantee a sample in 3x3 ( or 5x5 ) area ( see NRD docs )
                 float rnd = Rng::Hash::GetFloat( );
                 if( gTracingMode == RESOLUTION_FULL_PROBABILISTIC && bounce == 1 && !gRR )
                 {
@@ -374,11 +374,11 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                 float3 ray = 0;
                 uint samplesNum = 0;
 
-                // If IS is enabled, generate up to IMPORTANCE_SAMPLES_NUM rays depending on roughness
-                // If IS is disabled, there is no need to generate up to IMPORTANCE_SAMPLES_NUM rays for specular because VNDF v3 doesn't produce rays pointing inside the surface
+                // If IS is enabled, generate up to PT_IMPORTANCE_SAMPLES_NUM rays depending on roughness
+                // If IS is disabled, there is no need to generate up to PT_IMPORTANCE_SAMPLES_NUM rays for specular because VNDF v3 doesn't produce rays pointing inside the surface
                 uint maxSamplesNum = 0;
                 if( bounce == 1 && gDisableShadowsAndEnableImportanceSampling && NRD_MODE < OCCLUSION ) // TODO: use IS in each bounce?
-                    maxSamplesNum = IMPORTANCE_SAMPLES_NUM * ( isDiffuse ? 1.0 : materialProps.roughness );
+                    maxSamplesNum = PT_IMPORTANCE_SAMPLES_NUM * ( isDiffuse ? 1.0 : materialProps.roughness );
                 maxSamplesNum = max( maxSamplesNum, 1 );
 
                 if( geometryProps.Has( FLAG_HAIR ) && NRD_MODE < OCCLUSION )
@@ -422,7 +422,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                             r = ImportanceSampling::Cosine::GetRay( rnd );
                         else
                         {
-                            float3 Hlocal = ImportanceSampling::VNDF::GetRay( rnd, materialProps.roughness, Vlocal, gTrimLobe ? SPEC_LOBE_ENERGY : 1.0 );
+                            float3 Hlocal = ImportanceSampling::VNDF::GetRay( rnd, materialProps.roughness, Vlocal, gTrimLobe ? PT_SPEC_LOBE_ENERGY : 1.0 );
                             r = reflect( -Vlocal, Hlocal );
                         }
 
@@ -556,7 +556,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                     - re-use data from the previous frame
                     */
 
-                    if( THROUGHPUT_THRESHOLD != 0.0 && Color::Luminance( pathThroughput ) < THROUGHPUT_THRESHOLD )
+                    if( PT_THROUGHPUT_THRESHOLD != 0.0 && Color::Luminance( pathThroughput ) < PT_THROUGHPUT_THRESHOLD )
                         break;
                 #endif
 
@@ -940,7 +940,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     rnd *= gTanSunAngularRadius;
 
     float3 sunDirection = normalize( gSunBasisX.xyz * rnd.x + gSunBasisY.xyz * rnd.y + gSunDirection.xyz );
-    float3 Xoffset = desc.geometryProps.GetXoffset( sunDirection, SHADOW_RAY_OFFSET );
+    float3 Xoffset = desc.geometryProps.GetXoffset( sunDirection, PT_SHADOW_RAY_OFFSET );
     float2 mipAndCone = GetConeAngleFromAngularRadius( desc.geometryProps.mip, gTanSunAngularRadius );
 
     float shadowTranslucency = ( Color::Luminance( desc.materialProps.Ldirect ) != 0.0 && !gDisableShadowsAndEnableImportanceSampling ) ? 1.0 : 0.0;

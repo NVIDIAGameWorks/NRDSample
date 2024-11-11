@@ -35,7 +35,7 @@ struct GeometryProps
     uint textureOffsetAndFlags;
     uint instanceIndex;
 
-    float3 GetXoffset( float3 offsetDir, float amount = BOUNCE_RAY_OFFSET )
+    float3 GetXoffset( float3 offsetDir, float amount = PT_BOUNCE_RAY_OFFSET )
     {
         float viewZ = Geometry::AffineTransform( gWorldToView, X ).z;
         amount *= gUnproject * lerp( abs( viewZ ), 1.0, abs( gOrthoMode ) );
@@ -542,7 +542,7 @@ float3 GetShadowedLighting( GeometryProps geometryProps, MaterialProps materialP
         float3 sunDirection = normalize( gSunBasisX.xyz * rnd.x + gSunBasisY.xyz * rnd.y + gSunDirection.xyz );
 
         float2 mipAndCone = GetConeAngleFromAngularRadius( geometryProps.mip, gTanSunAngularRadius );
-        float3 Xoffset = geometryProps.GetXoffset( sunDirection, SHADOW_RAY_OFFSET );
+        float3 Xoffset = geometryProps.GetXoffset( sunDirection, PT_SHADOW_RAY_OFFSET );
         L *= CastVisibilityRay_AnyHit( Xoffset, sunDirection, 0.0, INF, mipAndCone, gWorldTlas, instanceInclusionMask, rayFlags );
     }
 
@@ -554,7 +554,6 @@ float3 GetShadowedLighting( GeometryProps geometryProps, MaterialProps materialP
 float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps materialProps, bool useMagicBoost = false )
 {
     // IMPORTANT: can't be used for hair tracing, but applicable in other hair related calculations
-
     float3 albedo, Rf0;
     BRDF::ConvertBaseColorMetalnessToAlbedoRf0( materialProps.baseColor, materialProps.metalness, albedo, Rf0 );
 
@@ -564,13 +563,23 @@ float EstimateDiffuseProbability( GeometryProps geometryProps, MaterialProps mat
     float lumSpec = Color::Luminance( Fenv );
     float lumDiff = Color::Luminance( albedo * ( 1.0 - Fenv ) );
 
-    float diffProb = lumDiff / ( lumDiff + lumSpec + 1e-6 );
+    float diffProb = lumDiff / max( lumDiff + lumSpec, NRD_EPS );
 
-    // Boost diffuse if roughness is high
+    // Boost diffussiness ( aka diffuse-like behavior ) if roughness is high
     if( useMagicBoost )
         diffProb = lerp( diffProb, 1.0, GetSpecMagicCurve( materialProps.roughness ) );
 
-    return diffProb < 0.005 ? 0.0 : diffProb;
+    // Clamp probability to a sane range. High energy fireflies are very undesired. They can be get rid of only
+    // if the number of accumulated samples exeeds 100-500. NRD accumulates for not more than 30 frames only
+    float diffProbClamped = clamp( diffProb, 1.0 / PT_MAX_FIREFLY_RELATIVE_INTENSITY, 1.0 - 1.0 / PT_MAX_FIREFLY_RELATIVE_INTENSITY );
+
+    [flatten]
+    if( diffProb < PT_EVIL_TWIN_LOBE_TOLERANCE )
+        return 0.0; // no diffuse materials are common ( metals )
+    else if( diffProb > 1.0 - PT_EVIL_TWIN_LOBE_TOLERANCE )
+        return 1.0; // no specular materials are uncommon ( broken material model? )
+    else
+        return diffProbClamped;
 }
 
 float ReprojectIrradiance(

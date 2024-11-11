@@ -130,11 +130,11 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
             float3 ray = 0;
             uint samplesNum = 0;
 
-            // If IS is enabled, generate up to IMPORTANCE_SAMPLES_NUM rays depending on roughness
-            // If IS is disabled, there is no need to generate up to IMPORTANCE_SAMPLES_NUM rays for specular because VNDF v3 doesn't produce rays pointing inside the surface
+            // If IS is enabled, generate up to PT_IMPORTANCE_SAMPLES_NUM rays depending on roughness
+            // If IS is disabled, there is no need to generate up to PT_IMPORTANCE_SAMPLES_NUM rays for specular because VNDF v3 doesn't produce rays pointing inside the surface
             uint maxSamplesNum = 0;
             if( i == 1 && gDisableShadowsAndEnableImportanceSampling ) // TODO: use IS in each bounce?
-                maxSamplesNum = IMPORTANCE_SAMPLES_NUM * ( isDiffuse ? 1.0 : materialProps.roughness );
+                maxSamplesNum = PT_IMPORTANCE_SAMPLES_NUM * ( isDiffuse ? 1.0 : materialProps.roughness );
             maxSamplesNum = max( maxSamplesNum, 1 );
 
             for( uint sampleIndex = 0; sampleIndex < maxSamplesNum; sampleIndex++ )
@@ -148,7 +148,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
                         r = ImportanceSampling::Cosine::GetRay( rnd );
                     else
                     {
-                        float3 Hlocal = ImportanceSampling::VNDF::GetRay( rnd, materialProps.roughness, Vlocal, SPEC_LOBE_ENERGY );
+                        float3 Hlocal = ImportanceSampling::VNDF::GetRay( rnd, materialProps.roughness, Vlocal, PT_SPEC_LOBE_ENERGY );
                         r = reflect( -Vlocal, Hlocal );
                     }
                 }
