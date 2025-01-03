@@ -80,7 +80,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         cameraRayDirection = normalize( Rng::Hash::GetFloat4( ).xyz - 0.5 );
 
     // Cast ray
-    GeometryProps geometryProps = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, INF, GetConeAngleFromAngularRadius( 0.0, gTanPixelAngularRadius * SHARC_DOWNSCALE ), gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
+    GeometryProps geometryProps = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, INF, GetConeAngleFromAngularRadius( 0.0, gTanPixelAngularRadius * SHARC_DOWNSCALE ), gWorldTlas, FLAG_NON_TRANSPARENT, 0 );
     MaterialProps materialProps = GetMaterialProps( geometryProps, USE_SHARC_V_DEPENDENT == 0 );
 
     if( geometryProps.IsSky( ) )
@@ -164,7 +164,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
                 //   1. If IS enabled, check the ray in LightBVH
                 bool isMiss = false;
                 if( gDisableShadowsAndEnableImportanceSampling && maxSamplesNum != 1 )
-                    isMiss = CastVisibilityRay_AnyHit( geometryProps.GetXoffset( geometryProps.N ), r, 0.0, INF, mipAndCone, gLightTlas, GEOMETRY_ALL, 0 );
+                    isMiss = CastVisibilityRay_AnyHit( geometryProps.GetXoffset( geometryProps.N ), r, 0.0, INF, mipAndCone, gLightTlas, FLAG_NON_TRANSPARENT, 0 );
 
                 //   2. Count rays hitting emissive surfaces
                 if( !isMiss )
@@ -242,7 +242,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
             // Trace to the next hit
             //=========================================================================================================================================================
 
-            geometryProps = CastRay( geometryProps.GetXoffset( geometryProps.N ), ray, 0.0, INF, mipAndCone, gWorldTlas, GEOMETRY_IGNORE_TRANSPARENT, 0 );
+            geometryProps = CastRay( geometryProps.GetXoffset( geometryProps.N ), ray, 0.0, INF, mipAndCone, gWorldTlas, FLAG_NON_TRANSPARENT, 0 );
             materialProps = GetMaterialProps( geometryProps, USE_SHARC_V_DEPENDENT == 0 );
         }
 

@@ -197,20 +197,19 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     spec.xyz *= gIndirectSpecular;
 
     // Material modulation ( convert radiance back into irradiance )
-    float NoV = abs( dot( N, V ) );
-    float3 Fenv = BRDF::EnvironmentTerm_Rtg( Rf0, NoV, roughness );
-    float3 diffDemod = ( 1.0 - Fenv ) * albedo * 0.99 + 0.01;
-    float3 specDemod = Fenv * 0.99 + 0.01;
+    float3 diffFactor, specFactor;
+    NRD_MaterialFactors( N, V, albedo, Rf0, roughness, diffFactor, specFactor );
 
+    // We can combine radiance ( for everything ) and irradiance ( for hair ) in denoising if material ID test is enabled
     if( materialID == MATERIAL_ID_HAIR )
     {
-        diffDemod = 1.0;
-        specDemod = 1.0;
+        diffFactor = 1.0;
+        specFactor = 1.0;
     }
 
     // Composition
-    float3 Ldiff = diff.xyz * diffDemod;
-    float3 Lspec = spec.xyz * specDemod;
+    float3 Ldiff = diff.xyz * diffFactor;
+    float3 Lspec = spec.xyz * specFactor;
 
     // Apply PSR throughput ( primary surface material before replacement )
     #if( USE_PSR == 1 )

@@ -54,6 +54,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
     GeometryProps geometryProps = desc.geometryProps;
     float pathThroughput = 1.0;
     bool isReflection = desc.isReflection;
+    float bayer = Sequence::Bayer4x4( desc.pixelPos, gFrameIndex );
 
     [loop]
     for( uint bounce = 1; bounce <= desc.bounceNum; bounce++ ) // TODO: stop if pathThroughput is low
@@ -66,11 +67,22 @@ float3 TraceTransparent( TraceTransparentDesc desc )
             pathThroughput *= isReflection ? F : 1.0 - F;
         else
         {
-            float rndBayer = Sequence::Bayer4x4( desc.pixelPos, gFrameIndex + bounce );
-            float rndWhite = Rng::Hash::GetFloat( );
-            float rnd = ( gDenoiserType == DENOISER_REFERENCE || gRR ) ? rndWhite : rndBayer + rndWhite / 16.0;
+            float rnd = frac( bayer + Sequence::Halton( bounce, 3 ) ); // "Halton( bounce, 2 )" works worse than others
 
-            isReflection = rnd < F;
+            // Bonus dithering to break banding // TODO: needed for "transparent machines"
+            /*
+            float ditherMask = Sequence::Bayer4x4( desc.pixelPos, bounce ); // or
+            //float ditherMask = Rng::Hash::GetFloat( ); // or
+            rnd = saturate( rnd + ( ditherMask - 0.5 ) * 0.04 );
+            */
+
+            [flatten]
+            if( gDenoiserType == DENOISER_REFERENCE || gRR )
+                rnd = Rng::Hash::GetFloat( );
+            else
+                F = clamp( F, PT_GLASS_MIN_F, 1.0 - PT_GLASS_MIN_F ); // TODO: needed?
+
+            isReflection = rnd < F; // TODO: if "F" is clamped, "pathThroughput" should be adjusted too
         }
 
         // Compute ray
@@ -79,10 +91,7 @@ float3 TraceTransparent( TraceTransparentDesc desc )
         {
             float3 I = -geometryProps.V;
             float NoI = dot( geometryProps.N, I );
-            float k = 1.0 - eta * eta * ( 1.0 - NoI * NoI );
-
-            if( k < 0.0 )
-                return 0.0; // should't be here
+            float k = max( 1.0 - eta * eta * ( 1.0 - NoI * NoI ), 0.0 );
 
             ray = normalize( eta * I - ( eta * NoI + sqrt( k ) ) * geometryProps.N );
             eta = 1.0 / eta;
@@ -90,14 +99,15 @@ float3 TraceTransparent( TraceTransparentDesc desc )
 
         // Trace
         float3 Xoffset = geometryProps.GetXoffset( geometryProps.N * Math::Sign( dot( ray, geometryProps.N ) ), PT_GLASS_RAY_OFFSET );
-        uint flags = bounce == desc.bounceNum ? GEOMETRY_IGNORE_TRANSPARENT : GEOMETRY_ALL;
+        uint flags = bounce == desc.bounceNum ? FLAG_NON_TRANSPARENT : GEOMETRY_ALL;
 
         geometryProps = CastRay( Xoffset, ray, 0.0, INF, GetConeAngleFromRoughness( geometryProps.mip, 0.0 ), gWorldTlas, flags, 0 );
 
-        // TODO: glass internal extinction?
-        // ideally each "medium" should have "eta" and "extinction" parameters in "TraceTransparentDesc" and "TraceOpaqueDesc"
-        if( !isReflection )
-            pathThroughput *= 0.96;
+        // TODO: ideally each "medium" should have "eta" and "extinction" parameters in "TraceTransparentDesc" and "TraceOpaqueDesc"
+        bool isAir = eta < 1.0;
+        float extinction = isAir ? 0.0 : 1.0; // TODO: tint color? // TODO: 0.01 for "transparent machines"
+        if( !geometryProps.IsSky() ) // TODO: fix for non-convex geometry
+            pathThroughput *= exp( -extinction * geometryProps.hitT );
 
         // Is opaque hit found?
         if( !geometryProps.Has( FLAG_TRANSPARENT ) )
@@ -140,8 +150,8 @@ float3 TraceTransparent( TraceTransparentDesc desc )
                 sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
 
                 bool isSharcAllowed = gSHARC && NRD_MODE < OCCLUSION; // trivial
-                isSharcAllowed &= geometryProps.hitT > voxelSize; // voxel angular size is acceptable
                 isSharcAllowed &= Rng::Hash::GetFloat( ) > Lcached.w; // probabilistically estimate the need
+                isSharcAllowed &= geometryProps.hitT > voxelSize; // voxel angular size is acceptable // TODO: can be skipped to get flat ambient in some cases
 
                 float3 sharcRadiance;
                 if( isSharcAllowed && SharcGetCachedRadiance( sharcState, sharcHitData, sharcRadiance, false ) )
@@ -197,10 +207,10 @@ void main( int2 pixelPos : SV_DispatchThreadId )
     float3 Xv = Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, viewZ, gOrthoMode );
     float tmin0 = gOrthoMode == 0 ? length( Xv ) : abs( Xv.z );
 
-    GeometryProps geometryPropsT = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, tmin0, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, gTransparent ? GEOMETRY_ONLY_TRANSPARENT : 0, 0 );
+    GeometryProps geometryPropsT = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, tmin0, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, FLAG_TRANSPARENT, 0 );
 
     // Trace delta events
-    if( !geometryPropsT.IsSky( ) && geometryPropsT.hitT < tmin0 )
+    if( !geometryPropsT.IsSky( ) && geometryPropsT.hitT < tmin0 && gOnScreen == SHOW_FINAL )
     {
         // Append "glass" mask to "hair" mask
         viewZAndTaaMask = viewZAndTaaMask < 0.0 ? viewZAndTaaMask : -viewZAndTaaMask;

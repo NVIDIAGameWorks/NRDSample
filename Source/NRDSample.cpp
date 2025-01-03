@@ -50,6 +50,7 @@ constexpr bool USE_LOW_PRECISION_FP_FORMATS         = true; // saves a bit of me
 constexpr bool NRD_ALLOW_DESCRIPTOR_CACHING         = true;
 constexpr bool NRD_PROMOTE_FLOAT16_TO_32            = false;
 constexpr bool NRD_DEMOTE_FLOAT32_TO_16             = false;
+constexpr bool NRD_RESTORE_INITIAL_STATE            = false;
 constexpr int32_t MAX_HISTORY_FRAME_NUM             = (int32_t)std::min(60u, std::min(nrd::REBLUR_MAX_HISTORY_FRAME_NUM, nrd::RELAX_MAX_HISTORY_FRAME_NUM));
 constexpr uint32_t TEXTURES_PER_MATERIAL            = 4;
 constexpr uint32_t MAX_TEXTURE_TRANSITIONS_NUM      = 32;
@@ -639,7 +640,6 @@ private:
     float m_DofAperture = 0.0f;
     float m_DofFocalDistance = 1.0f;
     float m_SdrScale = 1.0f;
-    bool m_HasTransparent = false;
     bool m_ShowUi = true;
     bool m_ForceHistoryReset = false;
     bool m_Resolve = true;
@@ -648,6 +648,7 @@ private:
     bool m_PositiveZ = true;
     bool m_ReversedZ = false;
     bool m_IsSrgb = false;
+    bool m_GlassObjects = false;
 };
 
 Sample::~Sample()
@@ -956,6 +957,8 @@ void Sample::LatencySleep(uint32_t frameIndex)
 
 void Sample::PrepareFrame(uint32_t frameIndex)
 {
+    nri::nriBeginAnnotation("Prepare frame", nri::BGRA_UNUSED);
+
     m_ForceHistoryReset = false;
     m_SettingsPrev = m_Settings;
     m_Camera.SavePreviousState();
@@ -1234,6 +1237,8 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             ImGui::Checkbox("Blink", &m_Settings.blink);
                             ImGui::SameLine();
                             ImGui::Checkbox("Emissive", &m_Settings.emissiveObjects);
+                            ImGui::SameLine();
+                            ImGui::Checkbox("Glass", &m_GlassObjects);
                             if (!m_Settings.nineBrothers)
                                 ImGui::SliderInt("Object number", &m_Settings.animatedObjectNum, 1, (int32_t)MAX_ANIMATED_INSTANCE_NUM);
                             ImGui::SliderFloat("Object scale", &m_Settings.animatedObjectScale, 0.1f, 2.0f);
@@ -2292,6 +2297,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     {
         bool isFastHistoryEnabled = m_Settings.maxAccumulatedFrameNum > m_Settings.maxFastAccumulatedFrameNum;
         float fps = 1000.0f / m_Timer.GetVerySmoothedFrameTime();
+        fps = min(fps, 121.0f);
 
         // REBLUR / RELAX
         float accumulationTime = nrd::REBLUR_DEFAULT_ACCUMULATION_TIME * ((m_Settings.boost && m_Settings.SHARC) ? 0.667f : 1.0f);
@@ -2380,6 +2386,8 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     GatherInstanceData();
 
     NRI.CopyStreamerUpdateRequests(*m_Streamer);
+
+    nri::nriEndAnnotation();
 }
 
 void Sample::LoadScene()
@@ -4026,7 +4034,7 @@ void Sample::GatherInstanceData()
         nri::GeometryObjectInstance& tlasInstance = m_WorldTlasData.emplace_back();
         memcpy(tlasInstance.transform, mCameraTranslation.a, sizeof(tlasInstance.transform));
         tlasInstance.instanceId = instanceIndex;
-        tlasInstance.mask = FLAG_DEFAULT;
+        tlasInstance.mask = FLAG_NON_TRANSPARENT;
         tlasInstance.shaderBindingTableLocalOffset = 0;
         tlasInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE;
         tlasInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticOpaque));
@@ -4046,8 +4054,6 @@ void Sample::GatherInstanceData()
         tlasInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticTransparent));
 
         instanceIndex += m_TransparentObjectsNum;
-
-        m_HasTransparent = m_TransparentObjectsNum ? true : false;
     }
 
     // Add static emissives (only emissives in a separate TLAS)
@@ -4056,7 +4062,7 @@ void Sample::GatherInstanceData()
         nri::GeometryObjectInstance& tlasInstance = m_LightTlasData.emplace_back();
         memcpy(tlasInstance.transform, mCameraTranslation.a, sizeof(tlasInstance.transform));
         tlasInstance.instanceId = instanceIndex;
-        tlasInstance.mask = FLAG_DEFAULT;
+        tlasInstance.mask = FLAG_NON_TRANSPARENT;
         tlasInstance.shaderBindingTableLocalOffset = 0;
         tlasInstance.flags = nri::TopLevelInstanceBits::TRIANGLE_CULL_DISABLE;
         tlasInstance.accelerationStructureHandle = NRI.GetAccelerationStructureHandle(*Get(AccelerationStructure::BLAS_StaticEmissive));
@@ -4166,27 +4172,27 @@ void Sample::GatherInstanceData()
             uint32_t baseTextureIndex = instance.materialIndex * TEXTURES_PER_MATERIAL;
             float3 scale = instance.rotation.GetScale();
 
-            uint32_t flags = FLAG_DEFAULT;
-
+            uint32_t flags = 0;
             if (!instance.allowUpdate)
                 flags |= FLAG_STATIC;
-
-            if (material.IsTransparent())
-            {
-                flags |= FLAG_TRANSPARENT;
-                m_HasTransparent = true;
-            }
-            else if (m_Settings.emission && m_Settings.emissiveObjects && i > staticInstanceCount && (i % 3 == 0))
-                flags |= FLAG_FORCED_EMISSION;
-
             if (meshInstance.morphedVertexOffset != utils::InvalidIndex)
                 flags |= FLAG_DEFORMABLE;
-
             if (material.isHair)
                 flags |= FLAG_HAIR;
-
             if (material.isLeaf)
                 flags |= FLAG_LEAF;
+            if (material.IsTransparent())
+                flags |= FLAG_TRANSPARENT;
+            if (i >= staticInstanceCount)
+            {
+                if (m_Settings.emission && m_Settings.emissiveObjects && (i % 3 == 0))
+                    flags |= FLAG_FORCED_EMISSION;
+                else if (m_GlassObjects && (i % 4 == 0))
+                    flags |= FLAG_TRANSPARENT;
+            }
+
+            if (!(flags & FLAG_TRANSPARENT))
+                flags |= FLAG_NON_TRANSPARENT;
 
             InstanceData& instanceData = m_InstanceData.emplace_back();
             instanceData.mOverloadedMatrix0 = mOverloadedMatrix.col0;
@@ -4286,6 +4292,7 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float resetHistoryFactor)
     uint32_t onScreen = m_Settings.onScreen + (NRD_MODE >= OCCLUSION ? SHOW_AMBIENT_OCCLUSION : 0); // preserve original mapping
 
     float fps = 1000.0f / m_Timer.GetSmoothedFrameTime();
+    fps = min(fps, 121.0f);
     float otherMaxAccumulatedFrameNum = fps * ACCUMULATION_TIME;
     otherMaxAccumulatedFrameNum = min(otherMaxAccumulatedFrameNum, float(MAX_HISTORY_FRAME_NUM));
     otherMaxAccumulatedFrameNum *= resetHistoryFactor;
@@ -4393,7 +4400,6 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float resetHistoryFactor)
         constants.gExposure                                     = m_Settings.exposure;
         constants.gMipBias                                      = mipBias;
         constants.gOrthoMode                                    = orthoMode;
-        constants.gTransparent                                  = (m_HasTransparent && NRD_MODE < OCCLUSION && onScreen == SHOW_FINAL) ? 1 : 0;
         constants.gSharcMaxAccumulatedFrameNum                  = sharcMaxAccumulatedFrameNum;
         constants.gDenoiserType                                 = (uint32_t)m_Settings.denoiser;
         constants.gDisableShadowsAndEnableImportanceSampling    = (sunDirection.z < 0.0f && m_Settings.importanceSampling && NRD_MODE < OCCLUSION) ? 1 : 0;
@@ -4472,6 +4478,8 @@ void Sample::RestoreBindings(nri::CommandBuffer& commandBuffer, bool isEven)
 
 void Sample::RenderFrame(uint32_t frameIndex)
 {
+    nri::nriBeginAnnotation("Render frame", nri::BGRA_UNUSED);
+
     std::array<nri::TextureBarrierDesc, MAX_TEXTURE_TRANSITIONS_NUM> optimizedTransitions = {};
 
     const bool isEven = !(frameIndex & 0x1);
@@ -4871,7 +4879,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
             nrd::Identifier denoiser = NRD_ID(SIGMA_SHADOW);
 
             m_NRD.SetDenoiserSettings(denoiser, &m_SigmaSettings);
-            m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool);
+            m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool, NRD_RESTORE_INITIAL_STATE);
         }
     #endif
 
@@ -4916,7 +4924,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 for (uint32_t i = 0; i < helper::GetCountOf(denoisers); i++)
                     m_NRD.SetDenoiserSettings(denoisers[i], &settings);
 
-                m_NRD.Denoise(denoisers, helper::GetCountOf(denoisers), commandBuffer, userPool);
+                m_NRD.Denoise(denoisers, helper::GetCountOf(denoisers), commandBuffer, userPool, NRD_RESTORE_INITIAL_STATE);
             }
             else if (m_Settings.denoiser == DENOISER_RELAX)
             {
@@ -4944,7 +4952,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 for (uint32_t i = 0; i < helper::GetCountOf(denoisers); i++)
                     m_NRD.SetDenoiserSettings(denoisers[i], &settings);
 
-                m_NRD.Denoise(denoisers, helper::GetCountOf(denoisers), commandBuffer, userPool);
+                m_NRD.Denoise(denoisers, helper::GetCountOf(denoisers), commandBuffer, userPool, NRD_RESTORE_INITIAL_STATE);
             }
         }
 
@@ -5013,7 +5021,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
             m_NRD.SetCommonSettings(m_CommonSettings);
             m_NRD.SetDenoiserSettings(denoiser, &m_ReferenceSettings);
-            m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool);
+            m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool, NRD_RESTORE_INITIAL_STATE);
         }
 
         RestoreBindings(commandBuffer, isEven);
@@ -5222,15 +5230,25 @@ void Sample::RenderFrame(uint32_t frameIndex)
         NRI.QueueSubmit(*m_CommandQueue, queueSubmitDesc);
     }
 
+    nri::nriEndAnnotation();
+
     // Present
+    nri::nriBeginAnnotation("Present", nri::BGRA_UNUSED);
+
     NRI.QueuePresent(*m_SwapChain);
 
+    nri::nriEndAnnotation();
+
     // Cap FPS if requested
+    nri::nriBeginAnnotation("FPS cap", nri::BGRA_UNUSED);
+
     float msLimit = m_Settings.limitFps ? 1000.0f / m_Settings.maxFps : 0.0f;
     double lastFrameTimeStamp = m_Timer.GetLastFrameTimeStamp();
 
     while (m_Timer.GetTimeStamp() - lastFrameTimeStamp < msLimit)
         ;
+
+    nri::nriEndAnnotation();
 }
 
 SAMPLE_MAIN(Sample, 0);

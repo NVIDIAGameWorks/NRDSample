@@ -120,6 +120,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define PT_GLASS_RAY_OFFSET                 0.05 // pixels
 #define PT_MAX_FIREFLY_RELATIVE_INTENSITY   20.0 // no more than 20x energy increase in case of probabilistic sampling
 #define PT_EVIL_TWIN_LOBE_TOLERANCE         0.005 // normalized %
+#define PT_GLASS_MIN_F                      0.05 // adds a bit of stability and bias
 
 // Spatial HAsh-ased Radiance Cache
 #define SHARC_CAPACITY                      ( 1 << 22 )
@@ -161,17 +162,15 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define FLAG_FIRST_BIT                      25 // this + number of flags must be <= 32
 #define NON_FLAG_MASK                       ( ( 1 << FLAG_FIRST_BIT ) - 1 )
 
-#define FLAG_DEFAULT                        0x01 // always set
-#define FLAG_TRANSPARENT                    0x02 // transparent
+#define FLAG_NON_TRANSPARENT                0x01 // geometry flag: non-transparent
+#define FLAG_TRANSPARENT                    0x02 // geometry flag: transparent
 #define FLAG_FORCED_EMISSION                0x04 // animated emissive cube
 #define FLAG_STATIC                         0x08 // no velocity
 #define FLAG_DEFORMABLE                     0x10 // local animation
 #define FLAG_HAIR                           0x20 // hair
 #define FLAG_LEAF                           0x40 // leaf
 
-#define GEOMETRY_ALL                        0xFF
-#define GEOMETRY_ONLY_TRANSPARENT           ( FLAG_TRANSPARENT )
-#define GEOMETRY_IGNORE_TRANSPARENT         ( ~FLAG_TRANSPARENT )
+#define GEOMETRY_ALL                        ( FLAG_NON_TRANSPARENT | FLAG_TRANSPARENT )
 
 //===============================================================
 // STRUCTS
@@ -293,7 +292,6 @@ NRI_RESOURCE( cbuffer, GlobalConstants, b, 0, SET_GLOBAL )
     float gExposure;
     float gMipBias;
     float gOrthoMode;
-    uint32_t gTransparent;
     uint32_t gSharcMaxAccumulatedFrameNum;
     uint32_t gDenoiserType;
     uint32_t gDisableShadowsAndEnableImportanceSampling; // TODO: remove - modify GetSunIntensity to return 0 if sun is below horizon

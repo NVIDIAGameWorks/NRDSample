@@ -58,6 +58,7 @@ float2 GetBlueNoise( uint2 pixelPos, bool isCheckerboard, uint seed = 0 )
     blue += ( dither.xyxy - 0.5 ) * ( 1.0 / 256.0 );
 
     // Don't use blue noise in these cases
+    [flatten]
     if( gDenoiserType == DENOISER_REFERENCE || gRR )
         blue.xy = Rng::Hash::GetFloat2( );
 
@@ -259,8 +260,8 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                 sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
 
                 bool isSharcAllowed = gSHARC && NRD_MODE < OCCLUSION; // trivial
-                isSharcAllowed &= geometryProps.hitT > voxelSize; // voxel angular size is acceptable
                 isSharcAllowed &= Rng::Hash::GetFloat( ) > Lpsr.w; // probabilistically estimate the need
+                isSharcAllowed &= geometryProps.hitT > voxelSize; // voxel angular size is acceptable
                 isSharcAllowed &= desc.bounceNum == 0; // allow only for the last bounce for PSR
 
                 float3 sharcRadiance;
@@ -358,7 +359,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                 // Diffuse or specular path?
                 if( gTracingMode == RESOLUTION_FULL_PROBABILISTIC || bounce > 1 )
                 {
-                    isDiffuse = rnd < diffuseProbability;
+                    isDiffuse = rnd < diffuseProbability; // TODO: if "diffuseProbability" is clamped, "pathThroughput" should be adjusted too
                     pathThroughput /= abs( float( !isDiffuse ) - diffuseProbability );
 
                     if( bounce == 1 )
@@ -437,7 +438,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                         //   1. If IS enabled, check the ray in LightBVH
                         bool isMiss = false;
                         if( gDisableShadowsAndEnableImportanceSampling && maxSamplesNum != 1 )
-                            isMiss = CastVisibilityRay_AnyHit( geometryProps.GetXoffset( geometryProps.N ), r, 0.0, INF, mipAndCone, gLightTlas, GEOMETRY_ALL, desc.rayFlags );
+                            isMiss = CastVisibilityRay_AnyHit( geometryProps.GetXoffset( geometryProps.N ), r, 0.0, INF, mipAndCone, gLightTlas, FLAG_NON_TRANSPARENT, desc.rayFlags );
 
                         //   2. Count rays hitting emissive surfaces
                         if( !isMiss )
@@ -609,10 +610,10 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                     sharcState.hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
                     sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
 
+                    float footprint = geometryProps.hitT * ImportanceSampling::GetSpecularLobeTanHalfAngle( ( isDiffuse || bounce == desc.bounceNum ) ? 1.0 : materialProps.roughness, 0.5 );
                     bool isSharcAllowed = gSHARC && NRD_MODE < OCCLUSION; // trivial
-                    isSharcAllowed &= geometryProps.hitT > voxelSize; // voxel angular size is acceptable
                     isSharcAllowed &= Rng::Hash::GetFloat( ) > Lcached.w; // probabilistically estimate the need
-                    isSharcAllowed &= isDiffuse || Rng::Hash::GetFloat( ) < smc || bounce == desc.bounceNum; // allowed for diffuse-like events or last bounce
+                    isSharcAllowed &= footprint > voxelSize; // voxel angular size is acceptable
 
                     float3 sharcRadiance;
                     if( isSharcAllowed && SharcGetCachedRadiance( sharcState, sharcHitData, sharcRadiance, false ) )
@@ -698,26 +699,25 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
         }
     }
 
-    // Material de-modulation ( convert irradiance into radiance )
-    float3 albedo, Rf0;
-    BRDF::ConvertBaseColorMetalnessToAlbedoRf0( desc.materialProps.baseColor, desc.materialProps.metalness, albedo, Rf0 );
+    { // Material de-modulation ( convert irradiance into radiance )
+        float3 albedo, Rf0;
+        BRDF::ConvertBaseColorMetalnessToAlbedoRf0( desc.materialProps.baseColor, desc.materialProps.metalness, albedo, Rf0 );
 
-    float NoV = abs( dot( desc.materialProps.N, desc.geometryProps.V ) );
-    float3 Fenv = BRDF::EnvironmentTerm_Rtg( Rf0, NoV, desc.materialProps.roughness );
-    float3 diffDemod = ( 1.0 - Fenv ) * albedo * 0.99 + 0.01;
-    float3 specDemod = Fenv * 0.99 + 0.01;
+        float3 diffFactor, specFactor;
+        NRD_MaterialFactors( desc.materialProps.N, desc.geometryProps.V, albedo, Rf0, desc.materialProps.roughness, diffFactor, specFactor );
 
-    // We can combine radiance ( for everything ) and irradiance ( for hair ) in denoising if material ID test is enabled
-    if( desc.geometryProps.Has( FLAG_HAIR ) && NRD_NORMAL_ENCODING == NRD_NORMAL_ENCODING_R10G10B10A2_UNORM )
-    {
-        diffDemod = 1.0;
-        specDemod = 1.0;
-    }
+        // We can combine radiance ( for everything ) and irradiance ( for hair ) in denoising if material ID test is enabled
+        if( desc.geometryProps.Has( FLAG_HAIR ) && NRD_NORMAL_ENCODING == NRD_NORMAL_ENCODING_R10G10B10A2_UNORM )
+        {
+            diffFactor = 1.0;
+            specFactor = 1.0;
+        }
 
-    if( gOnScreen != SHOW_MIP_SPECULAR )
-    {
-        result.diffRadiance /= diffDemod;
-        result.specRadiance /= specDemod;
+        if( gOnScreen != SHOW_MIP_SPECULAR )
+        {
+            result.diffRadiance /= diffFactor;
+            result.specRadiance /= specFactor;
+        }
     }
 
     // Radiance is already divided by sampling probability, we need to average across all paths
@@ -817,7 +817,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     float3 cameraRayDirection = ( float3 )0;
     GetCameraRay( cameraRayOrigin, cameraRayDirection, sampleUv );
 
-    GeometryProps geometryProps0 = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, INF, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, ( gOnScreen == SHOW_INSTANCE_INDEX || gOnScreen == SHOW_NORMAL ) ? GEOMETRY_ALL : GEOMETRY_IGNORE_TRANSPARENT, 0 );
+    GeometryProps geometryProps0 = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, INF, GetConeAngleFromRoughness( 0.0, 0.0 ), gWorldTlas, ( gOnScreen == SHOW_INSTANCE_INDEX || gOnScreen == SHOW_NORMAL ) ? GEOMETRY_ALL : FLAG_NON_TRANSPARENT, 0 );
     MaterialProps materialProps0 = GetMaterialProps( geometryProps0 );
 
     // ViewZ
@@ -909,8 +909,8 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     desc.pixelPos = pixelPos;
     desc.checkerboard = checkerboard;
     desc.pathNum = gSampleNum;
-    desc.bounceNum = gBounceNum; // TODO: adjust by roughness?
-    desc.instanceInclusionMask = GEOMETRY_IGNORE_TRANSPARENT;
+    desc.bounceNum = gBounceNum;
+    desc.instanceInclusionMask = FLAG_NON_TRANSPARENT;
     desc.rayFlags = 0;
 
     TraceOpaqueResult result = TraceOpaque( desc );

@@ -527,7 +527,7 @@ bool IsPsrAllowed( MaterialProps materialProps )
 
 float3 GetShadowedLighting( GeometryProps geometryProps, MaterialProps materialProps, bool softShadows = true )
 {
-    const uint instanceInclusionMask = GEOMETRY_IGNORE_TRANSPARENT; // Default shadow rays must ignore transparency // TODO: what about translucency?
+    const uint instanceInclusionMask = FLAG_NON_TRANSPARENT; // Default shadow rays must ignore transparency // TODO: what about translucency?
     const uint rayFlags = 0;
 
     float3 L = materialProps.Ldirect;
