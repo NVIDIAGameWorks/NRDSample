@@ -146,7 +146,7 @@ else ()
 endif ()
 
 if (NGX_D_LIB AND NGX_LIB AND DLSS_SR_DLL)
-    target_include_directories (${PROJECT_NAME} PRIVATE "External/NRIFramework/External/NRI/External/vulkan/include")
+    target_include_directories (${PROJECT_NAME} PRIVATE "$ENV{VULKAN_SDK}/include")
     target_link_libraries (${PROJECT_NAME} PRIVATE debug ${NGX_D_LIB})
     target_link_libraries (${PROJECT_NAME} PRIVATE optimized ${NGX_LIB})
 

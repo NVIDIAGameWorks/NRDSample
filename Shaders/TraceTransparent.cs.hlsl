@@ -124,37 +124,42 @@ float3 TraceTransparent( TraceTransparentDesc desc )
                 Lcached = float4( prevLdiff + prevLspec, reprojectionWeight );
 
                 // L2 cache - SHARC
-                GridParameters gridParameters = ( GridParameters )0;
-                gridParameters.cameraPosition = gCameraGlobalPos.xyz;
-                gridParameters.cameraPositionPrev = gCameraGlobalPosPrev.xyz;
-                gridParameters.sceneScale = SHARC_SCENE_SCALE;
-                gridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+                HashGridParameters hashGridParams;
+                hashGridParams.cameraPosition = gCameraGlobalPos.xyz;
+                hashGridParams.sceneScale = SHARC_SCENE_SCALE;
+                hashGridParams.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+                hashGridParams.levelBias = SHARC_GRID_LEVEL_BIAS;
 
                 float3 Xglobal = GetGlobalPos( geometryProps.X );
-                uint level = GetGridLevel( Xglobal, gridParameters );
-                float voxelSize = GetVoxelSize( level, gridParameters );
+                uint level = HashGridGetLevel( Xglobal, hashGridParams );
+                float voxelSize = HashGridGetVoxelSize( level, hashGridParams );
                 float smc = GetSpecMagicCurve( materialProps.roughness );
 
                 float3x3 mBasis = Geometry::GetBasis( geometryProps.N );
                 float2 rndScaled = ( Rng::Hash::GetFloat2( ) - 0.5 ) * voxelSize * USE_SHARC_DITHERING;
                 Xglobal += mBasis[ 0 ] * rndScaled.x + mBasis[ 1 ] * rndScaled.y;
 
-                SharcHitData sharcHitData = ( SharcHitData )0;
+                SharcHitData sharcHitData;
                 sharcHitData.positionWorld = Xglobal;
                 sharcHitData.normalWorld = geometryProps.N;
 
-                SharcState sharcState;
-                sharcState.gridParameters = gridParameters;
-                sharcState.hashMapData.capacity = SHARC_CAPACITY;
-                sharcState.hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
-                sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
+                HashMapData hashMapData;
+                hashMapData.capacity = SHARC_CAPACITY;
+                hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
+
+                SharcParameters sharcParams;
+                sharcParams.gridParameters = hashGridParams;
+                sharcParams.hashMapData = hashMapData;
+                sharcParams.enableAntiFireflyFilter = SHARC_ANTI_FIREFLY;
+                sharcParams.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
+                sharcParams.voxelDataBufferPrev = gInOut_SharcVoxelDataBufferPrev;
 
                 bool isSharcAllowed = gSHARC && NRD_MODE < OCCLUSION; // trivial
                 isSharcAllowed &= Rng::Hash::GetFloat( ) > Lcached.w; // probabilistically estimate the need
                 isSharcAllowed &= geometryProps.hitT > voxelSize; // voxel angular size is acceptable // TODO: can be skipped to get flat ambient in some cases
 
                 float3 sharcRadiance;
-                if( isSharcAllowed && SharcGetCachedRadiance( sharcState, sharcHitData, sharcRadiance, false ) )
+                if (isSharcAllowed && SharcGetCachedRadiance( sharcParams, sharcHitData, sharcRadiance, false))
                     Lcached = float4( sharcRadiance, 1.0 );
 
                 // Cache miss - compute lighting, if not found in caches

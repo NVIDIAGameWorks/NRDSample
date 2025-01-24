@@ -34,75 +34,47 @@ float3 GetAmbientBRDF( GeometryProps geometryProps, MaterialProps materialProps,
     return ambBRDF;
 }
 
-[numthreads( 16, 16, 1 )]
-void main( uint2 pixelPos : SV_DispatchThreadId )
+void Trace( GeometryProps geometryProps )
 {
-    /*
-    TODO: modify SHARC to support:
-    - material de-modulation
-    - 2 levels of detail: fine and coarse ( large voxels )
-    - firefly suppression
-    - anti-lag
-    - dynamic "sceneScale"
-    - auto "sceneScale" adjustment to guarantee desired number of samples in voxels on average
-    */
-
-    // Initialize RNG
-    Rng::Hash::Initialize( pixelPos, gFrameIndex );
-
-    // Sample position
-    float2 sampleUv = ( pixelPos + 0.5 + gJitter * gRectSize ) * SHARC_DOWNSCALE * gInvRectSize;
-
     // SHARC state
-    GridParameters gridParameters = ( GridParameters )0;
-    gridParameters.cameraPosition = gCameraGlobalPos.xyz;
-    gridParameters.cameraPositionPrev = gCameraGlobalPosPrev.xyz;
-    gridParameters.sceneScale = SHARC_SCENE_SCALE;
-    gridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+    HashGridParameters hashGridParams;
+    hashGridParams.cameraPosition = gCameraGlobalPos.xyz;
+    hashGridParams.sceneScale = SHARC_SCENE_SCALE;
+    hashGridParams.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+    hashGridParams.levelBias = SHARC_GRID_LEVEL_BIAS;
+
+    HashMapData hashMapData;
+    hashMapData.capacity = SHARC_CAPACITY;
+    hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
+
+    SharcParameters sharcParams;
+    sharcParams.gridParameters = hashGridParams;
+    sharcParams.hashMapData = hashMapData;
+    sharcParams.enableAntiFireflyFilter = SHARC_ANTI_FIREFLY;
+    sharcParams.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
+    sharcParams.voxelDataBufferPrev = gInOut_SharcVoxelDataBufferPrev;
 
     SharcState sharcState;
-    sharcState.gridParameters = gridParameters;
-    sharcState.hashMapData.capacity = SHARC_CAPACITY;
-    sharcState.hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
-    sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
-    sharcState.voxelDataBufferPrev = gInOut_SharcVoxelDataBufferPrev;
-
     SharcInit( sharcState );
 
-    // Primary ray
-    float3 Xv = Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, gNearZ, gOrthoMode );
-
-    float3 cameraRayOrigin = Geometry::AffineTransform( gViewToWorld, Xv );
-    float3 cameraRayDirection = gOrthoMode == 0.0 ? normalize( Geometry::RotateVector( gViewToWorld, Xv ) ) : -gViewDirection.xyz;
-
-    // Force some portion of rays to be absolutely random to keep cache alive behind the camera
-    if( Rng::Hash::GetFloat( ) < 0.2 )
-        cameraRayDirection = normalize( Rng::Hash::GetFloat4( ).xyz - 0.5 );
-
-    // Cast ray
-    GeometryProps geometryProps = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, INF, GetConeAngleFromAngularRadius( 0.0, gTanPixelAngularRadius * SHARC_DOWNSCALE ), gWorldTlas, FLAG_NON_TRANSPARENT, 0 );
     MaterialProps materialProps = GetMaterialProps( geometryProps, USE_SHARC_V_DEPENDENT == 0 );
-
-    if( geometryProps.IsSky( ) )
-        return;
-
-    // Compute lighting at hit point
-    float3 L = GetShadowedLighting( geometryProps, materialProps );
 
     // Update SHARC cache
     {
-        SharcHitData sharcHitData = ( SharcHitData )0;
+        float3 L = GetShadowedLighting( geometryProps, materialProps );
+
+        SharcHitData sharcHitData;
         sharcHitData.positionWorld = GetGlobalPos( geometryProps.X ) + ( Rng::Hash::GetFloat4( ).xyz - 0.5 ) * SHARC_POS_DITHER;
         sharcHitData.normalWorld = normalize( geometryProps.N + ( Rng::Hash::GetFloat4( ).xyz - 0.5 ) * SHARC_NORMAL_DITHER );
 
         SharcSetThroughput( sharcState, 1.0 );
-        if( !SharcUpdateHit( sharcState, sharcHitData, L, 1.0 ) )
+        if( !SharcUpdateHit( sharcParams, sharcState, sharcHitData, L, 1.0 ) )
             return;
     }
 
     // Secondary rays
     [loop]
-    for( uint i = 1; i <= 4 && !geometryProps.IsSky( ); i++ )
+    for( uint bounce = 1; bounce <= SHARC_PROPOGATION_DEPTH && !geometryProps.IsSky( ); bounce++ )
     {
         //=============================================================================================================================================================
         // Origin point
@@ -133,7 +105,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
             // If IS is enabled, generate up to PT_IMPORTANCE_SAMPLES_NUM rays depending on roughness
             // If IS is disabled, there is no need to generate up to PT_IMPORTANCE_SAMPLES_NUM rays for specular because VNDF v3 doesn't produce rays pointing inside the surface
             uint maxSamplesNum = 0;
-            if( i == 1 && gDisableShadowsAndEnableImportanceSampling ) // TODO: use IS in each bounce?
+            if( bounce == 1 && gDisableShadowsAndEnableImportanceSampling ) // TODO: use IS in each bounce?
                 maxSamplesNum = PT_IMPORTANCE_SAMPLES_NUM * ( isDiffuse ? 1.0 : materialProps.roughness );
             maxSamplesNum = max( maxSamplesNum, 1 );
 
@@ -250,15 +222,52 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         float3 L = GetShadowedLighting( geometryProps, materialProps );
 
         { // Update SHARC cache
-            SharcHitData sharcHitData = ( SharcHitData )0;
+            SharcHitData sharcHitData;
             sharcHitData.positionWorld = GetGlobalPos( geometryProps.X ) + ( Rng::Hash::GetFloat4( ).xyz - 0.5 ) * SHARC_POS_DITHER;
             sharcHitData.normalWorld = normalize( geometryProps.N + ( Rng::Hash::GetFloat4( ).xyz - 0.5 ) * SHARC_NORMAL_DITHER );
 
             SharcSetThroughput( sharcState, throughput );
             if( geometryProps.IsSky( ) )
-                SharcUpdateMiss( sharcState, L );
-            else if( !SharcUpdateHit( sharcState, sharcHitData, L, Rng::Hash::GetFloat( ) ) )
+                SharcUpdateMiss( sharcParams, sharcState, L );
+            else if( !SharcUpdateHit( sharcParams, sharcState, sharcHitData, L, Rng::Hash::GetFloat( ) ) )
                 break;
         }
     }
+}
+
+[numthreads( 16, 16, 1 )]
+void main( uint2 pixelPos : SV_DispatchThreadId )
+{
+    /*
+    TODO: modify SHARC to support:
+    - material de-modulation
+    - 2 levels of detail: fine and coarse ( large voxels )
+    - firefly suppression
+    - anti-lag
+    - dynamic "sceneScale"
+    - auto "sceneScale" adjustment to guarantee desired number of samples in voxels on average
+    */
+
+    // Initialize RNG
+    Rng::Hash::Initialize( pixelPos, gFrameIndex );
+
+    // Sample position
+    float2 sampleUv = ( pixelPos + 0.5 + gJitter * gRectSize ) * SHARC_DOWNSCALE * gInvRectSize;
+
+    // Primary ray
+    float3 Xv = Geometry::ReconstructViewPosition( sampleUv, gCameraFrustum, gNearZ, gOrthoMode );
+
+    float3 cameraRayOrigin = Geometry::AffineTransform( gViewToWorld, Xv );
+    float3 cameraRayDirection = gOrthoMode == 0.0 ? normalize( Geometry::RotateVector( gViewToWorld, Xv ) ) : -gViewDirection.xyz;
+
+    // Force some portion of rays to be absolutely random to keep cache alive behind the camera
+    if( Rng::Hash::GetFloat( ) < 0.2 )
+        cameraRayDirection = normalize( Rng::Hash::GetFloat4( ).xyz - 0.5 );
+
+    // Cast ray
+    GeometryProps geometryProps = CastRay( cameraRayOrigin, cameraRayDirection, 0.0, INF, GetConeAngleFromAngularRadius( 0.0, gTanPixelAngularRadius * SHARC_DOWNSCALE ), gWorldTlas, FLAG_NON_TRANSPARENT, 0 );
+
+    // Opaque path
+    if( !geometryProps.IsSky( ) )
+        Trace( geometryProps ); // looping this for 4-8 iterations helps to improve cache quality, but it's expensive
 }

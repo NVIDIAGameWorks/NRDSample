@@ -578,7 +578,6 @@ public:
 private:
     // NRD
     nrd::Integration m_NRD = {};
-    nrd::CommonSettings m_CommonSettings = {};
     nrd::RelaxSettings m_RelaxSettings = {};
     nrd::ReblurSettings m_ReblurSettings = {};
     nrd::SigmaSettings m_SigmaSettings = {};
@@ -593,7 +592,7 @@ private:
     nri::Device* m_Device = nullptr;
     nri::Streamer* m_Streamer = nullptr;
     nri::SwapChain* m_SwapChain = nullptr;
-    nri::CommandQueue* m_CommandQueue = nullptr;
+    nri::Queue* m_GraphicsQueue = nullptr;
     nri::Fence* m_FrameFence;
     nri::DescriptorPool* m_DescriptorPool = nullptr;
     nri::PipelineLayout* m_PipelineLayout = nullptr;
@@ -656,7 +655,7 @@ Sample::~Sample()
     if (!m_Device)
         return;
 
-    NRI.WaitForIdle(*m_CommandQueue);
+    NRI.WaitForIdle(*m_GraphicsQueue);
 
     m_DLSS.Shutdown();
 
@@ -712,7 +711,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     deviceCreationDesc.graphicsAPI = graphicsAPI;
     deviceCreationDesc.enableGraphicsAPIValidation = m_DebugAPI;
     deviceCreationDesc.enableNRIValidation = m_DebugNRI;
-    deviceCreationDesc.spirvBindingOffsets = SPIRV_BINDING_OFFSETS;
+    deviceCreationDesc.vkBindingOffsets = VK_BINDING_OFFSETS;
     deviceCreationDesc.adapterDesc = &bestAdapterDesc;
     if (bestAdapterDesc.vendor == nri::Vendor::NVIDIA)
         DlssIntegration::SetupDeviceExtensions(deviceCreationDesc);
@@ -726,7 +725,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
     NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::RayTracingInterface), (nri::RayTracingInterface*)&NRI) );
     NRI_ABORT_ON_FAILURE( nri::nriGetInterface(*m_Device, NRI_INTERFACE(nri::ResourceAllocatorInterface), (nri::ResourceAllocatorInterface*)&NRI) );
 
-    NRI_ABORT_ON_FAILURE( NRI.GetCommandQueue(*m_Device, nri::CommandQueueType::GRAPHICS, m_CommandQueue) );
+    NRI_ABORT_ON_FAILURE( NRI.GetQueue(*m_Device, nri::QueueType::GRAPHICS, 0, m_GraphicsQueue) );
     NRI_ABORT_ON_FAILURE( NRI.CreateFence(*m_Device, 0, m_FrameFence) );
 
     // Create streamer
@@ -761,7 +760,7 @@ bool Sample::Initialize(nri::GraphicsAPI graphicsAPI)
 
             printf("Render resolution (%u, %u)\n", m_RenderResolution.x, m_RenderResolution.y);
 
-            result = m_DLSS.Initialize(m_CommandQueue, dlssInitDesc);
+            result = m_DLSS.Initialize(m_GraphicsQueue, dlssInitDesc);
         }
 
         if (!result)
@@ -1355,7 +1354,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
                     ImGui::PushID("NRD");
                     if (m_Settings.RR)
-                        ImGui::Text("DLSS-RR is active. NRD is in passthrough mode...");
+                        ImGui::Text("Pass-through mode...");
                     else if (isUnfolded)
                     {
                         static const char* hitDistanceReconstructionMode[] =
@@ -1737,7 +1736,9 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     ImGui::PopStyleColor();
 
                     ImGui::PushID("NRD/SIGMA");
-                    if (isUnfolded)
+                    if (m_Settings.RR)
+                        ImGui::Text("Pass-through mode...");
+                    else if (isUnfolded)
                     {
                         ImGui::BeginDisabled(m_Settings.adaptiveAccumulation);
                         ImGui::SliderInt("Stabilization (frames)", (int32_t*)&m_SigmaSettings.maxStabilizedFrameNum, 0, nrd::SIGMA_MAX_HISTORY_FRAME_NUM, "%d");
@@ -2332,56 +2333,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     m_RelaxSettings.enableMaterialTestForDiffuse = true;
     m_RelaxSettings.enableMaterialTestForSpecular = true;
 
-    bool wantPrintf = IsButtonPressed(Button::Middle) || IsKeyToggled(Key::P);
-
-    uint32_t rectW = uint32_t(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
-    uint32_t rectH = uint32_t(m_RenderResolution.y * m_Settings.resolutionScale + 0.5f);
-
-    memcpy(m_CommonSettings.viewToClipMatrix, &m_Camera.state.mViewToClip, sizeof(m_Camera.state.mViewToClip));
-    memcpy(m_CommonSettings.viewToClipMatrixPrev, &m_Camera.statePrev.mViewToClip, sizeof(m_Camera.statePrev.mViewToClip));
-    memcpy(m_CommonSettings.worldToViewMatrix, &m_Camera.state.mWorldToView, sizeof(m_Camera.state.mWorldToView));
-    memcpy(m_CommonSettings.worldToViewMatrixPrev, &m_Camera.statePrev.mWorldToView, sizeof(m_Camera.statePrev.mWorldToView));
-    m_CommonSettings.motionVectorScale[0] = 1.0f / float(rectW);
-    m_CommonSettings.motionVectorScale[1] = 1.0f / float(rectH);
-    m_CommonSettings.motionVectorScale[2] = m_Settings.mvType != MV_2D ? 1.0f : 0.0f;
-    m_CommonSettings.cameraJitter[0] = m_Settings.cameraJitter ? m_Camera.state.viewportJitter.x : 0.0f;
-    m_CommonSettings.cameraJitter[1] = m_Settings.cameraJitter ? m_Camera.state.viewportJitter.y : 0.0f;
-    m_CommonSettings.cameraJitterPrev[0] = m_Settings.cameraJitter ? m_Camera.statePrev.viewportJitter.x : 0.0f;
-    m_CommonSettings.cameraJitterPrev[1] = m_Settings.cameraJitter ? m_Camera.statePrev.viewportJitter.y : 0.0f;
-    m_CommonSettings.resourceSize[0] = (uint16_t)m_RenderResolution.x;
-    m_CommonSettings.resourceSize[1] = (uint16_t)m_RenderResolution.y;
-    m_CommonSettings.resourceSizePrev[0] = (uint16_t)m_RenderResolution.x;
-    m_CommonSettings.resourceSizePrev[1] = (uint16_t)m_RenderResolution.y;
-    m_CommonSettings.rectSize[0] = (uint16_t)(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
-    m_CommonSettings.rectSize[1] = (uint16_t)(m_RenderResolution.y * m_Settings.resolutionScale + 0.5f);
-    m_CommonSettings.rectSizePrev[0] = (uint16_t)(m_RenderResolution.x * m_SettingsPrev.resolutionScale + 0.5f);
-    m_CommonSettings.rectSizePrev[1] = (uint16_t)(m_RenderResolution.y * m_SettingsPrev.resolutionScale + 0.5f);
-    m_CommonSettings.viewZScale = 1.0f;
-    m_CommonSettings.denoisingRange = GetDenoisingRange();
-    m_CommonSettings.disocclusionThreshold = 0.01f;
-    m_CommonSettings.disocclusionThresholdAlternate = 0.05f;
-    m_CommonSettings.splitScreen = (m_Settings.denoiser == DENOISER_REFERENCE || m_Settings.RR) ? 1.0f : m_Settings.separator;
-    m_CommonSettings.printfAt[0] = wantPrintf ? (uint16_t)ImGui::GetIO().MousePos.x : 9999;
-    m_CommonSettings.printfAt[1] = wantPrintf ? (uint16_t)ImGui::GetIO().MousePos.y : 9999;
-    m_CommonSettings.debug = m_Settings.debug;
-    m_CommonSettings.frameIndex = frameIndex;
-    m_CommonSettings.accumulationMode = m_ForceHistoryReset ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
-    m_CommonSettings.isMotionVectorInWorldSpace = false;
-    m_CommonSettings.isBaseColorMetalnessAvailable = true;
-    m_CommonSettings.enableValidation = m_ShowValidationOverlay;
-
-#if( NRD_NORMAL_ENCODING == 2 )
-    m_CommonSettings.strandMaterialID = MATERIAL_ID_HAIR;
-    m_CommonSettings.strandThickness = STRAND_THICKNESS;
-
-    #if( USE_CAMERA_ATTACHED_REFLECTION_TEST == 1 )
-        m_CommonSettings.cameraAttachedReflectionMaterialID = MATERIAL_ID_SELF_REFLECTION;
-    #endif
-#endif
-
-    m_NRD.NewFrame();
-    m_NRD.SetCommonSettings(m_CommonSettings);
-
     UpdateConstantBuffer(frameIndex, resetHistoryFactor);
     GatherInstanceData();
 
@@ -2494,7 +2445,7 @@ nri::Format Sample::CreateSwapChain()
 {
     nri::SwapChainDesc swapChainDesc = {};
     swapChainDesc.window = GetWindow();
-    swapChainDesc.commandQueue = m_CommandQueue;
+    swapChainDesc.queue = m_GraphicsQueue;
     swapChainDesc.format = ALLOW_HDR ? nri::SwapChainFormat::BT709_G10_16BIT : nri::SwapChainFormat::BT709_G22_8BIT;
     swapChainDesc.verticalSyncInterval = m_VsyncInterval;
     swapChainDesc.width = (uint16_t)GetWindowResolution().x;
@@ -2519,7 +2470,7 @@ nri::Format Sample::CreateSwapChain()
 
         char name[32];
         snprintf(name, sizeof(name), "Texture::SwapChain#%u", i);
-        NRI.SetTextureDebugName(*backBuffer.texture, name);
+        NRI.SetDebugName(backBuffer.texture, name);
 
         nri::Texture2DViewDesc textureViewDesc = {backBuffer.texture, nri::Texture2DViewType::COLOR_ATTACHMENT, swapChainFormat};
         NRI_ABORT_ON_FAILURE(NRI.CreateTexture2DView(textureViewDesc, backBuffer.colorAttachment));
@@ -2532,7 +2483,7 @@ void Sample::CreateCommandBuffers()
 {
     for (Frame& frame : m_Frames)
     {
-        NRI_ABORT_ON_FAILURE(NRI.CreateCommandAllocator(*m_CommandQueue, frame.commandAllocator));
+        NRI_ABORT_ON_FAILURE(NRI.CreateCommandAllocator(*m_GraphicsQueue, frame.commandAllocator));
         NRI_ABORT_ON_FAILURE(NRI.CreateCommandBuffer(*frame.commandAllocator, frame.commandBuffer));
     }
 }
@@ -2631,7 +2582,7 @@ void Sample::CreatePipelines()
 {
     if (!m_Pipelines.empty())
     {
-        NRI.WaitForIdle(*m_CommandQueue);
+        NRI.WaitForIdle(*m_GraphicsQueue);
 
         for (uint32_t i = 0; i < m_Pipelines.size(); i++)
             NRI.DestroyPipeline(*m_Pipelines[i]);
@@ -3070,7 +3021,7 @@ void Sample::CreateAccelerationStructures()
 
     // Create command allocator and command buffer
     nri::CommandAllocator* commandAllocator = nullptr;
-    NRI.CreateCommandAllocator(*m_CommandQueue, commandAllocator);
+    NRI.CreateCommandAllocator(*m_GraphicsQueue, commandAllocator);
 
     nri::CommandBuffer* commandBuffer = nullptr;
     NRI.CreateCommandBuffer(*commandAllocator, commandBuffer);
@@ -3090,10 +3041,10 @@ void Sample::CreateAccelerationStructures()
     queueSubmitDesc.commandBuffers = &commandBuffer;
     queueSubmitDesc.commandBufferNum = 1;
 
-    NRI.QueueSubmit(*m_CommandQueue, queueSubmitDesc);
+    NRI.QueueSubmit(*m_GraphicsQueue, queueSubmitDesc);
 
     // Wait idle
-    NRI.WaitForIdle(*m_CommandQueue);
+    NRI.WaitForIdle(*m_GraphicsQueue);
 
     double buildTime = m_Timer.GetTimeStamp() - stamp2;
 
@@ -3355,7 +3306,7 @@ void Sample::CreateResources(nri::Format swapChainFormat)
             }
             else
             {
-                NRI.SetBufferDebugName(*(nri::Buffer*)desc.resource, desc.debugName);
+                NRI.SetDebugName((nri::Object*)desc.resource, desc.debugName);
 
                 if (desc.bufferUsage & nri::BufferUsageBits::SHADER_RESOURCE)
                 {
@@ -3373,7 +3324,7 @@ void Sample::CreateResources(nri::Format swapChainFormat)
         }
         else
         {
-            NRI.SetTextureDebugName(*(nri::Texture*)desc.resource, desc.debugName);
+            NRI.SetDebugName((nri::Object*)desc.resource, desc.debugName);
 
             nri::Texture2DViewDesc viewDesc = {(nri::Texture*)desc.resource, desc.isArray ? nri::Texture2DViewType::SHADER_RESOURCE_2D_ARRAY : nri::Texture2DViewType::SHADER_RESOURCE_2D, desc.format};
             NRI_ABORT_ON_FAILURE(NRI.CreateTexture2DView(viewDesc, descriptor));
@@ -4004,7 +3955,7 @@ void Sample::UploadStaticData()
     };
 
     // Upload data and apply states
-    NRI_ABORT_ON_FAILURE(NRI.UploadData(*m_CommandQueue, textureUploadDescs.data(), helper::GetCountOf(textureUploadDescs), bufferUploadDescs, helper::GetCountOf(bufferUploadDescs)));
+    NRI_ABORT_ON_FAILURE(NRI.UploadData(*m_GraphicsQueue, textureUploadDescs.data(), helper::GetCountOf(textureUploadDescs), bufferUploadDescs, helper::GetCountOf(bufferUploadDescs)));
 }
 
 void Sample::GatherInstanceData()
@@ -4410,7 +4361,7 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float resetHistoryFactor)
         constants.gTracingMode                                  = m_Settings.tracingMode;
         constants.gSampleNum                                    = m_Settings.rpp;
         constants.gBounceNum                                    = m_Settings.bounceNum;
-        constants.gResolve                                      = m_Settings.denoiser == DENOISER_REFERENCE ? false : m_Resolve;
+        constants.gResolve                                      = (m_Settings.denoiser == DENOISER_REFERENCE || m_Settings.RR) ? false : m_Resolve;
         constants.gPSR                                          = m_Settings.PSR && m_Settings.tracingMode != RESOLUTION_HALF;
         constants.gSHARC                                        = m_Settings.SHARC;
         constants.gValidation                                   = m_ShowValidationOverlay && m_Settings.denoiser != DENOISER_REFERENCE && m_Settings.separator != 1.0f;
@@ -4482,8 +4433,9 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
     std::array<nri::TextureBarrierDesc, MAX_TEXTURE_TRANSITIONS_NUM> optimizedTransitions = {};
 
-    const bool isEven = !(frameIndex & 0x1);
-    const uint32_t bufferedFrameIndex = frameIndex % BUFFERED_FRAME_MAX_NUM;
+    bool wantPrintf = IsButtonPressed(Button::Middle) || IsKeyToggled(Key::P);
+    bool isEven = !(frameIndex & 0x1);
+    uint32_t bufferedFrameIndex = frameIndex % BUFFERED_FRAME_MAX_NUM;
     const Frame& frame = m_Frames[bufferedFrameIndex];
     nri::CommandBuffer& commandBuffer = *frame.commandBuffer;
 
@@ -4562,6 +4514,53 @@ void Sample::RenderFrame(uint32_t frameIndex)
         nrd::Integration_SetResource(userPool, nrd::ResourceType::IN_SIGNAL, &GetState(Texture::Composed));
         nrd::Integration_SetResource(userPool, nrd::ResourceType::OUT_SIGNAL, &GetState(Texture::Composed));
     }
+
+    // NRD common settings
+    nrd::CommonSettings commonSettings = {};
+    memcpy(commonSettings.viewToClipMatrix, &m_Camera.state.mViewToClip, sizeof(m_Camera.state.mViewToClip));
+    memcpy(commonSettings.viewToClipMatrixPrev, &m_Camera.statePrev.mViewToClip, sizeof(m_Camera.statePrev.mViewToClip));
+    memcpy(commonSettings.worldToViewMatrix, &m_Camera.state.mWorldToView, sizeof(m_Camera.state.mWorldToView));
+    memcpy(commonSettings.worldToViewMatrixPrev, &m_Camera.statePrev.mWorldToView, sizeof(m_Camera.statePrev.mWorldToView));
+    commonSettings.motionVectorScale[0] = 1.0f / float(rectW);
+    commonSettings.motionVectorScale[1] = 1.0f / float(rectH);
+    commonSettings.motionVectorScale[2] = m_Settings.mvType != MV_2D ? 1.0f : 0.0f;
+    commonSettings.cameraJitter[0] = m_Settings.cameraJitter ? m_Camera.state.viewportJitter.x : 0.0f;
+    commonSettings.cameraJitter[1] = m_Settings.cameraJitter ? m_Camera.state.viewportJitter.y : 0.0f;
+    commonSettings.cameraJitterPrev[0] = m_Settings.cameraJitter ? m_Camera.statePrev.viewportJitter.x : 0.0f;
+    commonSettings.cameraJitterPrev[1] = m_Settings.cameraJitter ? m_Camera.statePrev.viewportJitter.y : 0.0f;
+    commonSettings.resourceSize[0] = (uint16_t)m_RenderResolution.x;
+    commonSettings.resourceSize[1] = (uint16_t)m_RenderResolution.y;
+    commonSettings.resourceSizePrev[0] = (uint16_t)m_RenderResolution.x;
+    commonSettings.resourceSizePrev[1] = (uint16_t)m_RenderResolution.y;
+    commonSettings.rectSize[0] = (uint16_t)(m_RenderResolution.x * m_Settings.resolutionScale + 0.5f);
+    commonSettings.rectSize[1] = (uint16_t)(m_RenderResolution.y * m_Settings.resolutionScale + 0.5f);
+    commonSettings.rectSizePrev[0] = (uint16_t)(m_RenderResolution.x * m_SettingsPrev.resolutionScale + 0.5f);
+    commonSettings.rectSizePrev[1] = (uint16_t)(m_RenderResolution.y * m_SettingsPrev.resolutionScale + 0.5f);
+    commonSettings.viewZScale = 1.0f;
+    commonSettings.denoisingRange = GetDenoisingRange();
+    commonSettings.disocclusionThreshold = 0.01f;
+    commonSettings.disocclusionThresholdAlternate = 0.05f;
+    commonSettings.splitScreen = (m_Settings.denoiser == DENOISER_REFERENCE || m_Settings.RR) ? 1.0f : m_Settings.separator;
+    commonSettings.printfAt[0] = wantPrintf ? (uint16_t)ImGui::GetIO().MousePos.x : 9999;
+    commonSettings.printfAt[1] = wantPrintf ? (uint16_t)ImGui::GetIO().MousePos.y : 9999;
+    commonSettings.debug = m_Settings.debug;
+    commonSettings.frameIndex = frameIndex;
+    commonSettings.accumulationMode = m_ForceHistoryReset ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
+    commonSettings.isMotionVectorInWorldSpace = false;
+    commonSettings.isBaseColorMetalnessAvailable = true;
+    commonSettings.enableValidation = m_ShowValidationOverlay;
+
+#if( NRD_NORMAL_ENCODING == 2 )
+    commonSettings.strandMaterialID = MATERIAL_ID_HAIR;
+    commonSettings.strandThickness = STRAND_THICKNESS;
+
+    #if( USE_CAMERA_ATTACHED_REFLECTION_TEST == 1 )
+        commonSettings.cameraAttachedReflectionMaterialID = MATERIAL_ID_SELF_REFLECTION;
+    #endif
+#endif
+
+    m_NRD.NewFrame();
+    m_NRD.SetCommonSettings(commonSettings);
 
     const uint32_t dummyDynamicConstantOffset = 0;
 
@@ -5015,11 +5014,12 @@ void Sample::RenderFrame(uint32_t frameIndex)
         { // Reference
             helper::Annotation annotation(NRI, commandBuffer, "Reference accumulation");
 
-            m_CommonSettings.splitScreen = m_Settings.separator;
+            nrd::CommonSettings modifiedCommonSettings = commonSettings;
+            modifiedCommonSettings.splitScreen = m_Settings.separator;
 
             nrd::Identifier denoiser = NRD_ID(REFERENCE);
 
-            m_NRD.SetCommonSettings(m_CommonSettings);
+            m_NRD.SetCommonSettings(modifiedCommonSettings);
             m_NRD.SetDenoiserSettings(denoiser, &m_ReferenceSettings);
             m_NRD.Denoise(&denoiser, 1, commandBuffer, userPool, NRD_RESTORE_INITIAL_STATE);
         }
@@ -5227,7 +5227,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
         queueSubmitDesc.signalFences = &signalFence;
         queueSubmitDesc.signalFenceNum = 1;
 
-        NRI.QueueSubmit(*m_CommandQueue, queueSubmitDesc);
+        NRI.QueueSubmit(*m_GraphicsQueue, queueSubmitDesc);
     }
 
     nri::nriEndAnnotation();

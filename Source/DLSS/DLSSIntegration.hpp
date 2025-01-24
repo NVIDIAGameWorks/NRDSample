@@ -178,7 +178,7 @@ bool DlssIntegration::GetOptimalSettings(const NVSDK_NGX_Dimensions& outputResol
     return NVSDK_NGX_SUCCEED(result);
 }
 
-bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInitDesc& desc)
+bool DlssIntegration::Initialize(nri::Queue* queue, const DlssInitDesc& desc)
 {
     const uint32_t creationNodeMask = 0x1;
     const uint32_t visibilityNodeMask = 0x1;
@@ -186,7 +186,7 @@ bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInit
 
     // Prepare
     nri::CommandAllocator* commandAllocator;
-    NRI.CreateCommandAllocator(*commandQueue, commandAllocator);
+    NRI.CreateCommandAllocator(*queue, commandAllocator);
 
     nri::CommandBuffer* commandBuffer;
     NRI.CreateCommandBuffer(*commandAllocator, commandBuffer);
@@ -258,7 +258,7 @@ bool DlssIntegration::Initialize(nri::CommandQueue* commandQueue, const DlssInit
         queueSubmitDesc.signalFences = &signalFence;
         queueSubmitDesc.signalFenceNum = 1;
 
-        NRI.QueueSubmit(*commandQueue, queueSubmitDesc);
+        NRI.QueueSubmit(*queue, queueSubmitDesc);
         NRI.Wait(*fence, 1);
     }
 

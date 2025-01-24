@@ -254,44 +254,49 @@ void main( int2 pixelPos : SV_DispatchThreadId )
 
     // SHARC debug
     #if( NRD_MODE < OCCLUSION )
-        GridParameters gridParameters = ( GridParameters )0;
-        gridParameters.cameraPosition = gCameraGlobalPos.xyz;
-        gridParameters.cameraPositionPrev = gCameraGlobalPosPrev.xyz;
-        gridParameters.sceneScale = SHARC_SCENE_SCALE;
-        gridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+        HashGridParameters hashGridParams;
+        hashGridParams.cameraPosition = gCameraGlobalPos.xyz;
+        hashGridParams.sceneScale = SHARC_SCENE_SCALE;
+        hashGridParams.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+        hashGridParams.levelBias = SHARC_GRID_LEVEL_BIAS;
 
         #if( USE_SHARC_DEBUG == 1 )
-            SharcState sharcState;
-            sharcState.gridParameters = gridParameters;
-            sharcState.hashMapData.capacity = SHARC_CAPACITY;
-            sharcState.hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
-            sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
-
             float3 Xglobal = GetGlobalPos( X );
 
             // Dithered output
             #if 0
                 Rng::Hash::Initialize( pixelPos, gFrameIndex );
 
-                uint level = GetGridLevel( Xglobal, gridParameters );
-                float voxelSize = GetVoxelSize( level, gridParameters );
+                uint level = HashGridGetLevel( Xglobal, hashGridParams );
+                float voxelSize = HashGridGetVoxelSize( level, hashGridParams );
                 float3x3 mBasis = Geometry::GetBasis( N );
                 float2 rnd = ( Rng::Hash::GetFloat2( ) - 0.5 ) * voxelSize * USE_SHARC_DITHERING;
                 Xglobal += mBasis[ 0 ] * rnd.x + mBasis[ 1 ] * rnd.y;
             #endif
 
-            SharcHitData sharcHitData = ( SharcHitData )0;
+            SharcHitData sharcHitData;
             sharcHitData.positionWorld = Xglobal;
             sharcHitData.normalWorld = N;
 
-            bool isValid = SharcGetCachedRadiance( sharcState, sharcHitData, Ldiff, true );
+            HashMapData hashMapData;
+            hashMapData.capacity = SHARC_CAPACITY;
+            hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
+
+            SharcParameters sharcParams;
+            sharcParams.gridParameters = hashGridParams;
+            sharcParams.hashMapData = hashMapData;
+            sharcParams.enableAntiFireflyFilter = SHARC_ANTI_FIREFLY;
+            sharcParams.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
+            sharcParams.voxelDataBufferPrev = gInOut_SharcVoxelDataBufferPrev;
+
+            bool isValid = SharcGetCachedRadiance( sharcParams, sharcHitData, Ldiff, true );
 
             // Highlight invalid cells
             #if 0
                 Ldiff = isValid ? Ldiff : float3( 1.0, 0.0, 0.0 );
             #endif
         #elif( USE_SHARC_DEBUG == 2 )
-            Ldiff = HashGridDebugColoredHash( GetGlobalPos( X ), gridParameters );
+            Ldiff = HashGridDebugColoredHash( GetGlobalPos( X ), hashGridParams );
         #endif
 
         Lspec *= float( USE_SHARC_DEBUG == 0 );

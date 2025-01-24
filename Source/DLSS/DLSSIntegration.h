@@ -91,7 +91,7 @@ public:
 
     bool InitializeLibrary(nri::Device& device, const char* appDataPath, uint64_t applicationId = 231313132);
     bool GetOptimalSettings(const NVSDK_NGX_Dimensions& outputResolution, DlssQuality quality, DlssSettings& outSettings) const;
-    bool Initialize(nri::CommandQueue* commandQueue, const DlssInitDesc& desc);
+    bool Initialize(nri::Queue* queue, const DlssInitDesc& desc);
     void Evaluate(nri::CommandBuffer* commandBuffer, const DlssDispatchDesc& desc); // currently bound nri::DescriptorPool will be lost
     void Shutdown();
 

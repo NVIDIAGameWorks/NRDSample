@@ -39,8 +39,8 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define USE_SIMULATED_FIREFLY_TEST          0 // "anti-firefly" debugging
 #define USE_CAMERA_ATTACHED_REFLECTION_TEST 0 // test special treatment for reflections of objects attached to the camera
 #define USE_RUSSIAN_ROULETTE                0 // bad practice for real-time denoising
-#define USE_DRS_STRESS_TEST                 0 // test for verifying that NRD doesn't touch data outside of DRS rectangle
-#define USE_INF_STRESS_TEST                 0 // test for verifying that NRD doesn't touch data outside of denoising range
+#define USE_DRS_STRESS_TEST                 0 // NRD must not touch GARBAGE data outside of DRS rectangle
+#define USE_INF_STRESS_TEST                 0 // NRD must not touch GARBAGE data outside of denoising range
 #define USE_ANOTHER_COBALT                  0 // another cobalt variant
 #define USE_PUDDLES                         0 // add puddles
 #define USE_RANDOMIZED_ROUGHNESS            0 // randomize roughness ( a common case in games )
@@ -128,6 +128,8 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define SHARC_DOWNSCALE                     5
 #define SHARC_NORMAL_DITHER                 0.003
 #define SHARC_POS_DITHER                    0.001
+#define SHARC_ANTI_FIREFLY                  true
+#define SHARC_STALE_FRAME_NUM_MIN           32 // new version uses 8 by default, old value offers more stability in voxels with low number of samples ( critical for glass )
 
 // Blue noise
 #define BLUE_NOISE_SPATIAL_DIM              128 // see StaticTexture::ScramblingRanking
@@ -153,6 +155,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define LEAF_THICKNESS                      0.001 // TODO: viewZ dependent?
 #define STRAND_THICKNESS                    80e-6f
 #define TAA_HISTORY_SHARPNESS               0.5
+#define GARBAGE                             sqrt( -1.0 ) // sqrt( -1.0 ) or -log( 0.0 ) or 32768.0
 
 #define MORPH_MAX_ACTIVE_TARGETS_NUM        8u
 #define MORPH_ELEMENTS_PER_ROW_NUM          4

@@ -234,30 +234,35 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                 Lpsr = GetRadianceFromPreviousFrame( geometryProps, materialProps, desc.pixelPos, false );
 
                 // L2 cache - SHARC
-                GridParameters gridParameters = ( GridParameters )0;
-                gridParameters.cameraPosition = gCameraGlobalPos.xyz;
-                gridParameters.cameraPositionPrev = gCameraGlobalPosPrev.xyz;
-                gridParameters.sceneScale = SHARC_SCENE_SCALE;
-                gridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+                HashGridParameters hashGridParams;
+                hashGridParams.cameraPosition = gCameraGlobalPos.xyz;
+                hashGridParams.sceneScale = SHARC_SCENE_SCALE;
+                hashGridParams.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+                hashGridParams.levelBias = SHARC_GRID_LEVEL_BIAS;
 
                 float3 Xglobal = GetGlobalPos( geometryProps.X );
-                uint level = GetGridLevel( Xglobal, gridParameters );
-                float voxelSize = GetVoxelSize( level, gridParameters );
+                uint level = HashGridGetLevel( Xglobal, hashGridParams );
+                float voxelSize = HashGridGetVoxelSize( level, hashGridParams );
                 float smc = GetSpecMagicCurve( materialProps.roughness );
 
                 float3x3 mBasis = Geometry::GetBasis( geometryProps.N );
                 float2 rndScaled = ( Rng::Hash::GetFloat2( ) - 0.5 ) * voxelSize * USE_SHARC_DITHERING;
                 Xglobal += mBasis[ 0 ] * rndScaled.x + mBasis[ 1 ] * rndScaled.y;
 
-                SharcHitData sharcHitData = ( SharcHitData )0;
+                SharcHitData sharcHitData;
                 sharcHitData.positionWorld = Xglobal;
                 sharcHitData.normalWorld = geometryProps.N;
 
-                SharcState sharcState;
-                sharcState.gridParameters = gridParameters;
-                sharcState.hashMapData.capacity = SHARC_CAPACITY;
-                sharcState.hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
-                sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
+                HashMapData hashMapData;
+                hashMapData.capacity = SHARC_CAPACITY;
+                hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
+
+                SharcParameters sharcParams;
+                sharcParams.gridParameters = hashGridParams;
+                sharcParams.hashMapData = hashMapData;
+                sharcParams.enableAntiFireflyFilter = SHARC_ANTI_FIREFLY;
+                sharcParams.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
+                sharcParams.voxelDataBufferPrev = gInOut_SharcVoxelDataBufferPrev;
 
                 bool isSharcAllowed = gSHARC && NRD_MODE < OCCLUSION; // trivial
                 isSharcAllowed &= Rng::Hash::GetFloat( ) > Lpsr.w; // probabilistically estimate the need
@@ -265,7 +270,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                 isSharcAllowed &= desc.bounceNum == 0; // allow only for the last bounce for PSR
 
                 float3 sharcRadiance;
-                if( isSharcAllowed && SharcGetCachedRadiance( sharcState, sharcHitData, sharcRadiance, false ) )
+                if (isSharcAllowed && SharcGetCachedRadiance( sharcParams, sharcHitData, sharcRadiance, false))
                     Lpsr = float4( sharcRadiance, 1.0 );
 
                 // TODO: add a macro switch for old mode ( with coupled direct lighting )
@@ -438,7 +443,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                         //   1. If IS enabled, check the ray in LightBVH
                         bool isMiss = false;
                         if( gDisableShadowsAndEnableImportanceSampling && maxSamplesNum != 1 )
-                            isMiss = CastVisibilityRay_AnyHit( geometryProps.GetXoffset( geometryProps.N ), r, 0.0, INF, mipAndCone, gLightTlas, FLAG_NON_TRANSPARENT, desc.rayFlags );
+                            isMiss = CastVisibilityRay_AnyHit( geometryProps.GetXoffset( geometryProps.N ), r, 0.0, INF, mipAndCone, gLightTlas, desc.instanceInclusionMask, desc.rayFlags );
 
                         //   2. Count rays hitting emissive surfaces
                         if( !isMiss )
@@ -466,9 +471,11 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                     }
                     else
                     {
-                        // Patch ray direction to avoid self-intersections: https://arxiv.org/pdf/1705.01263.pdf ( Appendix 3 )
-                        float b = dot( geometryProps.N, materialProps.N );
-                        ray = normalize( ray + materialProps.N * Math::Sqrt01( 1.0 - a * a ) / b );
+                        // Patch ray direction and shading normal to avoid self-intersections: https://arxiv.org/pdf/1705.01263.pdf ( Appendix 3 )
+                        float b = abs( dot( geometryProps.N, materialProps.N ) ) * 0.99;
+
+                        ray = normalize( ray + geometryProps.N * abs( a ) * Math::PositiveRcp( b ) );
+                        materialProps.N = normalize( geometryProps.V + ray );
                     }
                 }
 
@@ -566,7 +573,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                 //=========================================================================================================================================================
 
                 geometryProps = CastRay( geometryProps.GetXoffset( geometryProps.N ), ray, 0.0, INF, mipAndCone, gWorldTlas, desc.instanceInclusionMask, desc.rayFlags );
-                materialProps = GetMaterialProps( geometryProps );
+                materialProps = GetMaterialProps( geometryProps ); // TODO: try to read metrials only if L1- and L2- lighting caches failed
             }
 
             //=============================================================================================================================================================
@@ -585,30 +592,35 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                     Lcached = GetRadianceFromPreviousFrame( geometryProps, materialProps, desc.pixelPos, false );
 
                     // L2 cache - SHARC
-                    GridParameters gridParameters = ( GridParameters )0;
-                    gridParameters.cameraPosition = gCameraGlobalPos.xyz;
-                    gridParameters.cameraPositionPrev = gCameraGlobalPosPrev.xyz;
-                    gridParameters.sceneScale = SHARC_SCENE_SCALE;
-                    gridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+                    HashGridParameters hashGridParams;
+                    hashGridParams.cameraPosition = gCameraGlobalPos.xyz;
+                    hashGridParams.sceneScale = SHARC_SCENE_SCALE;
+                    hashGridParams.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
+                    hashGridParams.levelBias = SHARC_GRID_LEVEL_BIAS;
 
                     float3 Xglobal = GetGlobalPos( geometryProps.X );
-                    uint level = GetGridLevel( Xglobal, gridParameters );
-                    float voxelSize = GetVoxelSize( level, gridParameters );
+                    uint level = HashGridGetLevel( Xglobal, hashGridParams );
+                    float voxelSize = HashGridGetVoxelSize( level, hashGridParams );
                     float smc = GetSpecMagicCurve( materialProps.roughness );
 
                     float3x3 mBasis = Geometry::GetBasis( geometryProps.N );
                     float2 rndScaled = ( Rng::Hash::GetFloat2( ) - 0.5 ) * voxelSize * USE_SHARC_DITHERING;
                     Xglobal += mBasis[ 0 ] * rndScaled.x + mBasis[ 1 ] * rndScaled.y;
 
-                    SharcHitData sharcHitData = ( SharcHitData )0;
+                    SharcHitData sharcHitData;
                     sharcHitData.positionWorld = Xglobal;
                     sharcHitData.normalWorld = geometryProps.N;
 
-                    SharcState sharcState;
-                    sharcState.gridParameters = gridParameters;
-                    sharcState.hashMapData.capacity = SHARC_CAPACITY;
-                    sharcState.hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
-                    sharcState.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
+                    HashMapData hashMapData;
+                    hashMapData.capacity = SHARC_CAPACITY;
+                    hashMapData.hashEntriesBuffer = gInOut_SharcHashEntriesBuffer;
+
+                    SharcParameters sharcParams;
+                    sharcParams.gridParameters = hashGridParams;
+                    sharcParams.hashMapData = hashMapData;
+                    sharcParams.enableAntiFireflyFilter = SHARC_ANTI_FIREFLY;
+                    sharcParams.voxelDataBuffer = gInOut_SharcVoxelDataBuffer;
+                    sharcParams.voxelDataBufferPrev = gInOut_SharcVoxelDataBufferPrev;
 
                     float footprint = geometryProps.hitT * ImportanceSampling::GetSpecularLobeTanHalfAngle( ( isDiffuse || bounce == desc.bounceNum ) ? 1.0 : materialProps.roughness, 0.5 );
                     bool isSharcAllowed = gSHARC && NRD_MODE < OCCLUSION; // trivial
@@ -616,7 +628,7 @@ TraceOpaqueResult TraceOpaque( inout TraceOpaqueDesc desc )
                     isSharcAllowed &= footprint > voxelSize; // voxel angular size is acceptable
 
                     float3 sharcRadiance;
-                    if( isSharcAllowed && SharcGetCachedRadiance( sharcState, sharcHitData, sharcRadiance, false ) )
+                    if( isSharcAllowed && SharcGetCachedRadiance( sharcParams, sharcHitData, sharcRadiance, false ) )
                         Lcached = float4( sharcRadiance, 1.0 );
 
                     // Cache miss - compute lighting, if not found in caches
@@ -782,8 +794,6 @@ void WriteResult( uint checkerboard, uint2 outPixelPos, float4 diff, float4 spec
 [numthreads( 16, 16, 1 )]
 void main( uint2 pixelPos : SV_DispatchThreadId )
 {
-    const float NaN = sqrt( -1 );
-
     // Pixel and sample UV
     float2 pixelUv = float2( pixelPos + 0.5 ) * gInvRectSize;
     float2 sampleUv = pixelUv + gJitter;
@@ -799,7 +809,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     if( pixelUv.x > 1.0 || pixelUv.y > 1.0 )
     {
         #if( USE_DRS_STRESS_TEST == 1 )
-            WriteResult( checkerboard, outPixelPos, NaN, NaN, NaN, NaN );
+            WriteResult( checkerboard, outPixelPos, GARBAGE, GARBAGE, GARBAGE, GARBAGE );
         #endif
 
         return;
@@ -840,7 +850,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
         gOut_DirectEmission[ pixelPos ] = materialProps0.Lemi;
 
         #if( USE_INF_STRESS_TEST == 1 )
-            WriteResult( checkerboard, outPixelPos, NaN, NaN, NaN, NaN );
+            WriteResult( checkerboard, outPixelPos, GARBAGE, GARBAGE, GARBAGE, GARBAGE );
         #endif
 
         return;
@@ -910,7 +920,7 @@ void main( uint2 pixelPos : SV_DispatchThreadId )
     desc.checkerboard = checkerboard;
     desc.pathNum = gSampleNum;
     desc.bounceNum = gBounceNum;
-    desc.instanceInclusionMask = FLAG_NON_TRANSPARENT;
+    desc.instanceInclusionMask = FLAG_NON_TRANSPARENT; // TODO: glass should affect non-glass surfaces
     desc.rayFlags = 0;
 
     TraceOpaqueResult result = TraceOpaque( desc );
