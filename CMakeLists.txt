@@ -136,13 +136,13 @@ endfunction ()
 
 # DLSS
 if (WIN32)
-    find_library (NGX_D_LIB NAMES nvsdk_ngx_s_dbg.lib PATHS "External/NGX/lib/Windows_x86_64/x86_64")
-    find_library (NGX_LIB NAMES nvsdk_ngx_s.lib PATHS "External/NGX/lib/Windows_x86_64/x86_64")
+    find_library (NGX_D_LIB NAMES nvsdk_ngx_s_dbg.lib PATHS "External/NGX/lib/Windows_x86_64/x64")
+    find_library (NGX_LIB NAMES nvsdk_ngx_s.lib PATHS "External/NGX/lib/Windows_x86_64/x64")
     find_file (DLSS_SR_DLL NAMES nvngx_dlss.dll PATHS "External/NGX/lib/Windows_x86_64/rel")
 else ()
     find_library (NGX_D_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
     find_library (NGX_LIB NAMES libnvsdk_ngx.a PATHS "External/NGX/lib/Linux_x86_64")
-    find_file (DLSS_SR_DLL NAMES libnvidia-ngx-dlss.so.3.7.20 PATHS "External/NGX/lib/Linux_x86_64/rel")
+    find_file (DLSS_SR_DLL NAMES libnvidia-ngx-dlss.so.310.1.0 PATHS "External/NGX/lib/Linux_x86_64/rel")
 endif ()
 
 if (NGX_D_LIB AND NGX_LIB AND DLSS_SR_DLL)
