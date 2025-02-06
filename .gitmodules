@@ -1,10 +1,10 @@
 [submodule "External/NRIFramework"]
 	path = External/NRIFramework
-	url = https://github.com/NVIDIAGameWorks/NRIFramework.git
+	url = https://github.com/NVIDIA-RTX/NRIFramework.git
 	branch = main
 	update = merge
 [submodule "External/NRD"]
 	path = External/NRD
-	url = https://github.com/NVIDIAGameWorks/RayTracingDenoiser.git
+	url = https://github.com/NVIDIA-RTX/NRD.git
 	branch = master
 	update = merge
