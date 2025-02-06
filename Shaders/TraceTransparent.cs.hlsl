@@ -21,6 +21,7 @@ NRI_RESOURCE( Texture2D<float4>, gIn_ComposedSpec_ViewZ, t, 1, 1 );
 // Outputs
 NRI_RESOURCE( RWTexture2D<float3>, gOut_Composed, u, 0, 1 );
 NRI_RESOURCE( RWTexture2D<float4>, gInOut_Mv, u, 1, 1 );
+NRI_RESOURCE( RWTexture2D<float4>, gOut_Normal_Roughness, u, 2, 1 );
 
 //========================================================================================
 // TRACE TRANSPARENT
@@ -226,6 +227,11 @@ void main( int2 pixelPos : SV_DispatchThreadId )
         // MVs for the primary opaque surface hit and the primary glass surface hit.
         float3 mvT = GetMotion( geometryPropsT.X, geometryPropsT.Xprev );
         gInOut_Mv[ pixelPos ] = float4( mvT, viewZAndTaaMask );
+
+        // Patch guides for RR
+        [branch]
+        if( gRR )
+            gOut_Normal_Roughness[ pixelPos ] = NRD_FrontEnd_PackNormalAndRoughness( geometryPropsT.N, 0.0, 0 );
 
         // Trace transparent stuff
         TraceTransparentDesc desc = ( TraceTransparentDesc )0;

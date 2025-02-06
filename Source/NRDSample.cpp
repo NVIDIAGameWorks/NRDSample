@@ -21,7 +21,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #include "DLSS/DLSSIntegration.hpp"
 
 // NIS
-#include "NGX/NVIDIAImageScaling/NIS/NIS_Config.h"
+#include "NIS_Config.h"
 
 #ifdef _WIN32
     #undef APIENTRY
@@ -163,15 +163,25 @@ enum class Texture : uint32_t
     Unfiltered_Translucency,
     Validation,
     Composed,
-    DlssOutput,
-    PreFinal,
-    Final,
 
     // History
     ComposedDiff,
     ComposedSpec_ViewZ,
     TaaHistory,
     TaaHistoryPrev,
+
+    // RR guides
+    RRGuide_DiffAlbedo,
+    RRGuide_SpecAlbedo,
+    RRGuide_SpecHitDistance,
+    RRGuide_Normal_Roughness, // only RGBA16f encoding is supported
+
+    // Output resolution
+    DlssOutput,
+    PreFinal,
+
+    // Window resolution
+    Final,
 
     // SH
 #if( NRD_MODE == SH )
@@ -268,12 +278,6 @@ enum class Descriptor : uint32_t
     Validation_StorageTexture,
     Composed_Texture,
     Composed_StorageTexture,
-    DlssOutput_Texture,
-    DlssOutput_StorageTexture,
-    PreFinal_Texture,
-    PreFinal_StorageTexture,
-    Final_Texture,
-    Final_StorageTexture,
 
     // History
     ComposedDiff_Texture,
@@ -284,6 +288,26 @@ enum class Descriptor : uint32_t
     TaaHistory_StorageTexture,
     TaaHistoryPrev_Texture,
     TaaHistoryPrev_StorageTexture,
+
+    // RR guides
+    RRGuide_DiffAlbedo_Texture,
+    RRGuide_DiffAlbedo_StorageTexture,
+    RRGuide_SpecAlbedo_Texture,
+    RRGuide_SpecAlbedo_StorageTexture,
+    RRGuide_SpecHitDistance_Texture,
+    RRGuide_SpecHitDistance_StorageTexture,
+    RRGuide_Normal_Roughness_Texture,
+    RRGuide_Normal_Roughness_StorageTexture,
+
+    // Output resolution
+    DlssOutput_Texture,
+    DlssOutput_StorageTexture,
+    PreFinal_Texture,
+    PreFinal_StorageTexture,
+
+    // Window resolution
+    Final_Texture,
+    Final_StorageTexture,
 
     // SH
 #if( NRD_MODE == SH )
@@ -480,9 +504,6 @@ public:
     inline nri::TextureBarrierDesc& GetState(Texture index)
     { return m_TextureStates[(uint32_t)index]; }
 
-    inline nri::Format GetFormat(Texture index)
-    { return m_TextureFormats[(uint32_t)index]; }
-
     inline nri::Buffer*& Get(Buffer index)
     { return m_Buffers[(uint32_t)index]; }
 
@@ -599,7 +620,6 @@ private:
     std::array<Frame, BUFFERED_FRAME_MAX_NUM> m_Frames = {};
     std::vector<nri::Texture*> m_Textures;
     std::vector<nri::TextureBarrierDesc> m_TextureStates;
-    std::vector<nri::Format> m_TextureFormats;
     std::vector<nri::Buffer*> m_Buffers;
     std::vector<nri::Descriptor*> m_Descriptors;
     std::vector<nri::DescriptorSet*> m_DescriptorSets;
@@ -648,6 +668,7 @@ private:
     bool m_ReversedZ = false;
     bool m_IsSrgb = false;
     bool m_GlassObjects = false;
+    bool m_IsReloadShadersSucceeded = true;
 };
 
 Sample::~Sample()
@@ -1111,7 +1132,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                     }
                     ImGui::SetNextItemWidth( ImGui::CalcItemWidth() - ImGui::GetCursorPosX() + ImGui::GetStyle().ItemSpacing.x );
                     if (m_Settings.RR)
-                        m_Settings.resolutionScale = 1.0f;
+                        m_Settings.resolutionScale = 1.0f; // TODO: RR doesn't support DRS
                     else
                         ImGui::SliderFloat("Resolution scale (%)", &m_Settings.resolutionScale, m_MinResolutionScale, 1.0f, "%.3f");
 
@@ -1410,6 +1431,8 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 isSame = false;
                             else if (m_ReblurSettings.historyFixFrameNum != defaults.historyFixFrameNum)
                                 isSame = false;
+                            else if (m_ReblurSettings.historyFixBasePixelStride != defaults.historyFixBasePixelStride)
+                                isSame = false;
                             else if (m_ReblurSettings.minBlurRadius != defaults.minBlurRadius)
                                 isSame = false;
                             else if (m_ReblurSettings.maxBlurRadius != defaults.maxBlurRadius)
@@ -1533,7 +1556,8 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             ImGui::SliderFloat("Max blur radius (px)", &m_ReblurSettings.maxBlurRadius, 0.0f, 60.0f, "%.1f");
                             ImGui::SliderFloat("Lobe fraction", &m_ReblurSettings.lobeAngleFraction, 0.0f, 1.0f, "%.2f");
                             ImGui::SliderFloat("Roughness fraction", &m_ReblurSettings.roughnessFraction, 0.0f, 1.0f, "%.2f");
-                            ImGui::SliderInt("History fix frames", (int32_t*)&m_ReblurSettings.historyFixFrameNum, 0, 3);
+                            ImGui::SliderInt("History fix frames", (int32_t*)&m_ReblurSettings.historyFixFrameNum, 0, 5);
+                            ImGui::SliderInt("History fix stride", (int32_t*)&m_ReblurSettings.historyFixBasePixelStride, 1, 20);
                             ImGui::SetNextItemWidth( ImGui::CalcItemWidth() * 0.5f );
                             ImGui::SliderFloat("Responsive accumulation roughness threshold", &m_ReblurSettings.responsiveAccumulationRoughnessThreshold, 0.0f, 1.0f, "%.2f");
 
@@ -1569,6 +1593,10 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 isSame = false;
                             else if (m_RelaxSettings.historyFixFrameNum != defaults.historyFixFrameNum)
                                 isSame = false;
+                            else if (m_RelaxSettings.historyFixBasePixelStride != defaults.historyFixBasePixelStride)
+                                isSame = false;
+                            else if (m_RelaxSettings.historyFixEdgeStoppingNormalPower != defaults.historyFixEdgeStoppingNormalPower)
+                                isSame = false;
                             else if (m_RelaxSettings.diffusePhiLuminance != defaults.diffusePhiLuminance)
                                 isSame = false;
                             else if (m_RelaxSettings.specularPhiLuminance != defaults.specularPhiLuminance)
@@ -1580,8 +1608,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             else if (m_RelaxSettings.specularVarianceBoost != defaults.specularVarianceBoost)
                                 isSame = false;
                             else if (m_RelaxSettings.specularLobeAngleSlack != defaults.specularLobeAngleSlack)
-                                isSame = false;
-                            else if (m_RelaxSettings.historyFixEdgeStoppingNormalPower != defaults.historyFixEdgeStoppingNormalPower)
                                 isSame = false;
                             else if (m_RelaxSettings.historyClampingColorBoxSigmaScale != defaults.historyClampingColorBoxSigmaScale)
                                 isSame = false;
@@ -1712,7 +1738,8 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
                             ImGui::Text("HISTORY FIX:");
                             ImGui::SliderFloat("Normal weight power", &m_RelaxSettings.historyFixEdgeStoppingNormalPower, 0.0f, 128.0f, "%.1f");
-                            ImGui::SliderInt("Frames", (int32_t*)&m_RelaxSettings.historyFixFrameNum, 0, 3);
+                            ImGui::SliderInt("Frames", (int32_t*)&m_RelaxSettings.historyFixFrameNum, 0, 5);
+                            ImGui::SliderInt("Stride", (int32_t*)&m_RelaxSettings.historyFixBasePixelStride, 1, 20);
 
                             ImGui::Text("ANTI-LAG:");
                             ImGui::SliderFloat("Acceleration amount", &m_RelaxSettings.antilagSettings.accelerationAmount, 0.0f, 1.0f, "%.2f");
@@ -1763,6 +1790,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             m_Settings.windowAlignment = !m_Settings.windowAlignment;
 
                         ImGui::SameLine();
+                        ImGui::PushStyleColor(ImGuiCol_Text, m_IsReloadShadersSucceeded ? UI_DEFAULT : UI_RED);
                         if (ImGui::Button("Reload shaders"))
                         {
                             int result = 0;
@@ -1776,23 +1804,38 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 #endif
 
                                 sampleShaders +=
-                                    " --useAPI --binary --flatten --stripReflection --WX --colorize"
-                                    " -c Shaders.cfg -o _Shaders --sourceDir Shaders --shaderModel 6_6"
+                                    " --useAPI --flatten --stripReflection --WX --colorize"
+                                    " --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400"
+                                    " --binary"
+                                    " --shaderModel 6_6"
+                                    " --sourceDir Shaders"
+                                    " -c Shaders.cfg"
+                                    " -o _Shaders"
                                     " -I Shaders"
                                     " -I External"
-                                    " -I External/NGX"
-                                    " -I External/NRD/External"
-                                    " -I External/NRIFramework/External/NRI/Include"
-                                    " -I External/SHARC/Include"
-                                    " -D NRD_NORMAL_ENCODING=" STRINGIFY(NRD_NORMAL_ENCODING) " -D NRD_ROUGHNESS_ENCODING=" STRINGIFY(NRD_ROUGHNESS_ENCODING);
+                                    " -I " STRINGIFY(ML_SOURCE_DIR)
+                                    " -I " STRINGIFY(NRD_SOURCE_DIR)
+                                    " -I " STRINGIFY(NRI_SOURCE_DIR)
+                                    " -I " STRINGIFY(NIS_SOURCE_DIR)
+                                    " -I " STRINGIFY(SHARC_SOURCE_DIR)
+                                    " -D NRD_NORMAL_ENCODING=" STRINGIFY(NRD_NORMAL_ENCODING)
+                                    " -D NRD_ROUGHNESS_ENCODING=" STRINGIFY(NRD_ROUGHNESS_ENCODING);
 
                                 nrdShaders +=
-                                    " --useAPI --header --binary --flatten --stripReflection --WX --allResourcesBound --colorize"
-                                    " -c External/NRD/Shaders.cfg -o _Shaders --sourceDir Shaders/Source"
-                                    " -I External/MathLib"
+                                    " --useAPI --flatten --stripReflection --WX --colorize"
+                                    " --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400"
+                                    " --binary --header"
+                                    " --allResourcesBound"
+                                    " --vulkanVersion 1.2"
+                                    "  --sourceDir Shaders/Source"
+                                    " -c External/NRD/Shaders.cfg"
+                                    " -o _Shaders"
+                                    " -I " STRINGIFY(ML_SOURCE_DIR)
                                     " -I Shaders/Include"
                                     " -I Shaders/Resources"
-                                    " -D NRD_INTERNAL -D NRD_NORMAL_ENCODING=" STRINGIFY(NRD_NORMAL_ENCODING) " -D NRD_ROUGHNESS_ENCODING=" STRINGIFY(NRD_ROUGHNESS_ENCODING);
+                                    " -D NRD_NORMAL_ENCODING=" STRINGIFY(NRD_NORMAL_ENCODING)
+                                    " -D NRD_ROUGHNESS_ENCODING=" STRINGIFY(NRD_ROUGHNESS_ENCODING)
+                                    " -D NRD_INTERNAL";
 
                                 if (NRI.GetDeviceDesc(*m_Device).graphicsAPI == nri::GraphicsAPI::D3D12)
                                 {
@@ -1802,7 +1845,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 }
                                 else
                                 {
-                                    std::string spirv = " -p SPIRV --compiler \"" STRINGIFY(DXC_SPIRV_PATH) "\" --hlsl2021 --sRegShift 100 --tRegShift 200 --bRegShift 300 --uRegShift 400";
+                                    std::string spirv = " -p SPIRV --compiler \"" STRINGIFY(DXC_SPIRV_PATH) "\" --hlsl2021";
                                     sampleShaders += spirv;
                                     nrdShaders += spirv;
                                 }
@@ -1818,6 +1861,8 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 if (result)
                                     SetForegroundWindow(GetConsoleWindow());
 
+                                m_IsReloadShadersSucceeded = !result;
+
                                 #undef SAMPLE_SHADERS
                                 #undef NRD_SHADERS
                             #endif
@@ -1827,6 +1872,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
                             printf("Ready!\n");
                         }
+                        ImGui::PopStyleColor();
 
                         ImGui::SameLine();
                         if (ImGui::Button("Defaults"))
@@ -2192,9 +2238,6 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     }
 
     // Adjust settings if tracing mode has been changed to / from "probabilistic sampling"
-    if (m_Settings.RR && m_Settings.tracingMode == RESOLUTION_HALF)
-        m_Settings.tracingMode = RESOLUTION_FULL_PROBABILISTIC;
-
     if (m_Settings.tracingMode != m_SettingsPrev.tracingMode && (m_Settings.tracingMode == RESOLUTION_FULL_PROBABILISTIC || m_SettingsPrev.tracingMode == RESOLUTION_FULL_PROBABILISTIC))
     {
         nrd::ReblurSettings reblurDefaults = {};
@@ -2321,7 +2364,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
 
     m_ReblurSettings.maxAccumulatedFrameNum = maxAccumulatedFrameNum;
     m_ReblurSettings.maxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
-    m_ReblurSettings.checkerboardMode = m_Settings.tracingMode == RESOLUTION_HALF ? nrd::CheckerboardMode::WHITE : nrd::CheckerboardMode::OFF;
+    m_ReblurSettings.checkerboardMode = (m_Settings.tracingMode == RESOLUTION_HALF && !m_Settings.RR) ? nrd::CheckerboardMode::WHITE : nrd::CheckerboardMode::OFF;
     m_ReblurSettings.enableMaterialTestForDiffuse = true;
     m_ReblurSettings.enableMaterialTestForSpecular = true;
 
@@ -2329,7 +2372,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
     m_RelaxSettings.diffuseMaxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
     m_RelaxSettings.specularMaxAccumulatedFrameNum = maxAccumulatedFrameNum;
     m_RelaxSettings.specularMaxFastAccumulatedFrameNum = maxFastAccumulatedFrameNum;
-    m_RelaxSettings.checkerboardMode = m_Settings.tracingMode == RESOLUTION_HALF ? nrd::CheckerboardMode::WHITE : nrd::CheckerboardMode::OFF;
+    m_RelaxSettings.checkerboardMode = (m_Settings.tracingMode == RESOLUTION_HALF && !m_Settings.RR) ? nrd::CheckerboardMode::WHITE : nrd::CheckerboardMode::OFF;
     m_RelaxSettings.enableMaterialTestForDiffuse = true;
     m_RelaxSettings.enableMaterialTestForSpecular = true;
 
@@ -3240,12 +3283,6 @@ void Sample::CreateResources(nri::Format swapChainFormat)
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::Composed", criticalColorFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
-    CreateTexture(descriptorDescs, "Texture::DlssOutput", criticalColorFormat, (uint16_t)GetOutputResolution().x, (uint16_t)GetOutputResolution().y, 1, 1,
-        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
-    CreateTexture(descriptorDescs, "Texture::PreFinal", criticalColorFormat, (uint16_t)GetOutputResolution().x, (uint16_t)GetOutputResolution().y, 1, 1,
-        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
-    CreateTexture(descriptorDescs, "Texture::Final", swapChainFormat, (uint16_t)GetWindowResolution().x, (uint16_t)GetWindowResolution().y, 1, 1,
-        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::COPY_SOURCE);
     CreateTexture(descriptorDescs, "Texture::ComposedDiff", colorFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
     CreateTexture(descriptorDescs, "Texture::ComposedSpec_ViewZ", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
@@ -3254,6 +3291,23 @@ void Sample::CreateResources(nri::Format swapChainFormat)
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE);
     CreateTexture(descriptorDescs, "Texture::TaaHistoryPrev", taaFormat, w, h, 1, 1,
         nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
+
+    // Created unconditionally, unfortunately...
+    CreateTexture(descriptorDescs, "Texture::RRGuide_DiffAlbedo", nri::Format::R10_G10_B10_A2_UNORM, w, h, 1, 1,
+        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
+    CreateTexture(descriptorDescs, "Texture::RRGuide_SpecAlbedo", nri::Format::R10_G10_B10_A2_UNORM, w, h, 1, 1,
+        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
+    CreateTexture(descriptorDescs, "Texture::RRGuide_SpecHitDistance", nri::Format::R16_SFLOAT, w, h, 1, 1,
+        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
+    CreateTexture(descriptorDescs, "Texture::RRGuide_Normal_Roughness", nri::Format::RGBA16_SFLOAT, w, h, 1, 1,
+        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
+    CreateTexture(descriptorDescs, "Texture::DlssOutput", criticalColorFormat, (uint16_t)GetOutputResolution().x, (uint16_t)GetOutputResolution().y, 1, 1,
+        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
+
+    CreateTexture(descriptorDescs, "Texture::PreFinal", criticalColorFormat, (uint16_t)GetOutputResolution().x, (uint16_t)GetOutputResolution().y, 1, 1,
+        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::SHADER_RESOURCE_STORAGE);
+    CreateTexture(descriptorDescs, "Texture::Final", swapChainFormat, (uint16_t)GetWindowResolution().x, (uint16_t)GetWindowResolution().y, 1, 1,
+        nri::TextureUsageBits::SHADER_RESOURCE | nri::TextureUsageBits::SHADER_RESOURCE_STORAGE, nri::AccessBits::COPY_SOURCE);
 
 #if( NRD_MODE == SH )
     CreateTexture(descriptorDescs, "Texture::Unfiltered_DiffSh", dataFormat, w, h, 1, 1,
@@ -3455,6 +3509,7 @@ void Sample::CreateDescriptorSets()
         {
             Get(Descriptor::Composed_StorageTexture),
             Get(Descriptor::Mv_StorageTexture),
+            Get(Descriptor::Normal_Roughness_StorageTexture),
         };
 
         NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, SET_OTHER, &descriptorSet, 1, 0));
@@ -3620,9 +3675,20 @@ void Sample::CreateDescriptorSets()
     }
 
     { // DescriptorSet::DlssBefore1
+        const nri::Descriptor* resources[] =
+        {
+            Get(Descriptor::Normal_Roughness_Texture),
+            Get(Descriptor::BaseColor_Metalness_Texture),
+            Get(Descriptor::Unfiltered_Spec_Texture),
+        };
+
         const nri::Descriptor* storageResources[] =
         {
             Get(Descriptor::ViewZ_StorageTexture),
+            Get(Descriptor::RRGuide_DiffAlbedo_StorageTexture),
+            Get(Descriptor::RRGuide_SpecAlbedo_StorageTexture),
+            Get(Descriptor::RRGuide_SpecHitDistance_StorageTexture),
+            Get(Descriptor::RRGuide_Normal_Roughness_StorageTexture),
         };
 
         NRI_ABORT_ON_FAILURE(NRI.AllocateDescriptorSets(*m_DescriptorPool, *m_PipelineLayout, SET_OTHER, &descriptorSet, 1, 0));
@@ -3630,10 +3696,11 @@ void Sample::CreateDescriptorSets()
 
         const nri::DescriptorRangeUpdateDesc descriptorRangeUpdateDesc[] =
         {
+            { resources, helper::GetCountOf(resources) },
             { storageResources, helper::GetCountOf(storageResources) },
         };
 
-        NRI.UpdateDescriptorRanges(*descriptorSet, 1, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
+        NRI.UpdateDescriptorRanges(*descriptorSet, 0, helper::GetCountOf(descriptorRangeUpdateDesc), descriptorRangeUpdateDesc);
     }
 
     { // DescriptorSet::DlssAfter1
@@ -3819,7 +3886,6 @@ void Sample::CreateTexture(std::vector<DescriptorDesc>& descriptorDescs, const c
 
         nri::TextureBarrierDesc transition = nri::TextureBarrierFromUnknown(texture, {access, layout});
         m_TextureStates.push_back(transition);
-        m_TextureFormats.push_back(format);
     }
 
     descriptorDescs.push_back( {debugName, texture, format, usage, nri::BufferUsageBits::NONE, arraySize > 1} );
@@ -4358,7 +4424,7 @@ void Sample::UpdateConstantBuffer(uint32_t frameIndex, float resetHistoryFactor)
         constants.gFrameIndex                                   = frameIndex;
         constants.gForcedMaterial                               = m_Settings.forcedMaterial;
         constants.gUseNormalMap                                 = m_Settings.normalMap ? 1 : 0;
-        constants.gTracingMode                                  = m_Settings.tracingMode;
+        constants.gTracingMode                                  = m_Settings.RR ? RESOLUTION_FULL_PROBABILISTIC : m_Settings.tracingMode;
         constants.gSampleNum                                    = m_Settings.rpp;
         constants.gBounceNum                                    = m_Settings.bounceNum;
         constants.gResolve                                      = (m_Settings.denoiser == DENOISER_REFERENCE || m_Settings.RR) ? false : m_Resolve;
@@ -5000,6 +5066,7 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 // Output
                 {Texture::Composed, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
                 {Texture::Mv, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
             };
             nri::BarrierGroupDesc transitionBarriers = {nullptr, 0, nullptr, 0, optimizedTransitions.data(), BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
             NRI.CmdBarrier(commandBuffer, transitionBarriers);
@@ -5042,8 +5109,16 @@ void Sample::RenderFrame(uint32_t frameIndex)
 
                 const TextureState transitions[] =
                 {
+                    // Input
+                    {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                    {Texture::BaseColor_Metalness, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                    {Texture::Unfiltered_Spec, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                     // Output
                     {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                    {Texture::RRGuide_DiffAlbedo, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                    {Texture::RRGuide_SpecAlbedo, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                    {Texture::RRGuide_SpecHitDistance, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
+                    {Texture::RRGuide_Normal_Roughness, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
                 };
                 nri::BarrierGroupDesc transitionBarriers = {nullptr, 0, nullptr, 0, optimizedTransitions.data(), BuildOptimizedTransitions(transitions, helper::GetCountOf(transitions), optimizedTransitions)};
                 NRI.CmdBarrier(commandBuffer, transitionBarriers);
@@ -5062,6 +5137,11 @@ void Sample::RenderFrame(uint32_t frameIndex)
                     // Input
                     {Texture::ViewZ, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                     {Texture::Mv, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                    {Texture::Normal_Roughness, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                    {Texture::RRGuide_DiffAlbedo, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                    {Texture::RRGuide_SpecAlbedo, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                    {Texture::RRGuide_SpecHitDistance, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
+                    {Texture::RRGuide_Normal_Roughness, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                     {Texture::Composed, nri::AccessBits::SHADER_RESOURCE, nri::Layout::SHADER_RESOURCE},
                     // Output
                     {Texture::DlssOutput, nri::AccessBits::SHADER_RESOURCE_STORAGE, nri::Layout::SHADER_RESOURCE_STORAGE},
@@ -5070,16 +5150,25 @@ void Sample::RenderFrame(uint32_t frameIndex)
                 NRI.CmdBarrier(commandBuffer, transitionBarriers);
 
                 DlssDispatchDesc dlssDesc = {};
-                dlssDesc.texOutput = {Get(Texture::DlssOutput), Get(Descriptor::DlssOutput_StorageTexture), GetFormat(Texture::DlssOutput), {GetOutputResolution().x, GetOutputResolution().y}};
-                dlssDesc.texInput = {Get(Texture::Composed), Get(Descriptor::Composed_Texture), GetFormat(Texture::Composed), {m_RenderResolution.x, m_RenderResolution.y}};
-                dlssDesc.texMv = {Get(Texture::Mv), Get(Descriptor::Mv_Texture), GetFormat(Texture::Mv), {m_RenderResolution.x, m_RenderResolution.y}};
-                dlssDesc.texDepth = {Get(Texture::ViewZ), Get(Descriptor::ViewZ_Texture), GetFormat(Texture::ViewZ), {m_RenderResolution.x, m_RenderResolution.y}};
+                dlssDesc.texOutput = {Get(Texture::DlssOutput), Get(Descriptor::DlssOutput_StorageTexture)};
+                dlssDesc.texInput = {Get(Texture::Composed), Get(Descriptor::Composed_Texture)};
+                dlssDesc.texMv = {Get(Texture::Mv), Get(Descriptor::Mv_Texture)};
+                dlssDesc.texDepth = {Get(Texture::ViewZ), Get(Descriptor::ViewZ_Texture)};
                 dlssDesc.viewportDims = {rectW, rectH};
                 dlssDesc.mvScale[0] = 1.0f;
                 dlssDesc.mvScale[1] = 1.0f;
                 dlssDesc.jitter[0] = -m_Camera.state.viewportJitter.x;
                 dlssDesc.jitter[1] = -m_Camera.state.viewportJitter.y;
                 dlssDesc.reset = m_ForceHistoryReset || m_Settings.SR != m_SettingsPrev.SR || m_Settings.RR != m_SettingsPrev.RR;
+
+                // RR specific
+                dlssDesc.texDiffAlbedo = {Get(Texture::RRGuide_DiffAlbedo), Get(Descriptor::RRGuide_DiffAlbedo_Texture)};
+                dlssDesc.texSpecAlbedo = {Get(Texture::RRGuide_SpecAlbedo), Get(Descriptor::RRGuide_SpecAlbedo_Texture)};
+                dlssDesc.texNormalRoughness = {Get(Texture::RRGuide_Normal_Roughness), Get(Descriptor::RRGuide_Normal_Roughness_Texture)};
+                dlssDesc.texSpecHitDistance = {Get(Texture::RRGuide_SpecHitDistance), Get(Descriptor::RRGuide_SpecHitDistance_Texture)};
+                memcpy(&dlssDesc.mWorldToView, &m_Camera.state.mWorldToView, sizeof(m_Camera.state.mWorldToView));
+                memcpy(&dlssDesc.mViewToClip, &m_Camera.state.mViewToClip, sizeof(m_Camera.state.mViewToClip));
+                dlssDesc.useRR = m_Settings.RR;
 
                 m_DLSS.Evaluate(&commandBuffer, dlssDesc);
             }

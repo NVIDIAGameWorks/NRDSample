@@ -3,7 +3,7 @@
 #include <assert.h> // assert
 #include <stdio.h> // printf
 
-static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 151, "Unsupported NRI version!");
+static_assert(NRI_VERSION_MAJOR >= 1 && NRI_VERSION_MINOR >= 162, "Unsupported NRI version!");
 
 // An ugly temp workaround until DLSS fix the problem
 #ifndef _WIN32
@@ -93,12 +93,11 @@ void DlssIntegration::SetupDeviceExtensions(nri::DeviceCreationDesc& desc)
 {
     static const char* vulkanExts[] = {
         "VK_NVX_binary_import",
-        "VK_NVX_image_view_handle",
-        "VK_KHR_push_descriptor"
+        "VK_NVX_image_view_handle"
     };
 
     desc.vkExtensions.deviceExtensions = vulkanExts;
-    desc.vkExtensions.deviceExtensionNum = 3;
+    desc.vkExtensions.deviceExtensionNum = 2;
 }
 
 inline NVSDK_NGX_Resource_VK DlssIntegration::SetupVulkanTexture(const DlssTexture& texture, bool isStorage)
@@ -106,9 +105,10 @@ inline NVSDK_NGX_Resource_VK DlssIntegration::SetupVulkanTexture(const DlssTextu
     VkImage image = (VkImage)NRI.GetTextureNativeObject(*texture.resource);
     VkImageView view = (VkImageView)NRI.GetDescriptorNativeObject(*texture.descriptor);
     VkImageSubresourceRange subresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    VkFormat format = (VkFormat)nri::nriConvertNRIFormatToVK(texture.format);
+    const nri::TextureDesc& textureDesc = NRI.GetTextureDesc(*texture.resource);
+    VkFormat format = (VkFormat)nri::nriConvertNRIFormatToVK(textureDesc.format);
 
-    return NVSDK_NGX_Create_ImageView_Resource_VK(view, image, subresource, format, texture.dims.Width, texture.dims.Height, isStorage);
+    return NVSDK_NGX_Create_ImageView_Resource_VK(view, image, subresource, format, textureDesc.width, textureDesc.height, isStorage);
 }
 
 bool DlssIntegration::InitializeLibrary(nri::Device& device, const char* appDataPath, uint64_t applicationId)
@@ -242,6 +242,46 @@ bool DlssIntegration::Initialize(nri::Queue* queue, const DlssInitDesc& desc)
 
             printf("DLSS-SR: allocated %.2f Mb\n", (videoMemoryInfo2.usageSize - videoMemoryInfo1.usageSize) / (1024.0f * 1024.0f));
         }
+
+        // RR
+        if (NVSDK_NGX_SUCCEED(result))
+        {
+            NVSDK_NGX_DLSSD_Create_Params rrCreateParams = {};
+            rrCreateParams.InDenoiseMode = NVSDK_NGX_DLSS_Denoise_Mode_DLUnified;
+            rrCreateParams.InRoughnessMode = NVSDK_NGX_DLSS_Roughness_Mode_Packed;
+            rrCreateParams.InUseHWDepth = NVSDK_NGX_DLSS_Depth_Type_Linear;
+            rrCreateParams.InWidth = settings.optimalResolution.Width;
+            rrCreateParams.InHeight = settings.optimalResolution.Height;
+            rrCreateParams.InTargetWidth = desc.outputResolution.Width;
+            rrCreateParams.InTargetHeight = desc.outputResolution.Height;
+            rrCreateParams.InPerfQualityValue = DLSS_ConvertQuality(desc.quality);
+            rrCreateParams.InFeatureCreateFlags = flags;
+
+            nri::VideoMemoryInfo videoMemoryInfo1 = {};
+            NRI.QueryVideoMemoryInfo(*m_Device, nri::MemoryLocation::DEVICE, videoMemoryInfo1);
+
+            if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D12)
+            {
+                ID3D12GraphicsCommandList* d3d12CommandList = (ID3D12GraphicsCommandList*)NRI.GetCommandBufferNativeObject(*commandBuffer);
+                result = NGX_D3D12_CREATE_DLSSD_EXT(d3d12CommandList, creationNodeMask, visibilityNodeMask, &m_RR, m_NgxParameters, &rrCreateParams);
+            }
+            else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::VK)
+            {
+                VkCommandBuffer vkCommandBuffer = (VkCommandBuffer)NRI.GetCommandBufferNativeObject(*commandBuffer);
+                VkDevice vkDevice = (VkDevice)NRI.GetDeviceNativeObject(*m_Device);
+                result = NGX_VULKAN_CREATE_DLSSD_EXT1(vkDevice, vkCommandBuffer, creationNodeMask, visibilityNodeMask, &m_RR, m_NgxParameters, &rrCreateParams);
+            }
+            else if (deviceDesc.graphicsAPI == nri::GraphicsAPI::D3D11)
+            {
+                ID3D11DeviceContext* d3d11DeviceContext = (ID3D11DeviceContext*)NRI.GetCommandBufferNativeObject(*commandBuffer);
+                result = NGX_D3D11_CREATE_DLSSD_EXT(d3d11DeviceContext, &m_RR, m_NgxParameters, &rrCreateParams);
+            }
+
+            nri::VideoMemoryInfo videoMemoryInfo2 = {};
+            NRI.QueryVideoMemoryInfo(*m_Device, nri::MemoryLocation::DEVICE, videoMemoryInfo2);
+
+            printf("DLSS-RR: allocated %.2f Mb\n", (videoMemoryInfo2.usageSize - videoMemoryInfo1.usageSize) / (1024.0f * 1024.0f));
+        }
     }
     NRI.EndCommandBuffer(*commandBuffer);
 
@@ -283,6 +323,35 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
         ID3D12Resource* resourceOutput = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texOutput.resource);
 
         ID3D12GraphicsCommandList* d3dCommandList = (ID3D12GraphicsCommandList*)NRI.GetCommandBufferNativeObject(*commandBuffer);
+        if (desc.useRR)
+        {
+            ID3D12Resource* resourceDiffAlbedo = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texDiffAlbedo.resource);
+            ID3D12Resource* resourceSpecAlbedo = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texSpecAlbedo.resource);
+            ID3D12Resource* resourceNormalRoughness = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texNormalRoughness.resource);
+            ID3D12Resource* resourceSpecularHitDistance = (ID3D12Resource*)NRI.GetTextureNativeObject(*desc.texSpecHitDistance.resource);
+
+            NVSDK_NGX_D3D12_DLSSD_Eval_Params rrParams = {};
+            rrParams.pInDiffuseAlbedo = resourceDiffAlbedo;
+            rrParams.pInSpecularAlbedo = resourceSpecAlbedo;
+            rrParams.pInNormals = resourceNormalRoughness;
+            rrParams.pInColor = resourceInput;
+            rrParams.pInOutput = resourceOutput;
+            rrParams.pInDepth = resourceDepth;
+            rrParams.pInMotionVectors = resourceMv;
+            rrParams.InJitterOffsetX = desc.jitter[0];
+            rrParams.InJitterOffsetY = desc.jitter[1];
+            rrParams.InRenderSubrectDimensions = desc.viewportDims;
+            // Optional
+            rrParams.InReset = desc.reset;
+            rrParams.InMVScaleX = desc.mvScale[0];
+            rrParams.InMVScaleY = desc.mvScale[1];
+            rrParams.pInSpecularHitDistance = resourceSpecularHitDistance;
+            rrParams.pInWorldToViewMatrix = (float*)desc.mWorldToView;
+            rrParams.pInViewToClipMatrix = (float*)desc.mViewToClip;
+
+            result = NGX_D3D12_EVALUATE_DLSSD_EXT(d3dCommandList, m_RR, m_NgxParameters, &rrParams);
+        }
+        else
         {
             NVSDK_NGX_D3D12_DLSS_Eval_Params srParams = {};
             srParams.Feature.pInColor = resourceInput;
@@ -308,6 +377,35 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
         NVSDK_NGX_Resource_VK resourceDepth = SetupVulkanTexture(desc.texDepth);
 
         VkCommandBuffer vkCommandbuffer = (VkCommandBuffer)NRI.GetCommandBufferNativeObject(*commandBuffer);
+        if (desc.useRR)
+        {
+            NVSDK_NGX_Resource_VK resourceDiffAlbedo = SetupVulkanTexture(desc.texDiffAlbedo);
+            NVSDK_NGX_Resource_VK resourceSpecAlbedo = SetupVulkanTexture(desc.texSpecAlbedo);
+            NVSDK_NGX_Resource_VK resourceNormalRoughness = SetupVulkanTexture(desc.texNormalRoughness);
+            NVSDK_NGX_Resource_VK resourceSpecularHitDistance = SetupVulkanTexture(desc.texSpecHitDistance);
+
+            NVSDK_NGX_VK_DLSSD_Eval_Params rrParams = {};
+            rrParams.pInDiffuseAlbedo = &resourceDiffAlbedo;
+            rrParams.pInSpecularAlbedo = &resourceSpecAlbedo;
+            rrParams.pInNormals = &resourceNormalRoughness;
+            rrParams.pInColor = &resourceInput;
+            rrParams.pInOutput = &resourceOutput;
+            rrParams.pInDepth = &resourceDepth;
+            rrParams.pInMotionVectors = &resourceMv;
+            rrParams.InJitterOffsetX = desc.jitter[0];
+            rrParams.InJitterOffsetY = desc.jitter[1];
+            rrParams.InRenderSubrectDimensions = desc.viewportDims;
+            // Optional
+            rrParams.InReset = desc.reset;
+            rrParams.InMVScaleX = desc.mvScale[0];
+            rrParams.InMVScaleY = desc.mvScale[1];
+            rrParams.pInSpecularHitDistance = &resourceSpecularHitDistance;
+            rrParams.pInWorldToViewMatrix = (float*)desc.mWorldToView;
+            rrParams.pInViewToClipMatrix = (float*)desc.mViewToClip;
+
+            result = NGX_VULKAN_EVALUATE_DLSSD_EXT(vkCommandbuffer, m_RR, m_NgxParameters, &rrParams);
+        }
+        else
         {
             NVSDK_NGX_VK_DLSS_Eval_Params srParams = {};
             srParams.Feature.pInColor = &resourceInput;
@@ -333,6 +431,35 @@ void DlssIntegration::Evaluate(nri::CommandBuffer* commandBuffer, const DlssDisp
         ID3D11Resource* resourceOutput = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texOutput.resource);
 
         ID3D11DeviceContext* d3d11DeviceContext = (ID3D11DeviceContext*)NRI.GetCommandBufferNativeObject(*commandBuffer);
+        if (desc.useRR)
+        {
+            ID3D11Resource* resourceDiffAlbedo = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texDiffAlbedo.resource);
+            ID3D11Resource* resourceSpecAlbedo = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texSpecAlbedo.resource);
+            ID3D11Resource* resourceNormalRoughness = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texNormalRoughness.resource);
+            ID3D11Resource* resourceSpecularHitDistance = (ID3D11Resource*)NRI.GetTextureNativeObject(*desc.texSpecHitDistance.resource);
+
+            NVSDK_NGX_D3D11_DLSSD_Eval_Params rrParams = {};
+            rrParams.pInDiffuseAlbedo = resourceDiffAlbedo;
+            rrParams.pInSpecularAlbedo = resourceSpecAlbedo;
+            rrParams.pInNormals = resourceNormalRoughness;
+            rrParams.pInColor = resourceInput;
+            rrParams.pInOutput = resourceOutput;
+            rrParams.pInDepth = resourceDepth;
+            rrParams.pInMotionVectors = resourceMv;
+            rrParams.InJitterOffsetX = desc.jitter[0];
+            rrParams.InJitterOffsetY = desc.jitter[1];
+            rrParams.InRenderSubrectDimensions = desc.viewportDims;
+            // Optional
+            rrParams.InReset = desc.reset;
+            rrParams.InMVScaleX = desc.mvScale[0];
+            rrParams.InMVScaleY = desc.mvScale[1];
+            rrParams.pInSpecularHitDistance = resourceSpecularHitDistance;
+            rrParams.pInWorldToViewMatrix = (float*)desc.mWorldToView;
+            rrParams.pInViewToClipMatrix = (float*)desc.mViewToClip;
+
+            result = NGX_D3D11_EVALUATE_DLSSD_EXT(d3d11DeviceContext, m_RR, m_NgxParameters, &rrParams);
+        }
+        else
         {
             NVSDK_NGX_D3D11_DLSS_Eval_Params srParams = {};
             srParams.Feature.pInColor = resourceInput;

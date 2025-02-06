@@ -44,6 +44,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define USE_ANOTHER_COBALT                  0 // another cobalt variant
 #define USE_PUDDLES                         0 // add puddles
 #define USE_RANDOMIZED_ROUGHNESS            0 // randomize roughness ( a common case in games )
+#define USE_STOCHASTIC_SAMPLING             0 // needed?
 #define USE_LOAD                            0 // Load vs SampleLevel
 #define USE_SHARC_DEBUG                     0 // 1 - show cache, 2 - show grid
 #define USE_TAA_DEBUG                       0 // 1 - show weight
@@ -367,8 +368,8 @@ NRI_RESOURCE( cbuffer, MorphMeshUpdatePrimitivesConstants, b, 0, 3 )
 
 #if( !defined( __cplusplus ) )
 
-#include "MathLib/ml.hlsli"
-#include "NRD/Shaders/Include/NRD.hlsli"
+#include "ml.hlsli"
+#include "NRD.hlsli"
 
 NRI_RESOURCE( SamplerState, gLinearMipmapLinearSampler, s, 0, SET_GLOBAL );
 NRI_RESOURCE( SamplerState, gLinearMipmapNearestSampler, s, 1, SET_GLOBAL );

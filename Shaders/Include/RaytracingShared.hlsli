@@ -11,7 +11,11 @@ NRI_RESOURCE( RWStructuredBuffer<uint>, gInOut_SharcHashCopyOffsetBuffer, u, 1, 
 NRI_RESOURCE( RWStructuredBuffer<uint4>, gInOut_SharcVoxelDataBuffer, u, 2, SET_SHARC );
 NRI_RESOURCE( RWStructuredBuffer<uint4>, gInOut_SharcVoxelDataBufferPrev, u, 3, SET_SHARC );
 
-#define TEX_SAMPLER gLinearMipmapLinearSampler
+#if( USE_STOCHASTIC_SAMPLING == 1 )
+    #define TEX_SAMPLER gNearestMipmapNearestSampler
+#else
+    #define TEX_SAMPLER gLinearMipmapLinearSampler
+#endif
 
 #if( USE_LOAD == 1 )
     #define SAMPLE( coords ) Load( int3( coords ) )
@@ -71,6 +75,16 @@ float2 GetConeAngleFromRoughness( float mip, float roughness )
     return GetConeAngleFromAngularRadius( mip, tanConeAngle );
 }
 
+float2 STF_Bilinear( float2 uv, float2 texSize )
+{
+    Filtering::Bilinear f = Filtering::GetBilinearFilter( uv, texSize );
+
+    float2 rnd = Rng::Hash::GetFloat2( );
+    f.origin += step( rnd, f.weights );
+
+    return f.origin / texSize;
+}
+
 float3 GetSamplingCoords( uint textureIndex, float2 uv, float mip, int mode )
 {
     float2 texSize;
@@ -88,13 +102,19 @@ float3 GetSamplingCoords( uint textureIndex, float2 uv, float mip, int mode )
         mip += gMipBias * ( mode == MIP_LESS_SHARP ? 0.5 : 1.0 );
     mip = clamp( mip, 0.0, mipNum - 1.0 );
 
-    #if( USE_LOAD == 1 )
+    #if( USE_STOCHASTIC_SAMPLING == 1 )
+        mip = floor( mip ) + step( Rng::Hash::GetFloat( ), frac( mip ) );
+    #elif( USE_LOAD == 1 )
         mip = round( mip );
     #endif
 
     texSize *= exp2( -mip );
 
     // Uv coordinates
+    #if( USE_STOCHASTIC_SAMPLING == 1 )
+        uv = STF_Bilinear( uv, texSize );
+    #endif
+
     #if( USE_LOAD == 1 )
         uv = frac( uv ) * texSize;
     #endif

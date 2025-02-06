@@ -8,13 +8,3 @@
 	url = https://github.com/NVIDIAGameWorks/RayTracingDenoiser.git
 	branch = master
 	update = merge
-[submodule "External/NGX"]
-	path = External/NGX
-	url = https://github.com/NVIDIA/DLSS.git
-	branch = main
-	update = merge
-[submodule "External/SHARC"]
-	path = External/SHARC
-	url = https://github.com/NVIDIAGameWorks/SHARC.git
-	branch = main
-	update = merge

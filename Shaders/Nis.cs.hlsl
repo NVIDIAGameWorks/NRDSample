@@ -58,7 +58,7 @@ NRI_RESOURCE( RWTexture2D<float4>, gOut_Image, u, 0, 1 );
     #define NIS_HLSL_6_2            1
 #endif
 
-#include "NVIDIAImageScaling/NIS/NIS_Scaler.h"
+#include "NIS_Scaler.h"
 
 #if( USE_NIS == 1 )
 

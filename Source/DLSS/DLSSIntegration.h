@@ -11,14 +11,18 @@
 #pragma warning(disable : 4100) // unreferenced formal parameter
 
 // SR
-#include "NGX/include/nvsdk_ngx_helpers.h"
-#include "NGX/include/nvsdk_ngx_helpers_vk.h"
+#include "nvsdk_ngx_helpers.h"
+#include "nvsdk_ngx_helpers_vk.h"
+
+// RR
+#include "nvsdk_ngx_helpers_dlssd.h"
+#include "nvsdk_ngx_helpers_dlssd_vk.h"
 
 #pragma warning(pop)
 
 #define DLSS_INTEGRATION_MAJOR 1
-#define DLSS_INTEGRATION_MINOR 7
-#define DLSS_INTEGRATION_DATE "1 March 2024"
+#define DLSS_INTEGRATION_MINOR 8
+#define DLSS_INTEGRATION_DATE "5 February 2025"
 #define DLSS_INTEGRATION 1
 
 enum class DlssQuality
@@ -53,8 +57,6 @@ struct DlssTexture
 {
     nri::Texture* resource = nullptr;
     nri::Descriptor* descriptor = nullptr;
-    nri::Format format = nri::Format::UNKNOWN;
-    NVSDK_NGX_Dimensions dims = {};
 };
 
 struct DlssDispatchDesc
@@ -67,11 +69,22 @@ struct DlssDispatchDesc
     DlssTexture texMv = {};
     DlssTexture texDepth = {}; // HW for SR, linear for RR
 
+    // RR specific inputs
+    DlssTexture texDiffAlbedo = {};
+    DlssTexture texSpecAlbedo = {};
+    DlssTexture texNormalRoughness = {};
+    DlssTexture texSpecHitDistance = {};
+
     // Settings
     NVSDK_NGX_Dimensions viewportDims = {};
     float jitter[2] = {0.0f, 0.0f};
     float mvScale[2] = {1.0f, 1.0f};
     bool reset = false;
+
+    // RR specific settings
+    float mWorldToView[16] = {};
+    float mViewToClip[16] = {};
+    bool useRR = false;
 };
 
 class DlssIntegration
