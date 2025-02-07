@@ -1441,6 +1441,8 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                                 isSame = false;
                             else if (m_ReblurSettings.specularPrepassBlurRadius != defaults.specularPrepassBlurRadius)
                                 isSame = false;
+                            else if (m_ReblurSettings.minHitDistanceWeight != defaults.minHitDistanceWeight)
+                                isSame = false;
                             else if (m_ReblurSettings.lobeAngleFraction != defaults.lobeAngleFraction)
                                 isSame = false;
                             else if (m_ReblurSettings.roughnessFraction != defaults.roughnessFraction)
@@ -1556,6 +1558,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             ImGui::SliderFloat("Max blur radius (px)", &m_ReblurSettings.maxBlurRadius, 0.0f, 60.0f, "%.1f");
                             ImGui::SliderFloat("Lobe fraction", &m_ReblurSettings.lobeAngleFraction, 0.0f, 1.0f, "%.2f");
                             ImGui::SliderFloat("Roughness fraction", &m_ReblurSettings.roughnessFraction, 0.0f, 1.0f, "%.2f");
+                            ImGui::SliderFloat("Min hitT weight", &m_ReblurSettings.minHitDistanceWeight, 0.01f, 0.2f, "%.2f");
                             ImGui::SliderInt("History fix frames", (int32_t*)&m_ReblurSettings.historyFixFrameNum, 0, 5);
                             ImGui::SliderInt("History fix stride", (int32_t*)&m_ReblurSettings.historyFixBasePixelStride, 1, 20);
                             ImGui::SetNextItemWidth( ImGui::CalcItemWidth() * 0.5f );
@@ -1590,6 +1593,8 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             else if (m_RelaxSettings.diffusePrepassBlurRadius != defaults.diffusePrepassBlurRadius)
                                 isSame = false;
                             else if (m_RelaxSettings.specularPrepassBlurRadius != defaults.specularPrepassBlurRadius)
+                                isSame = false;
+                            else if (m_RelaxSettings.minHitDistanceWeight != defaults.minHitDistanceWeight)
                                 isSame = false;
                             else if (m_RelaxSettings.historyFixFrameNum != defaults.historyFixFrameNum)
                                 isSame = false;
@@ -1730,6 +1735,7 @@ void Sample::PrepareFrame(uint32_t frameIndex)
                             ImGui::SliderFloat("Depth threshold", &m_RelaxSettings.depthThreshold, 0.0f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
                             ImGui::SliderFloat("Lobe fraction", &m_RelaxSettings.lobeAngleFraction, 0.0f, 1.0f, "%.2f");
                             ImGui::SliderFloat("Roughness fraction", &m_RelaxSettings.roughnessFraction, 0.0f, 1.0f, "%.2f");
+                            ImGui::SliderFloat("Min hitT weight", &m_RelaxSettings.minHitDistanceWeight, 0.01f, 0.2f, "%.2f");
                             ImGui::SliderFloat("Spec variance boost", &m_RelaxSettings.specularVarianceBoost, 0.0f, 8.0f, "%.2f");
                             ImGui::SliderFloat("Clamping sigma scale", &m_RelaxSettings.historyClampingColorBoxSigmaScale, 0.0f, 10.0f, "%.1f");
                             ImGui::SliderInt("History threshold", (int32_t*)&m_RelaxSettings.spatialVarianceEstimationHistoryThreshold, 0, 10);
